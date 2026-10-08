@@ -1,7 +1,6 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import { page } from '$app/state';
-  import { goto } from '$app/navigation';
   import {
     Check,
     CircleCheck,
@@ -17,30 +16,16 @@
   import type { PageData } from './$types';
 
   let { data }: { data: PageData } = $props();
+  type Skill = PageData['skills'][number];
 
-  // The selected skill is part of the URL, so a skill can be linked to.
-  const selected = $derived(
-    data.skills.find((skill) => skill.name === page.url.searchParams.get('skill')) ??
-      data.skills[0],
-  );
-  let tab = $state('overview');
+  // Each skill keeps its own open tab.
+  let tabs = $state<Record<string, string>>({});
   let copied = $state<string | null>(null);
   let copyTimer: ReturnType<typeof setTimeout> | undefined;
   onDestroy(() => clearTimeout(copyTimer));
 
-  const fileUrl = $derived(`${page.url.origin}${selected.href}`);
-  const userInstall = $derived(
-    `mkdir -p ~/.claude/skills/${selected.name} && curl -fsSL ${fileUrl} -o ~/.claude/skills/${selected.name}/SKILL.md`,
-  );
-  const projectInstall = $derived(
-    `mkdir -p .claude/skills/${selected.name} && curl -fsSL ${fileUrl} -o .claude/skills/${selected.name}/SKILL.md`,
-  );
-
-  function select(name: string) {
-    const url = new URL(page.url);
-    url.searchParams.set('skill', name);
-    tab = 'overview';
-    goto(url, { replaceState: true, keepFocus: true, noScroll: true });
+  function install(skill: Skill, folder: string) {
+    return `mkdir -p ${folder}/${skill.name} && curl -fsSL ${page.url.origin}${skill.href} -o ${folder}/${skill.name}/SKILL.md`;
   }
 
   async function copy(id: string, text: string, message: string) {
@@ -64,8 +49,8 @@
   />
 </svelte:head>
 
-<!-- Fits the viewport on large screens (the skill document scrolls on its own); one scrolling
-     page on small ones. -->
+<!-- The skills side by side, fitting the viewport on large screens (each panel scrolls on its
+     own); below each other on small ones, in one scrolling page. -->
 <div
   class="flex h-full min-h-0 flex-col gap-3 overflow-y-auto pt-2 pb-6 lg:overflow-hidden lg:pb-0"
 >
@@ -76,158 +61,156 @@
     </p>
   </header>
 
+  <div class="grid gap-3 lg:min-h-0 lg:flex-1 lg:grid-cols-2 lg:grid-rows-[minmax(0,1fr)]">
+    {#each data.skills as skill (skill.name)}
+      {@render skillPanel(skill)}
+    {/each}
+  </div>
+</div>
+
+{#snippet skillPanel(skill: Skill)}
   <section
-    aria-label="Skill"
-    class="flex min-w-0 flex-col overflow-hidden rounded-xl border bg-background lg:min-h-0 lg:flex-1"
+    aria-labelledby={`title-${skill.name}`}
+    class="flex min-w-0 flex-col overflow-hidden rounded-xl border bg-background lg:min-h-0"
   >
-    <header class="flex flex-wrap items-start justify-between gap-3 border-b px-5 py-4">
-      <div class="min-w-0 space-y-2">
-        <!-- Two skills: a switch, like the explorer's Entities and Relations. -->
-        <div
-          role="radiogroup"
-          aria-label="Skills"
-          class="inline-flex max-w-full items-center gap-0.5 overflow-x-auto rounded-md bg-muted/40 p-0.5"
+    <header class="space-y-3 border-b px-5 py-4">
+      <div class="flex items-start gap-3">
+        <span
+          class="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary"
+          aria-hidden="true"
         >
-          {#each data.skills as skill (skill.name)}
-            {@const active = skill.name === selected.name}
-            <button
-              type="button"
-              role="radio"
-              aria-checked={active}
-              onclick={() => select(skill.name)}
-              class={`inline-flex h-8 shrink-0 items-center gap-1.5 rounded px-3 text-[13px] font-medium whitespace-nowrap transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none ${
-                active
-                  ? 'bg-background text-foreground shadow-xs'
-                  : 'text-muted-foreground hover:bg-muted/40 hover:text-foreground'
-              }`}
-            >
-              {#if skill.kind === 'Contribute'}<GitPullRequest
-                  class="size-3.5"
-                  aria-hidden="true"
-                />{:else}<Database class="size-3.5" aria-hidden="true" />{/if}
-              {skill.title}
-            </button>
-          {/each}
+          {#if skill.kind === 'Contribute'}<GitPullRequest class="size-4" />{:else}<Database
+              class="size-4"
+            />{/if}
+        </span>
+        <div class="min-w-0">
+          <h2 id={`title-${skill.name}`} class="text-lg leading-tight font-semibold tracking-tight">
+            {skill.title}
+          </h2>
+          <p class="mt-1 text-sm text-muted-foreground">{skill.description}</p>
         </div>
-        <p class="text-sm text-muted-foreground">
-          {selected.description}
-          <span class="ml-1 font-mono text-xs">{selected.name}/SKILL.md</span>
-        </p>
       </div>
-      <div class="flex flex-wrap gap-2">
+      <div class="flex flex-wrap items-center gap-2">
         <Button
-          onclick={() => copy(`skill:${selected.name}`, selected.content, 'Skill copied')}
-          aria-label={`Copy ${selected.title} skill`}
+          size="sm"
+          onclick={() => copy(`skill:${skill.name}`, skill.content, 'Skill copied')}
+          aria-label={`Copy ${skill.title} skill`}
         >
-          {#if copied === `skill:${selected.name}`}<Check />Copied{:else}<Copy />Copy skill{/if}
+          {#if copied === `skill:${skill.name}`}<Check />Copied{:else}<Copy />Copy skill{/if}
         </Button>
         <Button
+          size="sm"
           variant="outline"
-          href={selected.href}
-          download={`${selected.name}-SKILL.md`}
-          aria-label={`Download ${selected.title} skill`}><Download />Download</Button
+          href={skill.href}
+          download={`${skill.name}-SKILL.md`}
+          aria-label={`Download ${skill.title} skill`}><Download />Download</Button
         >
+        <span class="ml-auto font-mono text-xs text-muted-foreground">{skill.name}/SKILL.md</span>
       </div>
     </header>
 
-    <Tabs.Root bind:value={tab} class="flex min-h-0 flex-1 flex-col gap-0">
+    <Tabs.Root
+      bind:value={() => tabs[skill.name] ?? 'overview', (value) => (tabs[skill.name] = value)}
+      class="flex min-h-0 flex-1 flex-col gap-0"
+    >
       <div class="shrink-0 px-5 pt-4">
-        <Tabs.List aria-label="Skill content">
+        <Tabs.List aria-label={`${skill.title} skill`}>
           <Tabs.Trigger value="overview" class="flex-none px-3">Overview</Tabs.Trigger>
           <Tabs.Trigger value="document" class="flex-none px-3">SKILL.md</Tabs.Trigger>
           <Tabs.Trigger value="install" class="flex-none px-3">Install</Tabs.Trigger>
         </Tabs.List>
       </div>
 
-      <Tabs.Content value="overview" class="min-h-0 overflow-y-auto p-5">
-        <div class="grid max-w-4xl gap-8 md:grid-cols-2">
-          <section class="space-y-3">
-            <h3 class="section-title">What your agent learns</h3>
-            <ul class="space-y-3">
-              {#each selected.capabilities as capability}
-                <li class="flex items-start gap-2.5 text-sm">
-                  <CircleCheck class="mt-0.5 size-4 shrink-0 text-primary" aria-hidden="true" />
-                  <span>{capability}</span>
-                </li>
-              {/each}
-            </ul>
-          </section>
-          <section class="space-y-3">
-            <h3 class="section-title">Try asking</h3>
-            <ul class="space-y-2">
-              {#each selected.examples as example, index}
-                {@const id = `example:${selected.name}:${index}`}
-                <li
-                  class="group flex items-start gap-2.5 rounded-lg border bg-muted/20 px-3 py-2.5 text-sm"
+      <Tabs.Content value="overview" class="min-h-0 space-y-6 overflow-y-auto p-5">
+        <section class="space-y-3">
+          <h3 class="section-title">What your agent learns</h3>
+          <ul class="space-y-2.5">
+            {#each skill.capabilities as capability}
+              <li class="flex items-start gap-2.5 text-sm">
+                <CircleCheck class="mt-0.5 size-4 shrink-0 text-primary" aria-hidden="true" />
+                <span>{capability}</span>
+              </li>
+            {/each}
+          </ul>
+        </section>
+        <section class="space-y-3">
+          <h3 class="section-title">Try asking</h3>
+          <ul class="space-y-2">
+            {#each skill.examples as example, index}
+              {@const id = `example:${skill.name}:${index}`}
+              <li
+                class="group flex items-start gap-2.5 rounded-lg border bg-muted/20 px-3 py-2.5 text-sm"
+              >
+                <MessageSquare
+                  class="mt-0.5 size-4 shrink-0 text-muted-foreground"
+                  aria-hidden="true"
+                />
+                <span class="min-w-0 flex-1">{example}</span>
+                <button
+                  type="button"
+                  class="shrink-0 rounded p-1 text-muted-foreground opacity-60 transition group-hover:opacity-100 hover:bg-muted hover:text-foreground focus-visible:opacity-100"
+                  aria-label="Copy prompt"
+                  onclick={() => copy(id, example, 'Prompt copied')}
                 >
-                  <MessageSquare
-                    class="mt-0.5 size-4 shrink-0 text-muted-foreground"
-                    aria-hidden="true"
-                  />
-                  <span class="min-w-0 flex-1">{example}</span>
-                  <button
-                    type="button"
-                    class="shrink-0 rounded p-1 text-muted-foreground opacity-60 transition hover:bg-muted hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
-                    aria-label="Copy prompt"
-                    onclick={() => copy(id, example, 'Prompt copied')}
-                  >
-                    {#if copied === id}<Check class="size-3.5" />{:else}<Copy
-                        class="size-3.5"
-                      />{/if}
-                  </button>
-                </li>
-              {/each}
-            </ul>
-          </section>
-        </div>
+                  {#if copied === id}<Check class="size-3.5" />{:else}<Copy class="size-3.5" />{/if}
+                </button>
+              </li>
+            {/each}
+          </ul>
+        </section>
       </Tabs.Content>
 
       <Tabs.Content value="document" class="min-h-0 overflow-y-auto px-5 py-4">
-        <article class="skill-doc max-w-3xl">
+        <article class="skill-doc">
           <!-- eslint-disable-next-line svelte/no-at-html-tags -- first-party SKILL.md files -->
-          {@html selected.html}
+          {@html skill.html}
         </article>
       </Tabs.Content>
 
-      <Tabs.Content value="install" class="min-h-0 overflow-y-auto p-5">
-        <div class="max-w-3xl space-y-6">
-          {@render installStep(
-            'Claude Code',
-            'For every project of your user account. Claude Code picks the skill up the next time it starts.',
-            'user',
-            userInstall,
-          )}
-          {@render installStep(
-            'Claude Code, one project',
-            'Run in the project directory; commit the file to share the skill with collaborators.',
-            'project',
-            projectInstall,
-          )}
-          <section class="space-y-1.5">
-            <h3 class="text-sm font-semibold">Claude apps</h3>
-            <p class="text-sm text-muted-foreground">
-              Download SKILL.md, put it in a folder named <code class="inline-code"
-                >{selected.name}</code
-              >, compress the folder as a ZIP file and upload it as a custom skill in Claude's
-              settings.
-            </p>
-          </section>
-          <section class="space-y-1.5">
-            <h3 class="text-sm font-semibold">Other agents</h3>
-            <p class="text-sm text-muted-foreground">
-              Save SKILL.md in your workspace and point to it from the agent's instructions (for
-              example <code class="inline-code">AGENTS.md</code>), or copy the skill into the
-              conversation.
-            </p>
-          </section>
-        </div>
+      <Tabs.Content value="install" class="min-h-0 space-y-6 overflow-y-auto p-5">
+        {@render installStep(
+          skill,
+          'Claude Code',
+          'For every project of your user account. Claude Code picks the skill up the next time it starts.',
+          'user',
+          install(skill, '~/.claude/skills'),
+        )}
+        {@render installStep(
+          skill,
+          'Claude Code, one project',
+          'Run in the project directory; commit the file to share the skill with collaborators.',
+          'project',
+          install(skill, '.claude/skills'),
+        )}
+        <section class="space-y-1.5">
+          <h3 class="text-sm font-semibold">Claude apps</h3>
+          <p class="text-sm text-muted-foreground">
+            Download SKILL.md, put it in a folder named <code class="inline-code">{skill.name}</code
+            >, compress the folder as a ZIP file and upload it as a custom skill in Claude's
+            settings.
+          </p>
+        </section>
+        <section class="space-y-1.5">
+          <h3 class="text-sm font-semibold">Other agents</h3>
+          <p class="text-sm text-muted-foreground">
+            Save SKILL.md in your workspace and point to it from the agent's instructions (for
+            example <code class="inline-code">AGENTS.md</code>), or copy the skill into the
+            conversation.
+          </p>
+        </section>
       </Tabs.Content>
     </Tabs.Root>
   </section>
-</div>
+{/snippet}
 
-{#snippet installStep(title: string, description: string, id: string, command: string)}
-  {@const key = `install:${id}:${selected.name}`}
+{#snippet installStep(
+  skill: Skill,
+  title: string,
+  description: string,
+  id: string,
+  command: string,
+)}
+  {@const key = `install:${id}:${skill.name}`}
   <section class="space-y-1.5">
     <h3 class="text-sm font-semibold">{title}</h3>
     <p class="text-sm text-muted-foreground">{description}</p>
