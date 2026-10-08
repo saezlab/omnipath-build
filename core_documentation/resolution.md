@@ -1,10 +1,10 @@
 # Entity resolution
 
 Resolution decides which entity a source observation refers to. It has two
-parts. First, **reference construction** builds the reference library offline
-from identifier hubs. Then, during every resource build, **matching** looks up
-each observation's identifiers in that library and decides whether one entity
-is supported.
+parts. First, the **identity layer** is built offline from identifier hubs: it
+decides once which hub records form which entity. Then, during every resource
+build, **matching** looks up each observation's identifiers and decides whether
+exactly one entity is supported.
 
 > **Decision: resolve once, at build time.** Resolution runs inside the
 > resource build, before Parquet publication. The API, PostgreSQL and the
@@ -20,15 +20,16 @@ is supported.
 
 ```mermaid
 flowchart TB
-    subgraph offline["Reference construction (offline, occasionally)"]
+    subgraph offline["Identity layer (offline, once per hub snapshot)"]
         direction LR
-        H["1 · Export hubs"] --> A["2 · Assign entities<br/>around anchors"] --> I["3 · Compile<br/>runtime indexes"]
+        H["1 · Export hubs"] --> X["2 · Index each hub"] --> D["3 · Decide identity"]
     end
     subgraph build["Matching (every resource build)"]
         direction LR
-        N["4 · Observation<br/>→ votes"] --> L["5 · Look up<br/>candidates"] --> K["6 · Decide"] --> E["7 · Enrich"]
+        N["4 · Observation<br/>→ votes"] --> L["5 · Look up<br/>candidates"] --> K["6 · Decide"] --> E["7 · Fallbacks<br/>and records"]
     end
-    I --> L
+    X --> L
+    D --> L
 ```
 
 ## 1. Hubs
@@ -47,113 +48,103 @@ Every row says *this record of the hub carries this identifier*:
 | --- | --- |
 | Chemical | ChEBI, PubChem, ChEMBL, HMDB, LIPID MAPS, SwissLipids, BiGG, MetaNetX, RefMet, RaMP |
 | Gene and protein | UniProt, NCBI Gene, RaMP genes, plus Ensembl gene mappings and UniProt's RefSeq and EMBL-CDS sequence mappings |
+| Reaction | Rhea (master reactions, directions, Rhea's own cross-references), MetaNetX reactions |
+| Ontology terms | GO, ChemOnt, HPO, MONDO, PSI-MI: term names only, never matched |
+
+The miRBase hub is exported but not used for resolution yet.
 
 ```bash
 omnipath-build export-hubs --output-dir data/reference/hubs --max-records 0 --no-library
 ```
 
-## 2. Assigning reference entities
+## 2. Hub indexes
 
-`build-library` turns the hubs into reference entities
-([`build_reference.py`](../packages/build/omnipath_build/reference/build_reference.py)).
-It runs once per domain in checkpointed DuckDB stages. A missing hub stops the
-build rather than producing a partial reference.
+Each hub is indexed on its own, independent of the identity rules, so a hub is
+re-indexed only when its export changes
+([`hubindex.py`](../packages/build/omnipath_build/identity/hubindex.py)):
 
-Entities are built around **[anchors](glossary.md#anchor)**: identifiers that
-define identity on their own.
+| File | Content |
+| --- | --- |
+| `records.parquet` | One row per record: its anchor, if it has exactly one, and how many anchors it claims |
+| `by_id/` | Lookup rows: identifier → record, tagged `native`, `claim`, `secondary` (UniProt secondary accession), `symbol_synonym` or `version_stripped` |
+| `by_record/` | Every normalized row of a record, including names and structures that feed labels |
+| `xrefs.parquet` | The cross-references between records, the only input the identity decisions read |
+| `kv/` | LMDB point-lookup stores of `by_id` and `by_record`, read by matching |
+
+- **Anchors** are identifiers that define identity on their own: a valid full
+  InChIKey (the empty-structure InChIKeys are ignored), the UniProt record's own
+  primary accession, the NCBI GeneID and the Rhea master reaction.
+- **Lipid names.** The chemical hubs (SwissLipids, LIPID MAPS, HMDB, ChEBI,
+  RefMet) also get `goslin` rows: each record's names are parsed with Goslin,
+  and the most specific parse at species level or finer is kept, through a
+  persistent parse cache.
+
+```bash
+omnipath-build build-hub-index --hub chebi --hubs-dir data/reference/hubs --output-root data/reference/hub-index
+omnipath-build build-hub-kv --hub chebi --hub-index-root data/reference/hub-index
+```
+
+## 3. Identity decisions
+
+`build-identity` decides every record that is not simply its own anchor's
+entity ([`decisions.py`](../packages/build/omnipath_build/identity/decisions.py)).
+It is plain DuckDB SQL plus an in-process union-find for grouping, and runs in
+minutes.
 
 | Domain | Anchor | Entity ID |
 | --- | --- | --- |
-| Chemical | A valid full InChIKey (the empty-structure InChIKeys are ignored) | `inchikey:XLYOFNOQVPJJNP-UHFFFAOYSA-N` |
-| Protein | The UniProt record's own primary accession | `uniprot:P04637` |
-| Gene | NCBI Gene records are gene identities directly | `entrez:7157` |
+| Chemical | Full InChIKey | `inchikey:XLYOFNOQVPJJNP-UHFFFAOYSA-N` |
+| Lipid without a structure | Goslin name, species level or finer | `goslin:species:PC 34:1` |
+| Protein | Primary UniProt accession | `uniprot:P04637` |
+| Gene | NCBI GeneID | `entrez:7157` |
+| Reaction | Rhea master reaction | `rhea:10000` |
 
-The assignment then works record by record:
+Each record gets one decision:
 
-1. **Records and their anchors.** Each hub record (for example `chebi:15377`)
-   collects the anchors it claims. A record with exactly one anchor belongs to
-   that anchor's entity. A record that claims **more than one** anchor is
-   *quarantined*: it stays its own entity and is never used to join others.
-2. **Cross-references become edges.** Every cross-reference between two records
-   of the same domain is an edge. UniProt ↔ NCBI Gene references are the
-   exception: they become *gene–product links*, not identity edges.
-3. **Anchorless records form components.** Records without an anchor are
-   connected through their cross-references. The Rust `anchor-components`
-   binary computes connected components over **anchorless records only**.
-   Anchors never enter this graph, so two anchors can never be merged through
-   a chain of cross-references.
-4. **Each component is decided as a whole** by looking at the anchored records
-   it touches:
+| Decision | When | Entity |
+| --- | --- | --- |
+| (none) | The record has exactly one anchor | That anchor |
+| `quarantined` | The record claims two or more anchors | Its own; it never connects anything |
+| `lipid_name` | A chemical without an InChIKey whose most specific Goslin name is unique | `goslin:<level>:<name>` |
+| `attached` | An anchorless record whose own cross-references reach records with exactly one anchor, none of them quarantined | That anchor |
+| `grouped` | Anchorless records with no cross-reference to an anchored record, connected through their cross-references, at most one record per hub | The record of the preferred hub |
+| `ambiguous_native` | The cross-references reach several anchors, or a group holds two records of one hub | Its own |
+| `structureless` | An anchorless record with no usable cross-reference | Its own |
 
-   | The component touches | Decision | Result |
-   | --- | --- | --- |
-   | exactly one anchor | `attached` | Every record joins that anchor's entity |
-   | no anchor | `anchorless_component` | The records form one entity of their own |
-   | two or more anchors, or a quarantined record | `ambiguous_native` | Every record stays a separate native entity |
+- **One step only.** Attachment looks at a record's own cross-references.
+  Chains are never followed, so two anchors can never be merged through
+  intermediate records.
+- **Preferred hub** for a group's ID: ChEBI, LIPID MAPS, SwissLipids, HMDB,
+  ChEMBL, PubChem, KEGG, MetaNetX, BiGG, RefMet, RaMP, then the lowest local ID.
+- **Gene–product links.** UniProt ↔ NCBI Gene cross-references are not
+  identity edges. A protein is linked to a gene when either hub states the link,
+  the protein has a single anchor and the taxa agree. Genes never join proteins
+  to each other.
+- **Lipid structures.** A full-structure Goslin name leads to an InChIKey only
+  when every record carrying that name and an InChIKey agrees on exactly one.
 
-5. **Lipid names.** Lipid shorthand names are normalized with Goslin and
-   connected through a virtual node. Every record with the same normalized name
-   sees every anchor claimed for it, so conflicting structures behind one name
-   become visible instead of hidden.
-6. **Gene–product links.** A UniProt protein is linked to an NCBI Gene when
-   either hub states the link explicitly, the protein has a single anchor and
-   the taxa agree. Genes are never used to join proteins to each other.
-7. **Identifier claims.** Each identifier on a record is classified as native
-   identity, anchor, cross-reference or unverified alias. Names and synonyms are
-   kept for labels, not for lookup.
-8. **Validation.** Every hub record must end up with exactly one entity, and
-   no anchored record may move away from its anchor. Disagreements are written
-   to diagnostic files (`cross_reference_exceptions.parquet`,
-   `ambiguous_records.parquet`) rather than resolved silently.
+The output is an `omnipath-identity-v2` library (about 2 GB): the decisions,
+gene–product links, lipid name → InChIKey pairs, the anchors each quarantined or
+ambiguous record points to, and ontology term labels, plus LMDB stores for
+matching. Its directory name is a fingerprint of the hub indexes and the rules
+code, and every resource build records the fingerprint it used.
+
+```bash
+omnipath-build build-identity --hub-index-root data/reference/hub-index --output-dir data/reference/identity
+omnipath-build build-identity-kv --identity-dir data/reference/identity/<fingerprint>
+```
 
 **Example.** A ChEBI record with InChIKey *K* becomes entity `inchikey:K`. An
 HMDB record without a structure that cross-references only that ChEBI record
 is attached to `inchikey:K` too. A MetaNetX record without a structure that
-cross-references two records with different InChIKeys stays its own native
-entity, because choosing either would be a guess.
+cross-references two records with different InChIKeys stays its own entity,
+because choosing either would be a guess.
 
 > **Decision: anchors define identity; cross-references only attach.**
-> Records join an entity only through an unambiguous path to one anchor.
+> Records join an entity only through a one-step, unambiguous path to one
+> anchor.
 > *Why:* cross-references between chemical databases are often many-to-many.
 > Letting them merge anchored entities would chain unrelated structures together.
-
-## 3. Compiling the runtime indexes
-
-The assigned catalogue is compiled into one immutable
-**[generation](glossary.md#generation)** of the
-[reference library](glossary.md#reference-library):
-
-| Index | Key → value | Used in step |
-| --- | --- | --- |
-| Identifier index | (domain, route, namespace, identifier, taxon scope) → complete list of candidate entities | 5 · Look up |
-| Entity index | entity ID → kind, anchor, taxon, label, all admitted identifiers, gene links | 7 · Enrich |
-| Gene-role component | identifiers → supported gene candidates; gene aliases and labels | 6 · Decide (gene level) |
-
-- **Taxon scope.** Each identifier is stored once without a taxon and once per
-  taxon in which it occurs. Gene symbols are only usable together with a taxon.
-- **Candidate limit.** A key with more than **10** candidates is removed as a
-  whole and archived with all its candidates in `ambiguous.parquet`. It is never
-  truncated, because a truncated list could produce a false unique match. The
-  limit is checked separately for the unscoped key and each taxon, so a symbol
-  can be too ambiguous globally but usable in human. The removed aliases are
-  also taken out of entity records, and a label that depended on them is
-  recomputed.
-- **Gene-role component.** Gene candidates come only from direct gene claims
-  (gene symbols and synonyms, HGNC, Ensembl gene and transcript, RefSeq
-  transcript) and from
-  products linked to exactly one gene. Its cutoff counts distinct genes, not
-  catalogue proteins, so a gene with many isoforms stays resolvable.
-- **Storage.** Both indexes are partitioned LMDB stores (512 shards) with
-  MessagePack values and Zstandard dictionaries. The operating system's page
-  cache is the only cache.
-- **Publication.** `current` is switched to the new generation only after every
-  shard, dictionary and manifest is complete. Builds pin one generation for
-  their whole run and record it in their provenance. A missing or damaged
-  index fails the build; there is no fallback scan.
-
-```bash
-omnipath-build build-library --hubs-dir data/reference/hubs --output-dir data/reference/library
-```
 
 ## 4. From observation to votes
 
@@ -168,6 +159,7 @@ The **entity type selects a policy**
 | --- | --- | --- |
 | gene_protein | gene, protein, RNA and transcript types | UniProt (primary, secondary, entry name), NCBI Gene, Ensembl gene/transcript/protein, HGNC, RefSeq, GenBank, KEGG gene, RaMP gene; gene symbols only with a taxon |
 | chemical | chemical entity, small molecule | InChIKey, InChI, ChEBI, ChEMBL, PubChem, HMDB, KEGG, CAS, LIPID MAPS, SwissLipids, DrugBank, BiGG, MetaNetX, RefMet, RaMP, Goslin |
+| reaction | molecular activity | Rhea; KEGG, MetaCyc, EcoCyc, Reactome and M-CSA reactions through Rhea; BiGG, VMH, SEED and SABIO-RK reactions through MetaNetX |
 | cv_term, complex, generic | ontology classes, complexes, everything else | none: never matched, keep their own identifier |
 
 Each identifier is normalized and becomes a **[vote](glossary.md#vote)** when its
@@ -179,18 +171,36 @@ namespace is allowed:
 - For genes and proteins, the specific isoform and sequence identifiers in the
   molecular form vote as well.
 - A chemical without an InChIKey but with an explicit SMILES gets a Standard
-  InChIKey derived with RDKit, which then votes.
-- Names, synonyms and annotations never vote.
+  InChIKey derived with RDKit, which votes like any other identifier.
+- **Lipid names.** When a chemical has no other usable identifier, its names and
+  synonyms are parsed with Goslin, and each name at the most specific level
+  votes. A RefMet ID alone does not count as usable, since it can stand for an
+  underspecified lipid.
+- Other names, synonyms and annotations never vote.
+- **miRNAs** are RNA types, so gene identifiers they carry (NCBI Gene, Ensembl)
+  vote under the gene_protein policy. miRBase accessions and names do not vote
+  yet, and `resolution_stats.json` counts miRNAs as `not_applicable`.
 
 ## 5–6. Looking up and deciding
 
-Each vote's key is read from the identifier index. A key that is absent (unknown
-or removed by the candidate limit) contributes nothing. The candidate sets then
-go to the Rust decision kernel
+Each vote's key is looked up in the hub and identity stores
+([`identity_runtime.py`](../packages/resolver/omnipath_resolver/identity_runtime.py)).
+There is no candidate limit: a key contributes every candidate, and the
+intersection decides.
+
+- **Precedence within one key.** A record's own identifier beats a fallback
+  row, a primary UniProt accession beats secondary-accession claims for the same
+  string, and an exact gene symbol beats a symbol synonym in the same taxon.
+- **Quarantined and ambiguous records** vote for every anchor they point to, so
+  the other identifiers can still decide.
+- **Lipid structures.** A full-structure Goslin name only reaches an InChIKey
+  entity through the unique pairs from step 3.
+
+The candidate sets then go to the Rust decision kernel
 ([`lib.rs`](../packages/resolver/rust/reference/src/lib.rs)):
 
-1. **Chemicals with an anchor.** If the observation has a valid full InChIKey,
-   only the InChIKey decides; other identifiers cannot override it.
+1. **Chemicals with a stated structure.** If the source states a valid full
+   InChIKey, only the InChIKey decides; other identifiers cannot override it.
 2. **Intersect** the candidate sets of all participating votes.
 3. **Decide:**
 
@@ -204,6 +214,18 @@ go to the Rust decision kernel
 
 A repeated identifier does not outvote conflicting evidence: one disagreeing
 vote empties the intersection.
+
+**Chemical fallbacks.** A chemical that was not accepted is decided again on
+narrower evidence, in order; the first unique answer wins, and an accepted
+result never changes:
+
+1. Without coarse cross-references (KEGG, BiGG and MetaNetX compounds), which
+   must not veto the source's specific identifiers.
+2. On the source's own structure (a stated InChIKey or one derived from its
+   SMILES), when its identifiers contradict each other.
+3. When every candidate is one molecule in different protonation states
+   (InChIKeys equal but for the last character): on the neutral form if the
+   source names it, else on the primary identifier.
 
 ### Gene and product level
 
@@ -253,24 +275,38 @@ the candidates.
 > *Why:* copying gene evidence onto every product of a gene invents claims that
 > no source made. (4 October 2026)
 
-## 7. Enrichment and fallbacks
+### Reactions
 
-An accepted entity is read from the entity index: label, taxon and all admitted
-aliases. During resource builds this is deferred to the finalizer, which attaches
-aliases once per entity instead of once per observation. Isoform, transcript and
-sequence identifiers stay on the occurrence's molecular form and are not added
-to the general alias list.
+A reaction's anchor is its Rhea master reaction, which has no direction. A
+directional Rhea ID resolves to its master; the reported direction stays on the
+occurrence. Rhea's own cross-references win over MetaNetX's for the same ID.
+Model-reaction IDs (BiGG, VMH, SEED, SABIO-RK) resolve through a MetaNetX
+reaction, which attaches to a Rhea master under the rules of step 3 or stays
+its own entity. Compartment and transport stay on the occurrence; EC numbers
+are not used for identity.
+
+## 7. Fallbacks and entity records
+
+An accepted entity's record (label, taxon, identifiers, gene links) is
+assembled from the hub stores on first use and cached per identity
+fingerprint, so a cached record equals a freshly built one. During resource
+builds this is deferred to the finalizer, which attaches identifiers once per
+entity instead of once per observation. Isoform, transcript and sequence
+identifiers stay on the occurrence's molecular form.
 
 | Situation | Result |
 | --- | --- |
 | No match | The observation keeps its own normalized primary identifier as a native entity |
-| Chemical not in the catalogue, but with exactly one valid InChIKey | That InChIKey becomes its identity |
-| Protein reported but not in the catalogue | The exact reported product is kept (with version, isoform or chain suffix), marked `omnipath:protein_mapping_status = reported` |
+| Chemical not resolved, but with exactly one valid InChIKey | That InChIKey becomes its identity |
+| Protein reported but not resolved | The exact reported product is kept (with version, isoform or chain suffix), marked `omnipath:protein_mapping_status = reported` |
 | No unique gene | The native product or source identifier becomes the reference, with the gene mapping status |
-| No reference library available | All identities stay native |
+| Ontology term cited by ID only | It keeps its ID and is named from the ontology hub |
+| No identity library available | All identities stay native |
 
 Every build writes `resolution_stats.json`: unique observed entity keys per
-entity type and matching outcome. These count observations, not final entities.
+entity type and outcome (`resolved`, `structure`, `unresolved`,
+`not_applicable`) and per deciding rule. These count observations, not final
+entities.
 
 ## Grouping is not identity
 
@@ -293,9 +329,10 @@ Grouping happens at query time and does not change any stored key.
 | Concern | Location |
 | --- | --- |
 | Hub exports | `packages/build/omnipath_build/hubs/` |
-| Entity assignment | `packages/build/omnipath_build/reference/build_reference.py` |
-| Index compilation and candidate limit | `packages/build/omnipath_build/reference/` (`full_index*.py`, `candidate_limit.py`, `gene_role_index.py`) |
-| Connected components | `packages/resolver/rust/reference/src/bin/components.rs` |
+| Hub indexes and LMDB stores | `packages/build/omnipath_build/identity/hubindex.py`, `identitykv.py` |
+| Identity decisions | `packages/build/omnipath_build/identity/decisions.py` |
+| Lookup, fallbacks and entity records | `packages/resolver/omnipath_resolver/identity_runtime.py` |
 | Policies and matcher | `packages/resolver/omnipath_resolver/canonical/` |
 | Decision kernel | `packages/resolver/rust/reference/src/lib.rs`, `packages/resolver/src/precomputed.rs` |
-| Measurements and storage figures | [`docs/reference-resolver.md`](../docs/reference-resolver.md) |
+| Regression against another library | `packages/build/omnipath_build/regression/` |
+| Rules in detail | [`docs/identity-layer-spec.md`](../docs/identity-layer-spec.md) |

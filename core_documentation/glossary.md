@@ -50,13 +50,15 @@ One source occurrence supporting an entity or statement:
 Evidence is a multiset, so identical occurrences are kept.
 
 ### Reference library
-The compiled identifier and entity indexes, plus the gene component, that
-matching reads during resource builds. Built offline from hubs.
+What matching reads during resource builds: the hub indexes plus the identity
+library (`omnipath-identity-v2`) of identity decisions. Built offline from hubs;
+also called the identity layer.
 
 ### Anchor
 An identifier that defines identity on its own: the full InChIKey for
-chemicals and the primary UniProt accession for proteins. Reference entities
-are built around anchors.
+chemicals, the Goslin name for lipids without a structure, the primary UniProt
+accession for proteins, the NCBI GeneID for genes and the Rhea master reaction
+for reactions. Reference entities are built around anchors.
 
 ### Abstain
 Resolution's choice to leave an observation unresolved because its evidence is
@@ -69,9 +71,7 @@ The three Parquet files and their schemas (`omnipath_core/schema.py`), currently
 ## Other terms
 
 ### Ambiguous
-More than one candidate entity survives resolution. Also used for lookup keys
-with more than 10 candidates, which are removed from the index and archived in
-`ambiguous.parquet`.
+More than one candidate entity survives resolution, so matching abstains.
 
 ### Annotation
 A `{term, value, quantity, source, dataset}` attribute attached to an entity,
@@ -95,9 +95,9 @@ An entity in the reference library that a lookup key points to. Matching
 intersects the candidates of all votes.
 
 ### Component
-A connected group of anchorless hub records, linked by cross-references. The
-whole component is attached to one anchor, kept as one entity, or split into
-native entities.
+A connected group of anchorless hub records without a cross-reference to an
+anchored record, linked by cross-references. It becomes one entity only if it
+holds at most one record per hub; otherwise every record stays its own entity.
 
 ### Connectivity
 The first 14-character block of an InChIKey, which encodes the molecular
@@ -125,8 +125,8 @@ resolution for one occurrence. Anything but `resolved` is stored as the
 `omnipath:gene_mapping_status` annotation.
 
 ### Generation
-One complete, immutable build of the reference library, published by switching
-the `current` symlink. Each resource build pins one generation.
+One complete, immutable identity library, named by the fingerprint of its hub
+indexes and rules code. Each resource build pins one and records it.
 
 ### Hub
 A normalized export of a reference database (UniProt, NCBI Gene, ChEBI,
@@ -164,7 +164,8 @@ or aspect). Qualifiers are part of the relation key.
 
 ### Quarantined
 A hub record that claims more than one anchor. It stays its own entity and
-never joins others; matching abstains when it is the only candidate.
+never joins others; in matching, its identifier votes for every anchor it
+claims, so the other identifiers decide.
 
 ### Relation
 In Parquet, a row of the `relation` table (a [statement](#statement)). In
