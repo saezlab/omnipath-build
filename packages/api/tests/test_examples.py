@@ -29,7 +29,7 @@ def test_examples_are_cached_release_specific_and_do_not_replace_search(tmp_path
     assert first["nextCursor"] is None
     # the grouped landing page shows the same examples as group cards
     assert [g["entity"]["displayName"] for g in first["groups"]] == ["Aspirin"]
-    assert len(list((tmp_path / ".presentation/examples-v2").glob("*.json"))) == 1
+    assert len(list((tmp_path / ".presentation/examples-v3").glob("*.json"))) == 1
     # A fresh engine reads the prepared page without selecting or hydrating again.
     cached = ParquetServingEngine(tmp_path)
     monkeypatch.setattr(

@@ -33,6 +33,9 @@ EXAMPLES = (
 )
 
 
+# Bumped when the shape of a cached example page changes (group cards), so a release's
+# prepared page is rebuilt rather than served stale.
+CACHE_FORMAT = "examples-v3"
 _GENERIC_TYPES = {"physical_entity", "named_thing", "entity"}
 
 
@@ -77,6 +80,7 @@ def get_examples(engine):
         [info["key"] for info in infos],
         engine._inventory_fingerprint,
         EXAMPLES,
+        CACHE_FORMAT,
         engine._release_scope.get(),
         engine._taxonomy_cache_version(),
         [m.get("references") for m in engine.releases.list()],
@@ -84,7 +88,7 @@ def get_examples(engine):
     key = hashlib.sha256(json.dumps(identity, sort_keys=True, default=str).encode()).hexdigest()
 
     def load():
-        target = engine.data_root / ".presentation" / "examples-v2" / (key + ".json")
+        target = engine.data_root / ".presentation" / CACHE_FORMAT / (key + ".json")
         try:
             return json.loads(target.read_text())
         except FileNotFoundError:
