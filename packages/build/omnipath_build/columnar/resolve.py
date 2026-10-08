@@ -1,11 +1,11 @@
 """Resolve and write columnar observations with the existing resolver and writer.
 
 Resolution depends only on the observation, so each distinct entity observation of
-the resource is resolved once, in parallel chunks, instead of once per batch it
-recurs in. Rows are then written in parallel shards by the existing
-``ParquetWriter``, whose resolver returns the precomputed targets, and the shards
-are finalized as in the row path. Outputs are those of the row path by
-construction; the speed comes from distinct inputs and parallelism.
+the resource is resolved once, in parallel chunks, and its working-table rows are
+made there with the writer's own ``entity_rows``. Relation rows are made in
+parallel with ``relation_rows``. One ``ParquetWriter`` then ingests all rows in
+bulk and finalizes them as in the row path, so outputs are those of the row path
+by construction.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ import pickle
 import time
 from pathlib import Path
 
+import pyarrow as pa
 import pyarrow.parquet as pq
 
 from omnipath_resolver.contracts import RawEntityObservation
@@ -64,9 +65,17 @@ def _observation(entity: dict, source: str) -> RawEntityObservation:
 # -- resolution ------------------------------------------------------------------
 
 
+def _write(rows, schema, path):
+    pq.write_table(pa.Table.from_pylist(rows, schema=schema), path)
+
+
 def _resolve_chunk(args):
     index, keys, entities_path, source, library_dir, out = args
     from omnipath_resolver import EntityResolver
+    from omnipath_build.writer import (
+        ENTITY_ANN, ENTITY_EVIDENCE_INPUT, ENTITY_INPUT, IDS_INPUT,
+        _resolution_annotations, entity_rows,
+    )  # fmt: skip
 
     table = pq.read_table(entities_path, filters=[("key", "in", keys)])
     observations = {
@@ -78,16 +87,29 @@ def _resolve_chunk(args):
         targets = resolver.resolve_entity_targets(observations, progress=False)
         keys_path = Path(out) / f"resolution_keys-{index:05d}.parquet"
         resolver.export_resolution_keys(keys_path)
-        stats = resolver.resolution_stats()
     finally:
         resolver.close()
-    with open(Path(out) / f"targets-{index:05d}.pickle", "wb") as handle:
-        pickle.dump(targets, handle, protocol=pickle.HIGHEST_PROTOCOL)
-    return str(keys_path), stats
+    parts = ([], [], [], [])
+    diagnostics = {}
+    for key, observation in observations.items():
+        for rows, part in zip(parts, entity_rows(key, observation, targets[key])):
+            rows.extend(part)
+        if _resolution_annotations(targets[key]):
+            diagnostics[key] = targets[key]
+    for name, rows, schema in zip(
+        ("entities", "identifiers", "entity_annotations", "entity_evidence"),
+        parts,
+        (ENTITY_INPUT, IDS_INPUT, ENTITY_ANN, ENTITY_EVIDENCE_INPUT),
+    ):
+        _write(rows, schema, Path(out) / f"{name}-{index:05d}.parquet")
+    # Relations need targets only for their resolver diagnostics, which most lack.
+    with open(Path(out) / f"diagnostics-{index:05d}.pickle", "wb") as handle:
+        pickle.dump(diagnostics, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    return str(keys_path)
 
 
 def resolve_distinct(work: Path, source: str, library_dir, *, workers: int, chunk: int = 4096):
-    """Resolve every distinct entity observation once; returns resolution key paths and stats."""
+    """Resolve every distinct entity observation once and write its working-table rows."""
     out = work / "resolution"
     out.mkdir(exist_ok=True)
     keys = pq.read_table(work / "entities.parquet", columns=["key"])["key"].to_pylist()
@@ -96,74 +118,54 @@ def resolve_distinct(work: Path, source: str, library_dir, *, workers: int, chun
         for i, o in enumerate(range(0, len(keys), chunk))
     ]
     with mp.get_context("spawn").Pool(workers) as pool:
-        results = pool.map(_resolve_chunk, tasks, chunksize=1)
-    return [Path(p) for p, _ in results], [s for _, s in results], len(keys)
+        paths = pool.map(_resolve_chunk, tasks, chunksize=1)
+    return [Path(p) for p in paths], len(keys)
 
 
-class PrecomputedResolver:
-    """The writer's resolver interface over targets resolved in advance."""
+# -- relations -------------------------------------------------------------------
 
-    def __init__(self, targets: dict):
-        self.targets = targets
-
-    def resolve_entity_targets(self, entities, progress=False):
-        return {key: self.targets[key] for key in entities}
+# Event IDs only need to be unique: a row's relations get rid * EVENTS + n.
+EVENTS = 1 << 16
 
 
-# -- writing ---------------------------------------------------------------------
-
-
-def _write_shard(args):
-    shard, shards, work, source, dataset, predicate, library_dir, batch = args
+def _relation_chunk(args):
+    index, row_groups, work, source, dataset, predicate = args
     from omnipath_core.keys import relation_key
-    from omnipath_build.writer import ParquetWriter
+    from omnipath_build.writer import PAYLOAD_SCHEMA, REL_ANN, REL_INPUT, relation_rows
 
     work = Path(work)
-    targets = {}
-    for path in sorted((work / "resolution").glob("targets-*.pickle")):
+    resolved = {}
+    for path in sorted((work / "resolution").glob("diagnostics-*.pickle")):
         with open(path, "rb") as handle:
-            targets.update(pickle.load(handle))
-    resolver = PrecomputedResolver(targets)
-    writer = ParquetWriter(work / "shards" / f"shard-{shard:03d}", library_dir=library_dir)
-    try:
-        rows = pq.ParquetFile(work / "rows.parquet")
-        group = _Batch(source, dataset)
-        for row_group in range(rows.num_row_groups):
-            for row in rows.read_row_group(row_group).to_pylist():
-                if row["rid"] % shards != shard:
-                    continue
-                group.add(row, predicate, relation_key)
-                if len(group.relations) >= batch:
-                    writer.append_observations(group, resolver)
-                    group = _Batch(source, dataset)
-        if group.relations:
-            writer.append_observations(group, resolver)
-        return writer.seal_observation_shard()
-    except BaseException:
-        writer.abort()
-        raise
+            resolved.update(pickle.load(handle))
+    rows_file = pq.ParquetFile(work / "rows.parquet")
+    relations, annotations, payloads = [], [], []
+    for group in row_groups:
+        for row in rows_file.read_row_group(group).to_pylist():
+            batch = _Batch(source, dataset)
+            batch.add(row, predicate, relation_key)
+            for n, raw in enumerate(batch.relations):
+                relation, anns = relation_rows(raw, resolved, row["rid"] * EVENTS + n)
+                relations.append(relation)
+                annotations.extend(anns)
+            payloads.extend(batch.payloads)
+    out = work / "relations"
+    _write(relations, REL_INPUT, out / f"relations-{index:05d}.parquet")
+    _write(annotations, REL_ANN, out / f"relation_annotations-{index:05d}.parquet")
+    _write(payloads, PAYLOAD_SCHEMA, out / f"payloads-{index:05d}.parquet")
 
 
 class _Batch:
-    """The part of a SilverExtractor the writer reads: entities, relations, payloads."""
+    """The part of a SilverExtractor the writer reads, for one input row."""
 
     def __init__(self, source, dataset):
         self.source, self.dataset = source, dataset
-        self.entities: dict[str, RawEntityObservation] = {}
         self.relations: list[RawRelationObservation] = []
         self.payloads: list[dict] = []
 
-    def _entities(self, side):
-        for entity in side["entities"]:
-            if entity["key"] not in self.entities:
-                self.entities[entity["key"]] = _observation(entity, self.source)
-
     def add(self, row, predicate, relation_key):
         s, o = json.loads(row["s"]), json.loads(row["o"])
-        self._entities(s)
-        self._entities(o)
         row_id = row["row_id"]
-        start = len(self.relations)
         for side in (s, o):
             for r in side["relations"]:
                 self.relations.append(
@@ -175,12 +177,11 @@ class _Batch:
                         statement_kind=r["statement_kind"], annotations=_annotations(r["annotations"]),
                     )
                 )  # fmt: skip
-        annotations = [
+        annotations = _annotations(
             {"term": a["term"], "value": a["value"], "quantity": a.get("quantity"),
              "source": self.source, "dataset": self.dataset, "scope": "relation"}
             for a in json.loads(row["anns"])
-        ]  # fmt: skip
-        annotations = _annotations(annotations)
+        )  # fmt: skip
         annotations += _annotations(s["annotations"]) + _annotations(o["annotations"])
         key = relation_key(s["key"], predicate, o["key"], annotations)
         # Member relations precede the record's relation, as in SilverExtractor.
@@ -191,10 +192,10 @@ class _Batch:
                 row_id=row_id, upstream_id=row["upstream_id"], annotations=annotations,
             )
         )  # fmt: skip
-        for rel_key in dict.fromkeys(r.relation_key for r in self.relations[start:]):
+        for rel_key in dict.fromkeys(r.relation_key for r in self.relations):
             self.payloads.append(
-                {"relation_key": rel_key, "source": self.source, "row_id": row_id,
-                 "payload_json": row["payload_json"]}
+                {"relation_key": rel_key, "entity_key": None, "source": self.source,
+                 "row_id": row_id, "payload_json": row["payload_json"]}
             )  # fmt: skip
 
 
@@ -209,28 +210,56 @@ def _annotations(items):
     return out
 
 
+# -- writing ---------------------------------------------------------------------
+
+
 def write_resource(work: Path, target: Path, source, dataset, predicate, library_dir, resolution_paths,
-                   *, shards: int, batch: int = 20000, final_memory="16GB", final_threads=16):
-    """Write shards in parallel, then finalize them into ``target`` as the row path does."""
-    from omnipath_build.writer import ParquetWriter
+                   *, workers: int, final_memory="16GB", final_threads=16, payload_rows=100_000):
+    """Make relation rows in parallel, ingest all rows once, then finalize as the row path."""
+    from omnipath_build.writer import (
+        ENTITY_ANN, ENTITY_EVIDENCE_INPUT, ENTITY_INPUT, IDS_INPUT, REL_ANN, REL_INPUT,
+        ParquetWriter,
+    )  # fmt: skip
+
+    timings = {}
+    started = time.perf_counter()
+    (work / "relations").mkdir(exist_ok=True)
+    groups = list(range(pq.ParquetFile(work / "rows.parquet").num_row_groups))
+    tasks = [
+        (i, groups[i::workers], str(work), source, dataset, predicate)
+        for i in range(min(workers, len(groups)))
+    ]
+    with mp.get_context("spawn").Pool(len(tasks)) as pool:
+        pool.map(_relation_chunk, tasks, chunksize=1)
+    timings["relation_rows"] = time.perf_counter() - started
 
     started = time.perf_counter()
-    (work / "shards").mkdir(exist_ok=True)
-    tasks = [
-        (i, shards, str(work), source, dataset, predicate, str(library_dir), batch)
-        for i in range(shards)
-    ]
-    with mp.get_context("spawn").Pool(shards) as pool:
-        sealed = pool.map(_write_shard, tasks, chunksize=1)
-    written = time.perf_counter()
+    read = lambda directory, name, schema: pa.concat_tables(
+        [pq.read_table(p, schema=schema) for p in sorted((work / directory).glob(f"{name}-*.parquet"))]
+    )  # fmt: skip
     target.mkdir(parents=True, exist_ok=True)
     writer = ParquetWriter(target, library_dir=library_dir, memory_limit=final_memory)
     writer.set_threads(final_threads)
     try:
-        for shard in sealed:
-            writer.import_observation_shard(shard)
+        entities = read("resolution", "entities", ENTITY_INPUT)
+        writer.ingest_entities(
+            entities,
+            read("resolution", "identifiers", IDS_INPUT),
+            read("resolution", "entity_annotations", ENTITY_ANN),
+            read("resolution", "entity_evidence", ENTITY_EVIDENCE_INPUT),
+        )
+        writer.ingest_relations(
+            read("relations", "relations", REL_INPUT),
+            read("relations", "relation_annotations", REL_ANN),
+        )
+        for path in sorted((work / "relations").glob("payloads-*.parquet")):
+            for batch in pq.ParquetFile(path).iter_batches(batch_size=payload_rows):
+                writer.ingest_payloads(batch.to_pylist(), 0)
+        timings["ingest"] = time.perf_counter() - started
+        started = time.perf_counter()
         resolution = writer.resolution_summary(resolution_paths)
         outputs = writer.close()
+        timings["finalize"] = time.perf_counter() - started
     except BaseException:
         writer.abort()
         raise
@@ -239,4 +268,4 @@ def write_resource(work: Path, target: Path, source, dataset, predicate, library
         "resolved": writer.metrics.get("composition_complexes", 0),
     }
     (target / "resolution_stats.json").write_text(json.dumps(resolution, indent=2) + "\n")
-    return outputs, dict(write_shards=written - started, finalize=time.perf_counter() - written)
+    return outputs, timings

@@ -21,6 +21,14 @@ from omnipath_build.columnar.relations import RelationExecutor
 from omnipath_build.columnar.resolve import export_inputs, resolve_distinct, write_resource
 
 
+def _cpu():
+    """CPU seconds of this process and its finished children (pool workers, DuckDB threads)."""
+    import resource
+
+    own, children = resource.getrusage(resource.RUSAGE_SELF), resource.getrusage(resource.RUSAGE_CHILDREN)
+    return own.ru_utime + own.ru_stime + children.ru_utime + children.ru_stime
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("source")
@@ -38,15 +46,15 @@ def main():
     from omnipath_build.two_phase import load_mapper
 
     args.work.mkdir(parents=True, exist_ok=True)
-    timings = {}
-    clock = time.perf_counter()
+    timings, cpu_seconds = {}, {}
+    clock, cpu0 = time.perf_counter(), _cpu()
 
     def lap(name):
-        nonlocal clock
-        now = time.perf_counter()
-        timings[name] = round(now - clock, 1)
-        clock = now
-        print(f"{name:14s} {timings[name]:8.1f}s", flush=True)
+        nonlocal clock, cpu0
+        now, used = time.perf_counter(), _cpu()
+        timings[name], cpu_seconds[name] = round(now - clock, 1), round(used - cpu0, 1)
+        clock, cpu0 = now, used
+        print(f"{name:14s} {timings[name]:8.1f}s wall {cpu_seconds[name]:9.1f}s cpu", flush=True)
 
     _, found, _ = discover_datasets(source=args.source, datasets=[args.dataset])
     ds = found[0]
@@ -77,7 +85,7 @@ def main():
     if done.exists():
         paths = sorted((inputs / "resolution").glob("resolution_keys-*.parquet"))
     else:
-        paths, _, distinct = resolve_distinct(inputs, args.source, args.library_dir, workers=args.workers)
+        paths, distinct = resolve_distinct(inputs, args.source, args.library_dir, workers=args.workers)
         done.write_text(str(distinct))
         print(f"resolved {distinct:,} distinct entity observations", flush=True)
         lap("resolve")
@@ -86,12 +94,12 @@ def main():
     target = args.target / "resources" / args.source / "columnar"
     outputs, parts = write_resource(
         inputs, target, args.source, args.dataset, meta["predicate"], args.library_dir, paths,
-        shards=args.workers,
+        workers=args.workers,
     )
     timings.update({k: round(v, 1) for k, v in parts.items()})
     lap("write+finalize")
-    print(json.dumps(dict(rows=meta["rows"], tables=outputs["rows"], timings=timings), indent=2))
-    (args.work / "timings.json").write_text(json.dumps(timings, indent=2))
+    print(json.dumps(dict(rows=meta["rows"], tables=outputs["rows"], timings=timings, cpu=cpu_seconds), indent=2))
+    (args.work / "timings.json").write_text(json.dumps(dict(wall=timings, cpu=cpu_seconds), indent=2))
 
 
 if __name__ == "__main__":

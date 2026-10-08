@@ -202,6 +202,233 @@ def _resolution_annotations(targets):
     ]
 
 
+def entity_rows(old, raw, targets):
+    """Working-table input rows of one entity observation and its resolution targets:
+    (entities, identifiers, entity annotations, entity evidence)."""
+    entities, identifiers, entity_anns, entity_evidence = [], [], [], []
+    for info in targets:
+        # The reference namespace describes the grouping identity;
+        # it must not replace the source's molecular type.
+        et = entity_type(raw.entity_type)
+        policy = get_policy(et)
+        ns = normalize_namespace(info.canonical_namespace) or str(
+            info.canonical_namespace or "unknown"
+        )
+        taxon = info.taxon or raw.taxon or ""
+        reference_key = _reference_key(ns, info.canonical_identifier)
+        gene_keys = [reference_key] if ns == "entrez" else []
+        form = normalize_molecular_form(raw.molecular_form)
+        for product_type in ("protein", "transcript"):
+            product_ns = getattr(info, f"{product_type}_namespace", None)
+            product_id = getattr(info, f"{product_type}_identifier", None)
+            if not product_ns or not product_id or et == "gene":
+                continue
+            if product_type == "protein" and et not in PROTEIN_ENTITY_TYPES:
+                continue
+            if product_type == "transcript" and et not in RNA_ENTITY_TYPES:
+                continue
+            product_ns = normalize_namespace(product_ns) or product_ns
+            product_key = entity_key(product_type, product_ns, product_id)
+            form = normalize_molecular_form(
+                {**(form or {}), f"{product_type}_entity_key": product_key}
+            )
+            product_genes = list(
+                getattr(info, "protein_gene_candidates", ())
+                if product_type == "protein"
+                else gene_keys
+            )
+            product_genes = sorted(set(product_genes))
+            product_reference = (
+                product_genes[0]
+                if len(product_genes) == 1
+                else _reference_key(product_ns, product_id)
+            )
+            product_old = stable_hash("product-reference", old, product_key)
+            product_node = getattr(info, f"{product_type}_node_id", None)
+            entities.append(
+                dict(
+                    old_key=product_old,
+                    entity_type=product_type,
+                    namespace=product_ns,
+                    identifier=product_id,
+                    taxon=taxon,
+                    label=getattr(info, f"{product_type}_label", None)
+                    or (
+                        product_id
+                        if product_type == "protein" and product_node is None
+                        else info.label
+                    )
+                    or product_id,
+                    node_id=product_node,
+                    library=policy.library,
+                    scope="",
+                    scoped_name=False,
+                    scoped_symbol=False,
+                    reference_entity_key=product_reference,
+                    gene_reference_keys=product_genes,
+                    molecular_form=None,
+                )
+            )
+            for alias_ns, values in (getattr(info, f"{product_type}_aliases", {}) or {}).items():
+                alias_ns = normalize_namespace(alias_ns) or alias_ns
+                for value in values:
+                    if _form_specific_identifier(alias_ns, value) and (alias_ns, value) != (
+                        product_ns,
+                        product_id,
+                    ):
+                        continue
+                    identifiers.append(
+                        dict(
+                            old_key=product_old,
+                            target_ns=product_ns,
+                            target_id=product_id,
+                            ns=alias_ns,
+                            id=value,
+                            source="raw"
+                            if product_type == "protein" and product_node is None
+                            else "resolver",
+                        )
+                    )
+        entities.append(
+            dict(
+                old_key=old,
+                entity_type=et,
+                namespace=ns,
+                identifier=info.canonical_identifier,
+                taxon=taxon,
+                label=preferred_label(info.canonical_identifier, raw.label, info.label),
+                node_id=info.node_id,
+                library=info.reference_library or policy.library,
+                scope=raw.identity_scope or "",
+                scoped_name=not info.matched and ns in {"name", "synonym"},
+                scoped_symbol=bool(taxon)
+                and not info.matched
+                and (ns in policy.symbol_namespaces or ns == "guidetopharma_target"),
+                reference_entity_key=reference_key,
+                gene_reference_keys=gene_keys,
+                molecular_form=form,
+            )
+        )
+        for ident in raw.identifiers:
+            ident_ns = normalize_namespace(ident.get("ns", "")) or str(ident.get("ns", ""))
+            if _form_specific_identifier(ident_ns, ident["id"]) and (
+                ident_ns,
+                ident["id"],
+            ) != (ns, info.canonical_identifier):
+                continue
+            identifiers.append(
+                dict(
+                    old_key=old,
+                    target_ns=ns,
+                    target_id=info.canonical_identifier,
+                    ns=ident_ns,
+                    id=ident["id"],
+                    source=ident.get("source", "raw"),
+                )
+            )
+        for alias_ns, values in info.aliases.items():
+            ns_norm = normalize_namespace(alias_ns) or str(alias_ns)
+            identifiers.extend(
+                dict(
+                    old_key=old,
+                    target_ns=ns,
+                    target_id=info.canonical_identifier,
+                    ns=ns_norm,
+                    id=val,
+                    source="resolver",
+                )
+                for val in values
+                if not _form_specific_identifier(ns_norm, val)
+                or (ns_norm, val) == (ns, info.canonical_identifier)
+            )
+    entity_anns.extend(
+        dict(
+            old_key=old,
+            term=annotation_term(a.get("term", "")),
+            value=a.get("value", ""),
+            quantity=a.get("quantity"),
+            source=a.get("source", ""),
+            dataset=a.get("dataset", ""),
+        )
+        for a in raw.annotations
+    )
+    diagnostics = _resolution_annotations(targets)
+    entity_evidence.extend(
+        dict(
+            old_key=old,
+            item={**item, "annotations": [*(item.get("annotations") or []), *diagnostics]},
+        )
+        for item in raw.evidence
+    )
+    return entities, identifiers, entity_anns, entity_evidence
+
+
+def relation_rows(raw, resolved, event_id):
+    """Working-table input rows of one relation observation: (relation, annotations)."""
+    anns = [
+        {
+            **a,
+            "term": annotation_term(a["term"]),
+            "value": annotation_value(a["term"], a.get("value")) or "",
+        }
+        for a in raw.annotations
+    ]
+    for side, key in (
+        ("subject", raw.subject_entity_key),
+        ("object", raw.object_entity_key),
+    ):
+        anns.extend(
+            {**annotation, "scope": side}
+            for annotation in _resolution_annotations(resolved.get(key, ()))
+        )
+    _, pred, _, qualified = statement_identity("", raw.predicate, "", anns)
+    if raw.statement_kind not in {"relation", "ontology"}:
+        raise ValueError(f"Unknown statement kind: {raw.statement_kind}")
+    asserted_taxa = {
+        a["value"].removeprefix("NCBITaxon:")
+        for a in anns
+        if a["term"] == "in_taxon" and a.get("scope", "relation") == "relation"
+    }
+    # The scalar serving taxon is a consensus projection; evidence retains every assertion.
+    asserted_taxon = next(iter(asserted_taxa)) if len(asserted_taxa) == 1 else ""
+    directed = not is_symmetric(pred)
+    sign = direction_sign_from_qualifiers(qualified)
+    relation = dict(
+        old_key=raw.relation_key,
+        subject=raw.subject_entity_key,
+        object=raw.object_entity_key,
+        predicate=pred,
+        asserted_taxon=asserted_taxon,
+        qualified=str(qualified),
+        statement_kind=raw.statement_kind,
+        is_directed=directed,
+        sign=sign,
+        category=presentation_category(pred),
+        interaction_class="undirected"
+        if not directed
+        else {1: "directed_stimulatory", -1: "directed_inhibitory", 0: "directed"}[sign],
+        source=str(raw.source),
+        dataset=str(raw.dataset),
+        row_id=str(raw.row_id),
+        upstream_id=str(raw.upstream_id),
+        event_id=event_id,
+    )
+    relation_anns = list(
+        dict(
+            event_id=event_id,
+            ordinal=i,
+            term=str(a.get("term", "")),
+            value=str(a.get("value", "")),
+            quantity=a.get("quantity"),
+            source=str(a.get("source", "")),
+            dataset=str(a.get("dataset", "")),
+            scope=str(a.get("scope", "relation")),
+        )
+        for i, a in enumerate(anns)
+    )
+    return relation, relation_anns
+
+
 class ParquetWriter:
     """Persist narrow working tables, resolve endpoints in SQL, aggregate at close."""
 
@@ -244,7 +471,8 @@ class ParquetWriter:
         self._initialized = set()
 
     def _input(self, name, rows, schema):
-        self._db.register(name, pa.Table.from_pylist(rows, schema=schema))
+        table = rows if isinstance(rows, pa.Table) else pa.Table.from_pylist(rows, schema=schema)
+        self._db.register(name, table)
 
     def _append(self, name, sql):
         if name not in self._initialized:
@@ -257,162 +485,24 @@ class ParquetWriter:
         resolved = resolver.resolve_entity_targets(extractor.entities, progress=False)
         entities, identifiers, entity_anns, entity_evidence = [], [], [], []
         for old, raw in extractor.entities.items():
-            for info in resolved[old]:
-                # The reference namespace describes the grouping identity;
-                # it must not replace the source's molecular type.
-                et = entity_type(raw.entity_type)
-                policy = get_policy(et)
-                ns = normalize_namespace(info.canonical_namespace) or str(
-                    info.canonical_namespace or "unknown"
-                )
-                taxon = info.taxon or raw.taxon or ""
-                reference_key = _reference_key(ns, info.canonical_identifier)
-                gene_keys = [reference_key] if ns == "entrez" else []
-                form = normalize_molecular_form(raw.molecular_form)
-                for product_type in ("protein", "transcript"):
-                    product_ns = getattr(info, f"{product_type}_namespace", None)
-                    product_id = getattr(info, f"{product_type}_identifier", None)
-                    if not product_ns or not product_id or et == "gene":
-                        continue
-                    if product_type == "protein" and et not in PROTEIN_ENTITY_TYPES:
-                        continue
-                    if product_type == "transcript" and et not in RNA_ENTITY_TYPES:
-                        continue
-                    product_ns = normalize_namespace(product_ns) or product_ns
-                    product_key = entity_key(product_type, product_ns, product_id)
-                    form = normalize_molecular_form(
-                        {**(form or {}), f"{product_type}_entity_key": product_key}
-                    )
-                    product_genes = list(
-                        getattr(info, "protein_gene_candidates", ())
-                        if product_type == "protein"
-                        else gene_keys
-                    )
-                    product_genes = sorted(set(product_genes))
-                    product_reference = (
-                        product_genes[0]
-                        if len(product_genes) == 1
-                        else _reference_key(product_ns, product_id)
-                    )
-                    product_old = stable_hash("product-reference", old, product_key)
-                    product_node = getattr(info, f"{product_type}_node_id", None)
-                    entities.append(
-                        dict(
-                            old_key=product_old,
-                            entity_type=product_type,
-                            namespace=product_ns,
-                            identifier=product_id,
-                            taxon=taxon,
-                            label=getattr(info, f"{product_type}_label", None)
-                            or (
-                                product_id
-                                if product_type == "protein" and product_node is None
-                                else info.label
-                            )
-                            or product_id,
-                            node_id=product_node,
-                            library=policy.library,
-                            scope="",
-                            scoped_name=False,
-                            scoped_symbol=False,
-                            reference_entity_key=product_reference,
-                            gene_reference_keys=product_genes,
-                            molecular_form=None,
-                        )
-                    )
-                    for alias_ns, values in (
-                        getattr(info, f"{product_type}_aliases", {}) or {}
-                    ).items():
-                        alias_ns = normalize_namespace(alias_ns) or alias_ns
-                        for value in values:
-                            if _form_specific_identifier(alias_ns, value) and (alias_ns, value) != (
-                                product_ns,
-                                product_id,
-                            ):
-                                continue
-                            identifiers.append(
-                                dict(
-                                    old_key=product_old,
-                                    target_ns=product_ns,
-                                    target_id=product_id,
-                                    ns=alias_ns,
-                                    id=value,
-                                    source="raw"
-                                    if product_type == "protein" and product_node is None
-                                    else "resolver",
-                                )
-                            )
-                entities.append(
-                    dict(
-                        old_key=old,
-                        entity_type=et,
-                        namespace=ns,
-                        identifier=info.canonical_identifier,
-                        taxon=taxon,
-                        label=preferred_label(info.canonical_identifier, raw.label, info.label),
-                        node_id=info.node_id,
-                        library=info.reference_library or policy.library,
-                        scope=raw.identity_scope or "",
-                        scoped_name=not info.matched and ns in {"name", "synonym"},
-                        scoped_symbol=bool(taxon)
-                        and not info.matched
-                        and (ns in policy.symbol_namespaces or ns == "guidetopharma_target"),
-                        reference_entity_key=reference_key,
-                        gene_reference_keys=gene_keys,
-                        molecular_form=form,
-                    )
-                )
-                for ident in raw.identifiers:
-                    ident_ns = normalize_namespace(ident.get("ns", "")) or str(ident.get("ns", ""))
-                    if _form_specific_identifier(ident_ns, ident["id"]) and (
-                        ident_ns,
-                        ident["id"],
-                    ) != (ns, info.canonical_identifier):
-                        continue
-                    identifiers.append(
-                        dict(
-                            old_key=old,
-                            target_ns=ns,
-                            target_id=info.canonical_identifier,
-                            ns=ident_ns,
-                            id=ident["id"],
-                            source=ident.get("source", "raw"),
-                        )
-                    )
-                for alias_ns, values in info.aliases.items():
-                    ns_norm = normalize_namespace(alias_ns) or str(alias_ns)
-                    identifiers.extend(
-                        dict(
-                            old_key=old,
-                            target_ns=ns,
-                            target_id=info.canonical_identifier,
-                            ns=ns_norm,
-                            id=val,
-                            source="resolver",
-                        )
-                        for val in values
-                        if not _form_specific_identifier(ns_norm, val)
-                        or (ns_norm, val) == (ns, info.canonical_identifier)
-                    )
-            entity_anns.extend(
-                dict(
-                    old_key=old,
-                    term=annotation_term(a.get("term", "")),
-                    value=a.get("value", ""),
-                    quantity=a.get("quantity"),
-                    source=a.get("source", ""),
-                    dataset=a.get("dataset", ""),
-                )
-                for a in raw.annotations
-            )
-            diagnostics = _resolution_annotations(resolved[old])
-            entity_evidence.extend(
-                dict(
-                    old_key=old,
-                    item={**item, "annotations": [*(item.get("annotations") or []), *diagnostics]},
-                )
-                for item in raw.evidence
-            )
+            for rows, part in zip(
+                (entities, identifiers, entity_anns, entity_evidence),
+                entity_rows(old, raw, resolved[old]),
+            ):
+                rows.extend(part)
+        self.ingest_entities(entities, identifiers, entity_anns, entity_evidence)
+        relations, relation_anns = [], []
+        for raw in extractor.relations:
+            relation, anns = relation_rows(raw, resolved, self._event_id)
+            self._event_id += 1
+            relations.append(relation)
+            relation_anns.extend(anns)
+        self.ingest_relations(relations, relation_anns)
+        return self.ingest_payloads(extractor.payloads, len(entities), on_progress)
+
+    def ingest_entities(self, entities, identifiers, entity_anns, entity_evidence):
+        """Add entity input rows (lists of dicts or Arrow tables) to the working tables;
+        leaves ``entity_map`` (observation key to entity key) for the relations."""
         self._input("input_entities", entities, ENTITY_INPUT)
         self._db.execute("""CREATE OR REPLACE TEMP TABLE entity_map AS
             WITH base AS (SELECT *, sha256(lower(trim(entity_type)) || chr(0) || lower(trim(namespace)) || chr(0) ||
@@ -452,75 +542,9 @@ class ParquetWriter:
                FROM input_entity_evidence a JOIN entity_map e ON a.old_key=e.old_key""",
         )
 
-        relations, relation_anns = [], []
-        for raw in extractor.relations:
-            event_id = self._event_id
-            self._event_id += 1
-            anns = [
-                {
-                    **a,
-                    "term": annotation_term(a["term"]),
-                    "value": annotation_value(a["term"], a.get("value")) or "",
-                }
-                for a in raw.annotations
-            ]
-            for side, key in (
-                ("subject", raw.subject_entity_key),
-                ("object", raw.object_entity_key),
-            ):
-                anns.extend(
-                    {**annotation, "scope": side}
-                    for annotation in _resolution_annotations(resolved.get(key, ()))
-                )
-            _, pred, _, qualified = statement_identity("", raw.predicate, "", anns)
-            if raw.statement_kind not in {"relation", "ontology"}:
-                raise ValueError(f"Unknown statement kind: {raw.statement_kind}")
-            asserted_taxa = {
-                a["value"].removeprefix("NCBITaxon:")
-                for a in anns
-                if a["term"] == "in_taxon" and a.get("scope", "relation") == "relation"
-            }
-            # The scalar serving taxon is a consensus projection; evidence retains every assertion.
-            asserted_taxon = next(iter(asserted_taxa)) if len(asserted_taxa) == 1 else ""
-            directed = not is_symmetric(pred)
-            sign = direction_sign_from_qualifiers(qualified)
-            relations.append(
-                dict(
-                    old_key=raw.relation_key,
-                    subject=raw.subject_entity_key,
-                    object=raw.object_entity_key,
-                    predicate=pred,
-                    asserted_taxon=asserted_taxon,
-                    qualified=str(qualified),
-                    statement_kind=raw.statement_kind,
-                    is_directed=directed,
-                    sign=sign,
-                    category=presentation_category(pred),
-                    interaction_class="undirected"
-                    if not directed
-                    else {1: "directed_stimulatory", -1: "directed_inhibitory", 0: "directed"}[
-                        sign
-                    ],
-                    source=str(raw.source),
-                    dataset=str(raw.dataset),
-                    row_id=str(raw.row_id),
-                    upstream_id=str(raw.upstream_id),
-                    event_id=event_id,
-                )
-            )
-            relation_anns.extend(
-                dict(
-                    event_id=event_id,
-                    ordinal=i,
-                    term=str(a.get("term", "")),
-                    value=str(a.get("value", "")),
-                    quantity=a.get("quantity"),
-                    source=str(a.get("source", "")),
-                    dataset=str(a.get("dataset", "")),
-                    scope=str(a.get("scope", "relation")),
-                )
-                for i, a in enumerate(anns)
-            )
+    def ingest_relations(self, relations, relation_anns):
+        """Add relation input rows to the working tables; leaves ``relation_map`` and
+        ``payload_relation_map`` for the payloads."""
         self._input("input_relations", relations, REL_INPUT)
         self._db.execute("""CREATE OR REPLACE TEMP TABLE relation_map AS
             WITH endpoints AS (
@@ -563,11 +587,14 @@ class ParquetWriter:
         self._db.execute("""CREATE OR REPLACE TEMP TABLE payload_relation_map AS
             SELECT DISTINCT old_key, relation_key AS new_key
             FROM relation_map""")
+
+    def ingest_payloads(self, payloads, entity_count, on_progress=None):
+        """Write evidence payload rows with their final keys; returns the chunk counts."""
         payload_written = 0
         payload_output_rows = 0
-        for payload_rows in _payload_batches(extractor.payloads):
+        for payload_rows in _payload_batches(payloads):
             if on_progress:
-                on_progress(payload_written, len(extractor.payloads))
+                on_progress(payload_written, len(payloads))
             # Only endpoint keys enter SQL. The JSON dictionary stays in Arrow.
             narrow = [
                 {key: value for key, value in row.items() if key != "payload_json"}
@@ -595,11 +622,11 @@ class ParquetWriter:
             payload_written += len(payload_rows)
             payload_output_rows += table.num_rows
         if on_progress:
-            on_progress(payload_written, len(extractor.payloads))
-        if not extractor.payloads:
+            on_progress(payload_written, len(payloads))
+        if not payloads:
             self._input("input_payloads", [], PAYLOAD_SCHEMA.remove(4))
         counts = (
-            len(entities),
+            entity_count,
             self._db.execute("SELECT count(*) FROM relation_map").fetchone()[0],
             payload_output_rows,
         )
