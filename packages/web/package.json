@@ -55,6 +55,7 @@
   },
   "dependencies": {
     "@tanstack/svelte-query": "^6.1.20",
+    "marked": "^18.1.0",
     "mode-watcher": "^1.1.0",
     "openchemlib": "^9.20.0",
     "svelte-sonner": "^1.1.1",

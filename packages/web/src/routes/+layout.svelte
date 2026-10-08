@@ -8,7 +8,7 @@
 
   let { children } = $props();
   const isWorkspace = $derived(
-    ['/explore', '/selection', '/resources'].includes(page.url.pathname),
+    ['/explore', '/selection', '/resources', '/skills'].includes(page.url.pathname),
   );
 </script>
 
