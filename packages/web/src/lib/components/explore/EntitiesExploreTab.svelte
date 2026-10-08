@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { getUiPreferences } from '$lib/stores/ui-preferences.svelte';
   import EntityResultsList from '$lib/components/entity/EntityResultsList.svelte';
   import EntityResultCard from '$lib/components/entity/EntityResultCard.svelte';
   import ExplorerWorkspace from '$lib/components/workspace/ExplorerWorkspace.svelte';
@@ -38,7 +39,6 @@
 
   interface Props {
     query: string;
-    groupResults?: boolean;
     filters: SearchFilters;
     onFiltersChange: (filters: SearchFilters) => void;
     selectedEntityIds?: string[];
@@ -46,14 +46,8 @@
     selectedAnnotationIds?: string[];
   }
 
-  let {
-    query,
-    groupResults = $bindable(false),
-    filters,
-    onFiltersChange,
-    selectedEntityPks,
-    selectedAnnotationIds,
-  }: Props = $props();
+  let { query, filters, onFiltersChange, selectedEntityPks, selectedAnnotationIds }: Props =
+    $props();
 
   const isMobile = new IsMobile();
   const RESULTS_PER_PAGE = 20;
@@ -67,6 +61,7 @@
   }
 
   type EntityResult = EntityWithIdentifiers;
+  type ExamplesPage = Awaited<ReturnType<typeof fetchEntityExamples>>;
 
   const GROUP_EXPLANATION =
     'Group genes and their products by gene reference, and chemicals by connectivity. Source types and molecular evidence stay distinct. Entities without an unambiguous grouping stay separate.';
@@ -168,9 +163,11 @@
     };
   });
 
+  // Grouping is a remembered preference, shared by the explorer and the selection.
+  const preferences = getUiPreferences();
+  const groupResults = $derived(preferences.groupResults);
   const showExamples = $derived(
     !query.trim() &&
-      !groupResults &&
       !selectedEntityPks &&
       !selectedAnnotationIds &&
       !Object.values(effectiveFilters).some((value) =>
@@ -188,7 +185,7 @@
   );
   $effect(() => {
     const [, q, f, grouped, examples] = JSON.parse(searchKey);
-    if (grouped) return;
+    if (grouped && !examples) return; // EntityGroups searches on its own
     const controller = new AbortController();
     const current = ++searchGeneration;
 
@@ -208,7 +205,10 @@
     )
       .then((data) => {
         if (current !== searchGeneration) return;
-        results = data.entities as unknown as EntityResult[];
+        const groups = grouped && examples ? (data as ExamplesPage).groups : null;
+        results = (groups
+          ? groups.map((group) => group.entity)
+          : data.entities) as unknown as EntityResult[];
         cursor = data.nextCursor;
         hasMore = data.nextCursor !== null;
       })
@@ -529,7 +529,7 @@
 
 {#snippet groupToggle()}
   <GroupToggle
-    bind:pressed={groupResults}
+    bind:pressed={() => preferences.groupResults, (pressed) => preferences.setGroupResults(pressed)}
     explanation={GROUP_EXPLANATION}
     class={isMobile.current ? 'h-9' : 'h-5'}
   />
@@ -541,12 +541,12 @@
       <div class="px-4 pt-4 pb-3">
         <h2 class="text-lg font-semibold">Explore some examples</h2>
         <p class="text-sm text-muted-foreground">
-          Start with a familiar molecule, protein or pathway, or search and filter the full
+          Start with a gene, molecule, pathway, disease or reaction, or search and filter the full
           collection.
         </p>
       </div>
     {/if}
-    {#if groupResults}
+    {#if groupResults && !showExamples}
       <EntityGroups {query} filters={effectiveFilters} renderMember={resultCard} />
     {:else if loading && results.length === 0}
       <EntityResultsList>

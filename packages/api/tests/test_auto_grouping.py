@@ -121,11 +121,13 @@ def test_auto_combines_groups_and_preserves_all_singletons(mixed_engine):
     assert chemical["entity"]["groupStrategy"] == "chemical_connectivity"
     assert chemical["entity"]["canonicalIdentifierType"] == "connectivity"
     assert chemical["entity"]["entityType"] == "small_molecule"
-    # The preferred one of the members' resolver labels.
-    assert chemical["entity"]["displayName"] == "Stereo B"
+    # The most connected well-named member: only "Alias chemical" has a relation.
+    assert chemical["entity"]["displayName"] == "Alias chemical"
     assert chemical["entity"]["entityAttributes"] is None
     assert gene["entity"]["groupStrategy"] == "gene_reference"
     assert gene["entity"]["memberEntityTypes"] == ["gene", "protein", "rna_product"]
+    # named by its gene, not by a product
+    assert gene["entity"]["displayName"] == "Needle gene"
     expected_singletons = {
         r["entity_key"]
         for name, r in records.items()
@@ -305,12 +307,9 @@ def test_warming_fills_the_cache_the_explorer_reads(mixed_engine):
     client = TestClient(create_app(engine=engine))
     warm(engine)
     engine._fetch_dicts = lambda *a, **kw: (_ for _ in ()).throw(AssertionError("not warmed"))
-    # The body EntityGroups.svelte sends for the first page.
-    response = client.post(
-        "/entities/groups",
-        json={"strategy": "auto", "query": "", "filters": {}, "member_limit": 1},
-    )
-    assert response.status_code == 200 and response.json()["groups"]
+    # The explorer's landing page reads the curated examples.
+    response = client.get("/entities/examples")
+    assert response.status_code == 200 and response.json()["kind"] == "examples"
 
 
 def test_gene_group_details_combine_their_members_annotations(mixed_engine):

@@ -11,11 +11,8 @@ logger = logging.getLogger(__name__)
 
 def default_requests():
     """(engine method, arguments) as the explorer's routes pass them, so the cache matches."""
-    from omnipath_api.models import EntityGroupsRequest
-
-    # EntityGroups.svelte without a query: automatic grouping, one member per card.
-    groups = EntityGroupsRequest(strategy="auto", member_limit=1).model_dump()
-    return [("search_entity_groups", groups)]
+    # The explorer's landing page: curated examples, as entities and as groups.
+    return [("get_entity_examples", {})]
 
 
 def warm(engine):

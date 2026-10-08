@@ -488,6 +488,49 @@
         "title": "EntityDetailsResponse",
         "type": "object"
       },
+      "EntityExamplesResponse": {
+        "additionalProperties": true,
+        "description": "The explorer's landing examples, as entities and as the grouped view's cards.",
+        "properties": {
+          "entities": {
+            "items": {
+              "$ref": "#/components/schemas/EntitySummary"
+            },
+            "title": "Entities",
+            "type": "array"
+          },
+          "groups": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Groups",
+            "type": "array"
+          },
+          "kind": {
+            "default": "examples",
+            "title": "Kind",
+            "type": "string"
+          },
+          "nextCursor": {
+            "title": "Nextcursor",
+            "type": "null"
+          },
+          "total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total"
+          }
+        },
+        "title": "EntityExamplesResponse",
+        "type": "object"
+      },
       "EntityFilterOptions": {
         "additionalProperties": true,
         "properties": {
@@ -4613,7 +4656,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/EntitySearchResponse"
+                  "$ref": "#/components/schemas/EntityExamplesResponse"
                 }
               }
             },

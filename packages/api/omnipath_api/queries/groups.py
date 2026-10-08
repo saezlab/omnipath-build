@@ -15,6 +15,7 @@ import time
 
 from omnipath_api.models import normalize_filters
 from omnipath_api.shape.display_name import display_name, preferred_name
+from omnipath_core.display_names import name_rank
 
 
 def _agreed(column):
@@ -210,7 +211,7 @@ def _search_groups(
         if group["connectivity"]:
             entity = _chemical_card(engine, group, members, summaries, include_details)
         elif group["reference_entity_key"]:
-            entity = _gene_card(group, summaries)
+            entity = _gene_card(group, members, summaries)
         else:
             entity = summaries[0]
         is_group = bool(group["connectivity"] or group["reference_entity_key"])
@@ -261,7 +262,7 @@ def _chemical_card(engine, group, members, summaries, include_details):
         identifiers=identifiers,
         identifiersTotal=len(identifiers),
         sources=sorted({s for summary in summaries for s in summary["sources"]}),
-        displayName=preferred_name(s["label"] for s in summaries) or display_name(entity),
+        displayName=_card_name(members, summaries) or display_name(entity),
         canonicalIdentifier=group["connectivity"],
         canonicalIdentifierType="connectivity",
         primaryNamespace="connectivity",
@@ -282,10 +283,26 @@ def _chemical_card(engine, group, members, summaries, include_details):
     return entity
 
 
-def _gene_card(group, summaries):
+def _card_name(members, summaries):
+    """A group's name: the label of its most connected well-named member, so a structure
+    group of 52 hexoses is 'D-Glucose', not the shortest name among them ('Allose')."""
+    named = [
+        (-int(member.get("relation_count") or 0), name_rank(summary["label"]), summary["label"])
+        for member, summary in zip(members, summaries)
+        if summary.get("label") and name_rank(summary["label"])[0] < 8
+    ]
+    return min(named)[2] if named else preferred_name(s["label"] for s in summaries)
+
+
+def _gene_card(group, members, summaries):
     """A gene group: annotations, identifiers and sources of every member; a gene's
-    function text sits on the protein record resolved to it, not on the first member."""
-    entity = dict(summaries[0])
+    function text sits on the protein record resolved to it, not on the first member.
+    It is named by its gene, not by a product's entry name (Q53GA5_HUMAN)."""
+    genes = [i for i, s in enumerate(summaries) if s["entityType"] == "gene"]
+    entity = dict(summaries[genes[0]] if genes else summaries[0])
+    entity["displayName"] = (
+        summaries[genes[0]]["displayName"] if genes else _card_name(members, summaries)
+    ) or entity.get("displayName")
     identifiers = _union(summaries, "identifiers", lambda i: (i["identifierType"], i["identifier"]))
     attributes = _union(
         summaries, "entityAttributes", lambda a: json.dumps(a, sort_keys=True, default=str)

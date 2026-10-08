@@ -11,6 +11,7 @@ import {
 import type {
   Declared,
   WireEntities,
+  WireEntity,
   WireEntitySearch,
   WireRelationSearch,
   WireFacet,
@@ -47,10 +48,20 @@ export async function fetchSelectionScope(
   return res.json() as Promise<SelectionScopeResponse>;
 }
 
+/** Landing examples: entities, and the group cards the grouped view shows instead. */
 export async function fetchEntityExamples(signal?: AbortSignal) {
   const response = await releaseFetch('/app-api/entities/examples', { signal });
   if (!response.ok) throw new Error('Failed to load examples');
-  return entitySearchFromWire((await response.json()) as WireEntitySearch);
+  const body = (await response.json()) as WireEntitySearch & {
+    groups?: Array<{ entity: Pick<WireEntity, 'entityPk'> & Partial<WireEntity> }>;
+  };
+  return {
+    ...entitySearchFromWire(body),
+    groups: (body.groups ?? []).map((group) => ({
+      ...group,
+      entity: entityFromWire(group.entity),
+    })),
+  };
 }
 
 export async function fetchEntitiesSearch(

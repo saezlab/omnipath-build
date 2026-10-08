@@ -13,7 +13,6 @@
 
   let inputRef = $state<HTMLInputElement | null>(null);
   let draftQuery = $state('');
-  let groupResults = $state(true);
   let entityFilters = $state<SearchFilters>({});
   let interactionFilters = $state<SearchFilters>({});
   let selectionSheetOpen = $state(false);
@@ -138,7 +137,6 @@
     {#if tab === 'entity'}
       <EntitiesExploreTab
         {query}
-        bind:groupResults
         filters={entityMatchFilters}
         onFiltersChange={(f) => updateFilters(f)}
       />

@@ -251,6 +251,16 @@ class EntitySearchResponse(APIModel):
     count: int | None = None
 
 
+class EntityExamplesResponse(APIModel):
+    """The explorer's landing examples, as entities and as the grouped view's cards."""
+
+    entities: list[EntitySummary] = Field(default_factory=list)
+    groups: list[dict[str, Any]] = Field(default_factory=list)
+    nextCursor: None = None
+    total: int | None = None
+    kind: str = "examples"
+
+
 class EntitySearchRequest(APIModel):
     query: str = ""
     q: str = ""

@@ -10,29 +10,67 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Ordered suggestions, with exact label alternatives. Missing examples are skipped.
-SUGGESTIONS = [
-    (("aspirin",), "chemical_entity", ""),
-    (("glucose", "d-glucose"), "chemical_entity", ""),
-    (("caffeine",), "chemical_entity", ""),
-    (("atp", "adenosine triphosphate"), "chemical_entity", ""),
-    (("cholesterol",), "chemical_entity", ""),
-    (("lactate", "l-lactate"), "chemical_entity", ""),
-    (("tp53",), "protein", "9606"),
-    (("egfr",), "protein", "9606"),
-    (("akt1",), "protein", "9606"),
-    (("ins", "insulin"), "protein", "9606"),
-    (("glycolysis", "glycolysis / gluconeogenesis"), "pathway", ""),
-    (("apoptosis",), "pathway", ""),
-]
+# One example per kind of entity, in landing-page order, by identifier: labels are not
+# unique ('lactate' also names a wax ester). Examples missing from a release are skipped.
+EXAMPLES = (
+    "entrez:7157",  # TP53 (gene, with its products)
+    "CHEBI:15422",  # ATP
+    "R-HSA-70171",  # Glycolysis (Reactome pathway)
+    "MONDO:0005148",  # type 2 diabetes mellitus
+    "entrez:3630",  # insulin
+    "CHEBI:17234",  # glucose
+    "LMGP01010005",  # POPC (a phosphatidylcholine)
+    "GO:0006915",  # apoptotic process
+    "MIMAT0000076",  # hsa-miR-21-5p
+    "entrez:1956",  # EGFR
+    "CHEBI:16113",  # cholesterol
+    "HP:0000822",  # hypertension (phenotype)
+    "CHEBI:15365",  # aspirin
+    "RHEA:16505",  # hexokinase: D-glucose + ATP = D-glucose 6-phosphate + ADP
+    "CHEBI:27732",  # caffeine
+    "CPX-3087",  # MTORC1 complex
+)
+
+
+def _example(engine, token):
+    """The entity an example identifier names: the one carrying it as its own identifier,
+    else the most connected one resolved from it."""
+    keys = engine.resolve_entity_keys([token])
+    if not keys:
+        return None
+    rows = engine._fetch_entities_by_keys(keys, slim=True)
+    _, _, local = token.partition(":")
+    own = {token.lower(), local.lower()}
+    return min(
+        rows,
+        key=lambda r: (
+            str(r.get("identifier") or "").lower() not in own,
+            -int(r.get("relation_count") or 0),
+            r["entity_key"],
+        ),
+        default=None,
+    )
+
+
+def _group_key(row, chemical_types):
+    """The ``auto`` grouping of one entity (see ``queries.groups``)."""
+    if row.get("entity_type") in chemical_types and row.get("group_connectivity"):
+        return "connectivity:" + row["group_connectivity"]
+    reference = str(row.get("reference_entity_key") or "")
+    if row.get("entity_type") not in chemical_types and reference.startswith("entrez:"):
+        return "gene:" + reference
+    return "entity:" + row["entity_key"]
 
 
 def get_examples(engine):
+    """Landing-page examples, as entities and as the groups the grouped view shows."""
+    from omnipath_api.queries.groups import chemical_types, search_groups
+
     infos = engine._selected_resource_infos()
     identity = [
         [info["key"] for info in infos],
         engine._inventory_fingerprint,
-        SUGGESTIONS,
+        EXAMPLES,
         engine._release_scope.get(),
         engine._taxonomy_cache_version(),
         [m.get("references") for m in engine.releases.list()],
@@ -40,38 +78,27 @@ def get_examples(engine):
     key = hashlib.sha256(json.dumps(identity, sort_keys=True, default=str).encode()).hexdigest()
 
     def load():
-        target = engine.data_root / ".presentation" / "examples-v1" / (key + ".json")
+        target = engine.data_root / ".presentation" / "examples-v2" / (key + ".json")
         try:
             return json.loads(target.read_text())
         except FileNotFoundError:
             pass
         except (OSError, ValueError):
             logger.warning("Cannot load example cache %s", target, exc_info=True)
-        entities = []
-        if infos:
-            wanted = [
-                (rank, label, kind, taxon)
-                for rank, (labels, kind, taxon) in enumerate(SUGGESTIONS)
-                for label in labels
-            ]
-            placeholders = ",".join("(?,?,?,?)" for _ in wanted)
-            read = engine._table("entity")
-            rows = engine._db.execute(
-                f"""WITH wanted(rank,label,kind,taxon) AS (VALUES {placeholders})
-                SELECT wanted.rank, e.entity_key FROM {read} e JOIN wanted
-                ON lower(e.label)=wanted.label AND e.entity_type=wanted.kind
-                   AND (wanted.taxon='' OR e.taxon=wanted.taxon)
-                QUALIFY row_number() OVER (PARTITION BY wanted.rank ORDER BY
-                    CASE WHEN e.namespace IN ('uniprot','inchikey') THEN 0 ELSE 1 END, e.entity_key)=1
-                ORDER BY wanted.rank""",
-                [v for row in wanted for v in row],
-            ).fetchall()
-            keys = list(dict.fromkeys(row[1] for row in rows))
-            hydrated = {
-                row["entity_key"]: row for row in engine._fetch_entities_by_keys(keys, slim=True)
-            }
-            entities = [engine._to_entity_summary(hydrated[key]) for key in keys if key in hydrated]
-        result = dict(entities=entities, nextCursor=None, total=len(entities), kind="examples")
+        rows = [row for token in (EXAMPLES if infos else ()) if (row := _example(engine, token))]
+        rows = list({row["entity_key"]: row for row in rows}.values())
+        types = set(chemical_types())
+        groups = []
+        for group_key in dict.fromkeys(_group_key(row, types) for row in rows):
+            found = search_groups(engine, strategy="auto", group_key=group_key, member_limit=1)
+            groups.extend(found["groups"][:1])
+        result = dict(
+            entities=[engine._to_entity_summary(row) for row in rows],
+            groups=groups,
+            nextCursor=None,
+            total=len(rows),
+            kind="examples",
+        )
         if engine.read_only:
             return result
         # A read-only data mount can still serve/cache examples in memory.
@@ -80,7 +107,7 @@ def get_examples(engine):
             target.parent.mkdir(parents=True, exist_ok=True)
             with tempfile.NamedTemporaryFile(mode="w", dir=target.parent, delete=False) as handle:
                 staging = Path(handle.name)
-                json.dump(result, handle)
+                json.dump(result, handle, default=str)
             os.replace(staging, target)
         except OSError:
             logger.warning("Cannot persist optional example cache %s", target, exc_info=True)

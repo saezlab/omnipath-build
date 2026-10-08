@@ -8,6 +8,7 @@ from omnipath_api.models import (
     EntityGroupsRequest,
     GroupRelationshipsRequest,
     EntityDetailsResponse,
+    EntityExamplesResponse,
     EntityFilterOptions,
     EntityPksRequest,
     EntityPublicIdsRequest,
@@ -144,7 +145,7 @@ def scoped_entity_facets(
     return _call(request, "get_scoped_entity_facets", _dump(payload))
 
 
-@router.get("/entities/examples", response_model=EntitySearchResponse, tags=["entities"])
+@router.get("/entities/examples", response_model=EntityExamplesResponse, tags=["entities"])
 def entity_examples(request: Request) -> dict[str, Any]:
     """Curated landing suggestions from the selected release; not a search page."""
     return _call(request, "get_entity_examples")

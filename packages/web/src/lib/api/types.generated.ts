@@ -1213,6 +1213,29 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /**
+         * EntityExamplesResponse
+         * @description The explorer's landing examples, as entities and as the grouped view's cards.
+         */
+        EntityExamplesResponse: {
+            /** Entities */
+            entities?: components["schemas"]["EntitySummary"][];
+            /** Groups */
+            groups?: {
+                [key: string]: unknown;
+            }[];
+            /**
+             * Kind
+             * @default examples
+             */
+            kind: string;
+            /** Nextcursor */
+            nextCursor?: null;
+            /** Total */
+            total?: number | null;
+        } & {
+            [key: string]: unknown;
+        };
         /** EntityFilterOptions */
         EntityFilterOptions: {
             /** Entity Types */
@@ -2967,7 +2990,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["EntitySearchResponse"];
+                    "application/json": components["schemas"]["EntityExamplesResponse"];
                 };
             };
             /** @description Internal Server Error */

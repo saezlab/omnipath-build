@@ -6,7 +6,7 @@ from omnipath_api.store.inventory import ReleaseStore
 from omnipath_core.fixtures import write_resource
 
 
-def write(root, version, label, key, kind="chemical_entity", taxon=None):
+def write(root, version, label, key, curie, kind="chemical_entity", taxon=None):
     entity = dict(
         entity_key=key,
         label=label,
@@ -14,19 +14,22 @@ def write(root, version, label, key, kind="chemical_entity", taxon=None):
         namespace="inchikey" if kind == "chemical_entity" else "uniprot",
         identifier=key,
         taxon=taxon,
+        identifiers=[dict(ns=curie.split(":")[0].lower(), id=curie)],
     )
     write_resource(root / "resources/test" / version, [entity])
 
 
 def test_examples_are_cached_release_specific_and_do_not_replace_search(tmp_path, monkeypatch):
-    write(tmp_path, "1", "Aspirin", "a" * 64)
+    write(tmp_path, "1", "Aspirin", "a" * 64, "CHEBI:15365")
     store = ReleaseStore(tmp_path)
     store.publish(dict(schema_version=1, version="1", resources={"test": "1"}))
     engine = ParquetServingEngine(tmp_path)
     first = engine.get_entity_examples()
     assert len(first["entities"]) == 1 and first["entities"][0]["label"] == "Aspirin"
     assert first["nextCursor"] is None
-    assert len(list((tmp_path / ".presentation/examples-v1").glob("*.json"))) == 1
+    # the grouped landing page shows the same examples as group cards
+    assert [g["entity"]["displayName"] for g in first["groups"]] == ["Aspirin"]
+    assert len(list((tmp_path / ".presentation/examples-v2").glob("*.json"))) == 1
     # A fresh engine reads the prepared page without selecting or hydrating again.
     cached = ParquetServingEngine(tmp_path)
     monkeypatch.setattr(
@@ -35,7 +38,7 @@ def test_examples_are_cached_release_specific_and_do_not_replace_search(tmp_path
         lambda *a, **kw: (_ for _ in ()).throw(AssertionError("cache miss")),
     )
     assert cached.get_entity_examples() == first
-    write(tmp_path, "2", "Caffeine", "b" * 64)
+    write(tmp_path, "2", "Caffeine", "b" * 64, "CHEBI:27732")
     assert engine.get_entity_examples()["entities"][0]["label"] == "Caffeine"
     with engine.release_scope("1"):
         assert engine.get_entity_examples()["entities"][0]["label"] == "Aspirin"
@@ -46,9 +49,10 @@ def test_examples_are_cached_release_specific_and_do_not_replace_search(tmp_path
     assert result.json()["entities"][0]["label"] == "Aspirin"
 
 
-def test_unavailable_examples_are_skipped_and_proteins_are_human(tmp_path):
-    write(tmp_path, "1", "TP53", "a" * 64, "protein", "10090")
+def test_examples_are_chosen_by_identifier_not_label(tmp_path):
+    # 'lactate' also labels a wax ester: a label does not identify an example
+    write(tmp_path, "1", "Glucose", "a" * 64, "CHEBI:99999")
     engine = ParquetServingEngine(tmp_path)
     assert engine.get_entity_examples()["entities"] == []
-    write(tmp_path, "2", "TP53", "b" * 64, "protein", "9606")
-    assert engine.get_entity_examples()["entities"][0]["taxonomyId"] == "9606"
+    write(tmp_path, "2", "D-Glucose", "b" * 64, "CHEBI:17234")
+    assert [e["label"] for e in engine.get_entity_examples()["entities"]] == ["D-Glucose"]
