@@ -28,14 +28,18 @@ EXAMPLES = (
     "CHEBI:15365",  # aspirin
     "RHEA:17825",  # hexokinase: D-glucose + ATP = D-glucose 6-phosphate + ADP + H(+)
     "CHEBI:27732",  # caffeine
-    # PD-1/PD-L1 complex: complexes have no public accession, their key is stable
-    "35d325c2447b9e812bae10301e71ec21ad17524f91f7c0f63ce2cca7f357da1a",
+    # PD-1/PD-L1 complex: complexes have no public accession; this id hashes its members
+    "complex:35d325c2447b9e812bae10301e71ec21ad17524f91f7c0f63ce2cca7f357da1a",
 )
+
+
+_GENERIC_TYPES = {"physical_entity", "named_thing", "entity"}
 
 
 def _example(engine, token):
     """The entity an example identifier names: the most connected one resolved from it (a
-    ChEBI id names the chemical, and the ontology term it also is), then its own id."""
+    ChEBI id names the chemical, and the ontology term it also is), then its own id. A
+    source's generic participant record (IntAct's 'EBI-…' for a miRNA) comes last."""
     keys = engine.resolve_entity_keys([token])
     if not keys:
         return None
@@ -45,6 +49,7 @@ def _example(engine, token):
     return min(
         rows,
         key=lambda r: (
+            r.get("entity_type") in _GENERIC_TYPES,
             -int(r.get("relation_count") or 0),
             str(r.get("identifier") or "").lower() not in own,
             r["entity_key"],
