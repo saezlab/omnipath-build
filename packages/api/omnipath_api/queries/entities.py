@@ -38,6 +38,9 @@ def _curie(query):
     return (match.group(1).lower(), match.group(2)) if match else None
 
 
+# Group keys of the grouped explorer: a gene's reference, a structure, or one entity.
+_GROUP_PREFIXES = ("gene:", "connectivity:", "entity:")
+
 class EntitiesQueries:
     """Entities queries over the engine storage and shaping contract."""
 
@@ -113,13 +116,15 @@ class EntitiesQueries:
         tokens: list[str] | None,
         resources: list[str] | None = None,
     ) -> list[str]:
-        """Map labels, identifiers, ``ns:id`` / ``ns|id`` CURIEs, reference keys or entity
-        keys to entity keys, by exact (case-insensitive) match."""
+        """Map labels, identifiers, ``ns:id`` / ``ns|id`` CURIEs, reference keys, entity
+        keys or the explorer's group keys (``gene:entrez:7157``, ``connectivity:<block>``,
+        ``entity:<key>``) to entity keys, by exact (case-insensitive) match."""
         values = [str(t).strip() for t in (tokens or []) if str(t).strip()]
         if not values:
             return []
-        keys, other = self._split_entity_tokens(values)
-        found = list(keys)
+        groups = [v for v in values if v.startswith(_GROUP_PREFIXES)]
+        keys, other = self._split_entity_tokens([v for v in values if v not in groups])
+        found = list(keys) + self._group_members(groups, resources)
         if other:
             terms = self._table("entity_term", resources)
             # Exact keys (files are sorted by key), lowercase terms, and CURIEs below.
@@ -159,6 +164,27 @@ class EntitiesQueries:
                 & {None, str(row["namespace"] or "").lower()}
             )
         return list(dict.fromkeys(found))
+
+    def _group_members(self, groups: list[str], resources=None) -> list[str]:
+        """Entity keys of group keys as the grouped explorer forms them."""
+        found = [g.removeprefix("entity:") for g in groups if g.startswith("entity:")]
+        wanted = [
+            ("reference" if g.startswith("gene:") else "connectivity", g.split(":", 1)[1])
+            for g in groups
+            if not g.startswith("entity:")
+        ]
+        if wanted:
+            hits = self._fetch_dicts(
+                f"""SELECT g.resource, g.entity_id FROM {self._table("entity_group", resources)} g
+                JOIN (SELECT unnest(?::VARCHAR[]) AS kind, unnest(?::VARCHAR[]) AS group_key) w
+                USING (kind, group_key)""",
+                [[kind for kind, _ in wanted], [key for _, key in wanted]],
+            )
+            rows = self._lookup(
+                "entity", "entity_id", [(h["resource"], h["entity_id"]) for h in hits], "entity_key"
+            )
+            found += sorted({row["entity_key"] for row in rows})
+        return found
 
     def _merge_by_key(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """One merged row per entity key, in the order keys first appear."""

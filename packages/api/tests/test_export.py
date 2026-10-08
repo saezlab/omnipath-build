@@ -10,9 +10,10 @@ from omnipath_api.server import create_app
 from omnipath_core.fixtures import write_resource
 
 
-def entity(key, label, kind="protein"):
+def entity(key, label, kind="protein", reference=None):
     return dict(
         entity_key=key,
+        reference_entity_key=reference,
         label=label,
         entity_type=kind,
         namespace="uniprot",
@@ -29,7 +30,7 @@ def client(tmp_path):
              category="interaction", sources=["a"], evidence_count=1)
         for i in range(3)
     ]  # fmt: skip
-    write_resource(tmp_path / "resources/a/1", [entity("p1", "TP53"), entity("p2", "MDM2")], relations)
+    write_resource(tmp_path / "resources/a/1", [entity("p1", "TP53", reference="entrez:7157"), entity("p2", "MDM2")], relations)
     write_resource(tmp_path / "resources/b/1", [entity("p1", "TP53")])
     return TestClient(create_app(engine=ParquetServingEngine(tmp_path)))
 
@@ -66,3 +67,13 @@ def test_relation_export_resolves_a_search_like_the_relations_page(tmp_path):
     api = client(tmp_path)
     assert len(rows(api.post("/export", json={"query": "MDM2"}))) == 3
     assert rows(api.post("/export", json={"query": "no such entity"})) == []
+
+
+def test_group_keys_select_their_members(tmp_path):
+    api = client(tmp_path)
+    engine = api.app.state.engine
+    assert engine.resolve_entity_keys(["entity:p2"]) == ["p2"]
+    assert engine.resolve_entity_keys(["gene:entrez:7157"]) == ["p1"]
+    # a group key exports the relations of the group's members, like its entity keys
+    by_key = rows(api.post("/export", json={"filters": {"entity_ids": ["entity:p2"]}}))
+    assert len(by_key) == 3
