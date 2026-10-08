@@ -199,14 +199,19 @@ def blocked_download(*_args, **_kwargs):
 
 
 def inspect_resource(directory: Path) -> dict:
-    """Check published schemas and checksums, then query a small DuckDB sample."""
+    """Check every manifest table's schema and checksum, then query a small DuckDB sample."""
     import duckdb
     import pyarrow.parquet as pq
-    from omnipath_core.schema import PUBLISHED_TABLES
+    from omnipath_core.schema import PUBLISHED_TABLES, SERVING_TABLES
 
     manifest = json.loads((directory / "build_manifest.json").read_text())
+    tables = {**PUBLISHED_TABLES, **SERVING_TABLES}
+    require(
+        set(manifest["files"]) == {f"{table}.parquet" for table in tables},
+        "The manifest does not list exactly the published and serving tables",
+    )
     files = {}
-    for table, schema in PUBLISHED_TABLES.items():
+    for table, schema in tables.items():
         name = f"{table}.parquet"
         path = directory / name
         parquet = pq.ParquetFile(path)
@@ -218,9 +223,13 @@ def inspect_resource(directory: Path) -> dict:
         files[name] = dict(expected, schema_verified=True, checksum_verified=True)
     with duckdb.connect(config={"threads": "1", "memory_limit": "256MB"}) as connection:
         relations = connection.execute(
-            "SELECT subject_label,predicate,object_label,sign,evidence_count "
-            "FROM read_parquet(?) ORDER BY subject_label,object_label LIMIT 20",
-            [str(directory / "relation.parquet")],
+            "SELECT s.identifier AS subject,r.subject_label,r.predicate,"
+            "o.identifier AS object,r.object_label,r.sign,r.evidence_count "
+            "FROM read_parquet(?) r "
+            "JOIN read_parquet(?) s ON s.entity_key=r.subject_entity_key "
+            "JOIN read_parquet(?) o ON o.entity_key=r.object_entity_key "
+            "ORDER BY r.subject_label,r.object_label LIMIT 20",
+            [str(directory / "relation.parquet"), *[str(directory / "entity.parquet")] * 2],
         )
         sample = [
             dict(zip((column[0] for column in relations.description), row))
@@ -239,23 +248,52 @@ def inspect_resource(directory: Path) -> dict:
 def verify_fixture(result: dict, rows: list[dict]) -> dict:
     import pyarrow.parquet as pq
 
-    entities = pq.read_table(result["entities_path"]).to_pylist()
-    relations = pq.read_table(result["relations_path"]).to_pylist()
-    payloads = pq.read_table(result["payloads_path"]).to_pylist()
+    def table(name: str) -> list[dict]:
+        return pq.read_table(result["files"][name]).to_pylist()
+
+    entities = {entity["entity_id"]: entity for entity in table("entity")}
+    identifiers = table("entity_identifier")
+    relations = {relation["relation_id"]: relation for relation in table("relation")}
+    evidence = table("relation_evidence")
+    relation_annotations = table("relation_annotation")
+    payloads = table("evidence_payloads")
+    canonical = {entity["identifier"]: entity for entity in entities.values()}
     require(
-        {entity["identifier"] for entity in entities} == {"P04637", "P0DP23"},
+        canonical.keys() == {"P04637", "P0DP23"}
+        and all(entity["namespace"] == "uniprot" for entity in entities.values()),
         "The native resolver did not produce both canonical protein identifiers",
     )
-    require(all(entity["taxon"] == "9606" for entity in entities), "Entity taxa were lost")
+    require(all(entity["taxon"] == "9606" for entity in entities.values()), "Entity taxa were lost")
+    require(
+        all(
+            any(
+                identifier["entity_id"] == entity_id
+                and identifier["is_canonical"]
+                and (identifier["ns"], identifier["id"]) == ("uniprot", entity["identifier"])
+                for identifier in identifiers
+            )
+            for entity_id, entity in entities.items()
+        ),
+        "An entity lacks its canonical identifier row",
+    )
     require(result["resolution_stats"]["unresolved_entities"] == 0, "An entity was unresolved")
     require(result["resolution_stats"]["resolved_entities"] >= 2, "Resolution was not exercised")
     require(
         any(
             identifier["id"] == "Q15086"
-            for entity in entities
-            for identifier in entity["identifiers"]
+            and not identifier["is_canonical"]
+            and identifier["entity_id"] == canonical["P04637"]["entity_id"]
+            for identifier in identifiers
         ),
         "The observed secondary accession was lost",
+    )
+    entity_keys = {entity["entity_key"] for entity in entities.values()}
+    require(
+        all(
+            {relation["subject_entity_key"], relation["object_entity_key"]} <= entity_keys
+            for relation in relations.values()
+        ),
+        "A relation endpoint is missing from the entity table",
     )
     require(len(payloads) == len(rows), "Not every consumed source record retained a payload")
     require(
@@ -265,44 +303,57 @@ def verify_fixture(result: dict, rows: list[dict]) -> dict:
         == Counter(json.dumps(row, sort_keys=True) for row in rows),
         "Raw source payloads changed",
     )
-    evidence = [item for relation in relations for item in relation["evidence"]]
+    relation_keys = {relation["relation_key"] for relation in relations.values()}
+    require(
+        all(payload["relation_key"] in relation_keys for payload in payloads),
+        "A raw payload is not linked to a published relation",
+    )
     require(len(evidence) == len(rows), "Source evidence was dropped during consolidation")
     require(
-        sum(relation["evidence_count"] for relation in relations) == len(rows),
+        {item["row_id"] for item in evidence} == {payload["row_id"] for payload in payloads},
+        "Relation evidence and raw payloads disagree on the consumed source rows",
+    )
+    per_relation = Counter(item["relation_id"] for item in evidence)
+    require(
+        per_relation.keys() == relations.keys()
+        and all(
+            relation["evidence_count"] == per_relation[relation_id]
+            for relation_id, relation in relations.items()
+        ),
         "Consolidated evidence counts do not agree",
     )
     require(
-        all(relation["predicate"] == "affects" for relation in relations),
+        all(relation["predicate"] == "affects" for relation in relations.values()),
         "The SIGNOR Biolink predicate was lost",
     )
-    annotations = [annotation for item in evidence for annotation in item["annotations"]]
     publications = {
-        annotation["value"] for annotation in annotations if annotation["term"] == "publications"
+        annotation["value"]
+        for item in evidence
+        for annotation in item["annotations"]
+        if annotation["term"] == "publications"
     }
     require(
         publications == {"PMID:" + row["Publication Identifier(s)"].split(":")[1] for row in rows},
         "Publication evidence was lost",
     )
-    qualifiers = [
-        annotation
-        for relation in relations
-        for annotation in relation["annotations"]
-        if annotation["term"] in {"object_direction_qualifier", "object_aspect_qualifier"}
-    ]
-    require(qualifiers, "Biolink relation qualifiers were lost")
+    require(
+        all(relation["object_direction_qualifier"] for relation in relations.values()),
+        "Biolink relation qualifiers were lost",
+    )
+    activity = {
+        annotation["relation_id"]
+        for annotation in relation_annotations
+        if annotation["term"] == "object_aspect_qualifier" and annotation["value"] == "activity"
+    }
     require(
         all(
-            any(
-                annotation["term"] == "object_aspect_qualifier"
-                and annotation["value"] == "activity"
-                for annotation in relation["annotations"]
-            )
-            for relation in relations
+            relation["object_aspect_qualifier"] == ["activity"] and relation_id in activity
+            for relation_id, relation in relations.items()
         ),
         "The Biolink activity qualifier was lost",
     )
     return {
-        "canonical_identifiers": sorted(entity["identifier"] for entity in entities),
+        "canonical_identifiers": sorted(canonical),
         "secondary_accession_resolved": "Q15086 -> P04637",
         "payloads_and_evidence_preserved": len(rows),
         "resolution": result["resolution_stats"],
