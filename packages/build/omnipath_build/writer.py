@@ -6,6 +6,7 @@ import shutil
 
 import duckdb
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 from omnipath_core.measurements import QUANTITY_STRUCT
 from omnipath_core.schema import (
@@ -588,6 +589,27 @@ class ParquetWriter:
             SELECT DISTINCT old_key, relation_key AS new_key
             FROM relation_map""")
 
+    def ingest_payload_files(self, paths, batch_rows=65536):
+        """Write payload rows from Parquet files (PAYLOAD_SCHEMA, observation keys) with
+        their final keys: the keys are mapped in SQL, the JSON streams through Arrow."""
+        cursor = self._db.execute(f"""SELECT coalesce(r.new_key, p.relation_key) AS relation_key,
+            coalesce(e.entity_key, p.entity_key) AS entity_key, p.source, p.row_id, p.payload_json
+            FROM {_read_parquet_sql(paths)} p
+            LEFT JOIN payload_relation_map r ON p.relation_key=r.old_key
+            LEFT JOIN entity_map e ON p.entity_key=e.old_key""")
+        written = 0
+        for batch in cursor.fetch_record_batch(batch_rows):
+            table = pa.Table.from_batches([batch])
+            column = table.schema.get_field_index("payload_json")
+            table = table.set_column(
+                column, "payload_json", pc.dictionary_encode(table["payload_json"])
+            ).cast(PAYLOAD_STORAGE_SCHEMA)
+            self._payload_writer.write_table(table)
+            written += table.num_rows
+        self._total_payloads += written
+        self.metrics["payload_rows"] += written
+        return written
+
     def ingest_payloads(self, payloads, entity_count, on_progress=None):
         """Write evidence payload rows with their final keys; returns the chunk counts."""
         payload_written = 0
@@ -897,13 +919,16 @@ class ParquetWriter:
             "relations",
             "relation_annotations",
         )
-        # Buckets are key ranges (the key's first two characters), not hashes: each bucket
+        # Buckets are key ranges (the key's first characters), not hashes: each bucket
         # is sorted on its own and the buckets are written in key order, so every table is
         # sorted without one global sort of all rows, which no memory limit can bound.
+        # One character (16 buckets) unless a table is large; every bucket costs a pass.
+        largest = max(db.execute(f"SELECT count(*) FROM {t}").fetchone()[0] for t in working)
+        prefix = 1 if largest <= 16 * _BUCKET_ROWS else 2
         for table in working:
             key = "relation_key" if table.startswith("relation") else "entity_key"
             db.execute(
-                f"CREATE TABLE sorted_{table} AS SELECT *, substr({key}, 1, 2) AS bucket FROM {table} ORDER BY bucket"
+                f"CREATE TABLE sorted_{table} AS SELECT *, substr({key}, 1, {prefix}) AS bucket FROM {table} ORDER BY bucket"
             )
             db.execute(f"DROP TABLE {table}")
             db.execute(f"ALTER TABLE sorted_{table} RENAME TO {table}")
@@ -1004,6 +1029,8 @@ _BUCKET_TABLES = (
     "relation_annotation",
     "relation_evidence",
 )
+# Rows per key-range bucket the table writer aims at (see _write_tables).
+_BUCKET_ROWS = 4_000_000
 _COPY_OPTIONS = f"(FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE {ROW_GROUP_SIZE})"
 _QUANTITY = ", ".join(
     f"quantity.{field.name} AS quantity_{field.name}" for field in QUANTITY_STRUCT

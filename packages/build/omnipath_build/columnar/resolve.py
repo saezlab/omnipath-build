@@ -214,7 +214,7 @@ def _annotations(items):
 
 
 def write_resource(work: Path, target: Path, source, dataset, predicate, library_dir, resolution_paths,
-                   *, workers: int, final_memory="16GB", final_threads=16, payload_rows=100_000):
+                   *, workers: int, final_memory="16GB", final_threads=16):
     """Make relation rows in parallel, ingest all rows once, then finalize as the row path."""
     from omnipath_build.writer import (
         ENTITY_ANN, ENTITY_EVIDENCE_INPUT, ENTITY_INPUT, IDS_INPUT, REL_ANN, REL_INPUT,
@@ -252,9 +252,7 @@ def write_resource(work: Path, target: Path, source, dataset, predicate, library
             read("relations", "relations", REL_INPUT),
             read("relations", "relation_annotations", REL_ANN),
         )
-        for path in sorted((work / "relations").glob("payloads-*.parquet")):
-            for batch in pq.ParquetFile(path).iter_batches(batch_size=payload_rows):
-                writer.ingest_payloads(batch.to_pylist(), 0)
+        writer.ingest_payload_files(sorted((work / "relations").glob("payloads-*.parquet")))
         timings["ingest"] = time.perf_counter() - started
         started = time.perf_counter()
         resolution = writer.resolution_summary(resolution_paths)

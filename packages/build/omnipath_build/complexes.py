@@ -132,7 +132,7 @@ def resolve_complexes(db, payload_path, metrics):
     temp = payload_path.with_suffix(".complex.parquet")
     source = pq.ParquetFile(payload_path, read_dictionary=["payload_json"])
     with pq.ParquetWriter(temp, source.schema_arrow, compression="zstd", store_schema=False) as out:
-        for batch in source.iter_batches(batch_size=8192):
+        for batch in source.iter_batches(batch_size=65536):
             table = pa.Table.from_batches([batch])
             narrow = table.drop(["payload_json"]).append_column(
                 "position", pa.array(range(len(table)))
