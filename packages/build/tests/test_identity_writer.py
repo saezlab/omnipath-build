@@ -31,15 +31,6 @@ def test_reference_records_are_fetched_in_batches(snapshot, tmp_path):
     finally:
         runtime.close()
 
-    class Old:  # FullRuntime exposes only record()
-        def record(self, entity_id):
-            return {"identifiers": [], "id": entity_id}
-
-    assert dict(_reference_records(Old(), ["a", "b"])) == {
-        "a": {"identifiers": [], "id": "a"},
-        "b": {"identifiers": [], "id": "b"},
-    }
-
 
 def test_writer_attaches_resolver_aliases_from_an_identity_snapshot(snapshot, tmp_path):
     item = {

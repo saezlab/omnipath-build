@@ -37,7 +37,7 @@ def test_registered_ramp_export_uses_native_cache(tmp_path, monkeypatch):
             con.execute(f"CREATE TABLE {name}(rampId TEXT)")
     monkeypatch.setattr(discovery, "setup_pypath_cache", lambda: cache)
     out = tmp_path / "hubs"
-    export_hubs(out, hubs=["ramp", "ramp_gene"], include_dictionaries=False, build_library=False)
+    export_hubs(out, hubs=["ramp", "ramp_gene"], include_dictionaries=False)
     chemical = pq.read_table(out / "ramp.parquet").to_pylist()
     genes = pq.read_table(out / "ramp_gene.parquet").to_pylist()
     assert {r["hub_id"] for r in chemical} == {"RAMP_C_1"}

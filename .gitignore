@@ -54,10 +54,6 @@ data_cellcell/
 /packages/*/build/
 .ruff_cache/
 
-# Required source dictionaries, not generated reference data
-!packages/build/omnipath_build/reference/data/
-!packages/build/omnipath_build/reference/data/*.zstd
-
 # Native extension build outputs
 *.so
 *.dylib

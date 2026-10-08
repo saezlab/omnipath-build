@@ -37,11 +37,9 @@ from omnipath_resolver.identity_runtime import (
     IdentityRuntime,
     decode_key,
     entity_num,
-    is_identity_snapshot,
     open_runtime,
 )
 from omnipath_resolver.identity_kv import KvMissing
-from omnipath_resolver.index import FullRuntime
 from omnipath_resolver.observations import CODES, key, observation_bundle
 
 CODE_NAMES = {code: ns for ns, code in CODES.items()}
@@ -91,19 +89,16 @@ def test_key_decoding_unscoped_and_scoped():
         decode_key(bytes([1, 1, 1, 0xFF, 0xFF, 0]) + b"x", CODE_NAMES)
 
 
-def test_manifest_format_selects_runtime(snapshot, tmp_path):
-    assert is_identity_snapshot(snapshot)
+def test_only_identity_directories_open(snapshot, tmp_path):
     rt = open_runtime(snapshot, cache_dir=tmp_path)
     try:
         assert isinstance(rt, IdentityRuntime)
     finally:
         rt.close()
-    assert not is_identity_snapshot(tmp_path)
     with pytest.raises(OSError):
         IdentityRuntime(tmp_path)  # no manifest
     # the first-generation single-snapshot format is no longer served
     (tmp_path / "manifest.json").write_text(json.dumps({"format": "omnipath-identity-v1"}))
-    assert not is_identity_snapshot(tmp_path)
     with pytest.raises(ValueError):
         IdentityRuntime(tmp_path)
 
@@ -602,12 +597,10 @@ def test_matcher_chooses_identity_runtime(matcher):
     assert matcher.libraries == ["gene_protein", "chemical", "reaction"]
 
 
-def test_old_references_keep_the_old_runtime(tmp_path):
-    # a manifest of another format: FullRuntime's own validation answers
+def test_compact_references_are_rejected(tmp_path):
     (tmp_path / "manifest.json").write_text('{"format": "omnipath-full-two-index-v1"}')
-    with pytest.raises(ValueError, match="two-index"):
+    with pytest.raises(ValueError, match="identity directory is required"):
         open_runtime(tmp_path)
-    assert FullRuntime is not IdentityRuntime
 
 
 def test_chemical_stated_vs_derived_inchikey(matcher):

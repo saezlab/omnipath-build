@@ -1,6 +1,5 @@
-//! Batch resolution over an already constructed, immutable reference snapshot.
-//! Offline construction from normalized hubs lives in build_reference.py and
-//! the anchor-components binary; this module implements the serving policy.
+//! Batch resolution over an already constructed, immutable identity library.
+//! This module implements the serving policy.
 //! Namespace-specific normalization and relation routing happen before this API.
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;

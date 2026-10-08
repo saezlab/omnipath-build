@@ -113,9 +113,6 @@
       if (hubs?.length) return `Export hubs (${hubs.join(', ')})`;
       return 'Export all hubs';
     }
-    if (job.action === 'build_library') {
-      return 'Build library';
-    }
     return job.action.replaceAll('_', ' ');
   }
 

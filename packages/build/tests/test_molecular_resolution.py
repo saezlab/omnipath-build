@@ -340,7 +340,7 @@ def test_refseq_transcript_gene_mapping_uses_stable_accession_retaining_sequence
 def test_rna_subtype_replay_bundle_cannot_assert_catalogue_protein():
     from omnipath_resolver.canonical.match import votes_for
     from omnipath_resolver.canonical.policy import get_policy
-    from omnipath_build.reference.replay_resources import observation_bundle
+    from omnipath_resolver.observations import observation_bundle
 
     molecule = obs("microrna", "uniprot", "P04637")
     normalized, observed = votes_for(molecule, get_policy(molecule.entity_type))
@@ -348,85 +348,14 @@ def test_rna_subtype_replay_bundle_cannot_assert_catalogue_protein():
     assert rows and all(row["gene_only"] for row in rows)
 
 
-def test_gene_role_cutoff_counts_genes_instead_of_catalogue_products():
-    from omnipath_build.reference.full_index_identifiers import collapse_gene_posting
-
-    products = type(
-        "Genes",
-        (),
-        {"gene": lambda self, key: ([100, key, 3, None, False, False, [key[7:]]], "9606")},
-    )()
-    value = dict(
-        gene=True,
-        products=False,
-        candidates=[
-            [i, f"uniprot:P{i:05d}", 2, f"uniprot:P{i:05d}", False, False, ["7157"]]
-            for i in range(1, 26)
-        ],
-    )
-    collapsed = collapse_gene_posting(value, products)
-    assert len(value["candidates"]) > 10
-    assert collapsed["candidates"] == [[100, "entrez:7157", 3, None, False, False, ["7157"]]]
-    result = resolve_molecular_batch(
-        [("gene", 2, [v(b"symbol", True)])],
-        [(b"symbol", [100])],
-        [tuple(collapsed["candidates"][0])],
-    )[0]
-    assert result[2] == ["entrez:7157"]
-    assert result[4] is None
-
-
-@pytest.mark.parametrize("unmapped,quarantined", [(True, False), (False, True)])
-def test_gene_posting_collapse_preserves_mixed_unsupported_candidates(unmapped, quarantined):
-    from omnipath_build.reference.full_index_identifiers import collapse_gene_posting
-
-    products = type(
-        "Genes",
-        (),
-        {"gene": lambda self, key: ([100, key, 3, None, False, False, [key[7:]]], "9606")},
-    )()
-    value = dict(
-        gene=True,
-        products=False,
-        candidates=[
-            [1, "uniprot:P04637", 2, "uniprot:P04637", False, True, ["7157"]],
-            [
-                2,
-                "uniprot:Q99999",
-                2,
-                "uniprot:Q99999",
-                quarantined,
-                False,
-                [] if unmapped else ["7157"],
-            ],
-        ],
-    )
-    assert collapse_gene_posting(value, products) is value
-
-
-def test_product_lookup_is_never_collapsed_to_gene_candidates():
-    from omnipath_build.reference.full_index_identifiers import collapse_gene_posting
-
-    value = dict(
-        gene=False,
-        products=False,
-        candidates=[[1, "uniprot:P04637", 2, "uniprot:P04637", False, True, ["7157"]]],
-    )
-    assert collapse_gene_posting(value, None) is value
-
-
-def test_compiled_gene_alias_with_many_products_survives_admission_cutoff(tmp_path):
-    from omnipath_build.reference.replay_resources import key
-
+def test_gene_alias_with_many_products_resolves_to_the_gene(tmp_path):
     with closing(LibraryMatcher(build_fixture_library(tmp_path))) as matcher:
-        for namespace, identifier, route, scope in [
-            ("genesymbol", "MANYPRODUCTS", 1, "9606"),
-            ("ensg", "ENSG00000000777", 1, ""),
-            ("hgnc", "HGNC:777", 1, ""),
-            ("entrez", "777", 2, ""),
+        for namespace, identifier in [
+            ("genesymbol", "MANYPRODUCTS"),
+            ("ensg", "ENSG00000000777"),
+            ("hgnc", "HGNC:777"),
+            ("entrez", "777"),
         ]:
-            posting = matcher.runtime.lookup(key(2, route, namespace, scope, identifier))
-            assert [c[1] for c in posting["candidates"]] == ["entrez:777"]
             result = matcher.match({"g": obs("protein", namespace, identifier)})["g"]
             assert result.canonical_namespace == "entrez"
             assert result.canonical_identifier == "777"

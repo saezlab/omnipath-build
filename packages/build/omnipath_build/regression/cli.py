@@ -32,7 +32,9 @@ def add_parser(subparsers: Any) -> argparse.ArgumentParser:
     )
 
     resolve = sub.add_parser("resolve", help="Resolve stored observations with a runtime")
-    resolve.add_argument("--runtime", required=True, help="Library or identity snapshot directory")
+    resolve.add_argument(
+        "--runtime", required=True, help="Identity directory (omnipath-identity-v2)"
+    )
     resolve.add_argument("--observations", required=True, help="Observation root directory")
     resolve.add_argument("--output", required=True, help="Result directory")
     resolve.add_argument("--resources", nargs="+", help="Default: every extracted resource")

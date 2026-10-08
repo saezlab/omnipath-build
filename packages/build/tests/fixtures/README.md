@@ -25,3 +25,16 @@ structure despite conflicting database aliases; conflicting supplied structures
 stay unmatched. The explicit chemical expectations were reviewed against the
 fixture identities and the focused chemical-target tests. Observation inputs,
 observed aliases, gene/protein results and resource output expectations are unchanged.
+
+The October 8 removal of the compact reference resolves `library_fixture.py`'s hubs
+through the identity layer (`omnipath-identity-v2`), so the chemical expectations of
+`resolution_contract.json` follow its documented rules
+(core_documentation/resolution.md). 69 of 120 chemical entries changed; gene/protein
+expectations, observations and `resource_contract.json` are unchanged:
+
+- Labels follow the identity label policy (ChEBI name first, e.g. `water` over
+  HMDB's `Water`; ChEBI:16974's name for the compound it attaches to).
+- InChIKeys claimed only by the two-structure ChEBI mixture stay unmatched: the
+  mixture record is quarantined and connects nothing.
+- DrugBank/HMDB identifiers with a conflicting KEGG compound id resolve on the
+  specific identifier (chemical fallback 1: coarse cross-references do not veto).

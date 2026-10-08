@@ -31,4 +31,4 @@ revisions and numbers describe those runs. Earlier exploratory artifacts are
 listed in [history](history/README.md); the numbered [pipeline notes](pipeline/README.md)
 describe the previous implementation, and [reference methods](reference-resolver.md)
 and the [compiler semantics brief](reference-compiler-semantics.md) describe the
-previous compact reference that the identity layer replaced.
+previous compact reference that the identity layer replaced; its code has been removed.

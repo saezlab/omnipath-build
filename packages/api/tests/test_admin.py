@@ -83,16 +83,6 @@ class FakeOps:
             )
         return {"chebi": 12}
 
-    def build_library(self, **kwargs):
-        self.calls.append(("build_library", kwargs))
-        self._maybe_wait(kwargs.get("should_cancel"))
-        on_progress = kwargs.get("on_progress")
-        if on_progress:
-            on_progress("gene_protein", "running")
-            on_progress("gene_protein", "done")
-            on_progress("chemical", "done")
-        return {"gene_protein": {"nodes": 4, "xrefs": 8}, "chemical": {"nodes": 7, "xrefs": 12}}
-
     def build_all(self, **kwargs):
         self.calls.append(("build_all", kwargs))
         on_progress = kwargs.get("on_progress")
@@ -169,14 +159,7 @@ class TestAdminAPI(unittest.TestCase):
         library = self.data_root / "reference" / "library"
         library.mkdir()
         (library / "manifest.json").write_text(
-            json.dumps(
-                {
-                    "format": "omnipath-full-two-index-msgpack-zstd-v2",
-                    "complete": True,
-                    "counts": {"entities": 4, "identifiers": 8},
-                    "candidate_limit": 10,
-                }
-            )
+            json.dumps({"format": "omnipath-identity-v2", "fingerprint": "f1"})
         )
         self.ops = FakeOps()
         self.client = self._client(self.ops)
@@ -221,9 +204,7 @@ class TestAdminAPI(unittest.TestCase):
         body = response.json()
         self.assertTrue(body["resolver"]["ready"])
         self.assertTrue(body["build_available"])
-        self.assertEqual(body["resolver"]["library"]["entities"], 4)
-        self.assertEqual(body["resolver"]["library"]["identifiers"], 8)
-        self.assertEqual(body["resolver"]["library"]["candidate_limit"], 10)
+        self.assertEqual(body["resolver"]["library_manifest"]["fingerprint"], "f1")
         self.assertNotIn("combined", body["resolver"])
 
     def test_status_includes_resource_resolution_stats(self):
@@ -334,9 +315,9 @@ class TestAdminAPI(unittest.TestCase):
         slow = FakeOps(delay=0.4)
         self._stop_worker()
         client = self._client(slow)
-        first = client.post("/admin/jobs", json={"action": "build_library"})
+        first = client.post("/admin/jobs", json={"action": "export_hubs", "hubs": ["chebi"]})
         self.assertEqual(first.status_code, 202)
-        second = client.post("/admin/jobs", json={"action": "build_library"})
+        second = client.post("/admin/jobs", json={"action": "export_hubs", "hubs": ["chebi"]})
         self.assertEqual(second.status_code, 409)
         deadline = time.time() + 2
         while time.time() < deadline:
@@ -367,11 +348,11 @@ class TestAdminAPI(unittest.TestCase):
         self.assertEqual(status, "cancelled")
 
     def test_job_events_stream(self):
-        started = self.client.post("/admin/jobs", json={"action": "build_library"})
+        started = self.client.post("/admin/jobs", json={"action": "export_hubs", "hubs": ["chebi"]})
         job_id = started.json()["id"]
         with self.client.stream("GET", f"/admin/jobs/{job_id}/events") as stream:
             body = b"".join(stream.iter_bytes())
-        self.assertIn(b"library:parquet", body)
+        self.assertIn(b"emit:chebi", body)
         self.assertIn(b"data: ", body)
 
     def test_admin_secret_required(self):
@@ -421,7 +402,7 @@ class TestAdminAPI(unittest.TestCase):
 
     def test_missing_build_returns_503(self):
         client = self._client(UnavailableOps(), start_worker=False)
-        response = client.post("/admin/jobs", json={"action": "build_library"})
+        response = client.post("/admin/jobs", json={"action": "export_hubs"})
         self.assertEqual(response.status_code, 503)
 
 

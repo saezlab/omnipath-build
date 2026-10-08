@@ -65,122 +65,50 @@ def source_fixture(path: Path, fixture: dict) -> list[dict]:
     return rows
 
 
-def compact_reference(path: Path, fixture: dict) -> Path:
-    """Write two synthetic entities in the production compact index format.
+def identity_reference(path: Path, fixture: dict) -> Path:
+    """Build an identity library for two synthetic proteins with the production builders.
 
-    This intentionally avoids source hub downloads and full reference builds.
-    CompactWriter validates codec round trips; FullRuntime and the native
-    decision policy consume the resulting index without a mocked resolver.
+    This intentionally avoids source hub downloads: a one-hub UniProt export is written
+    directly, then indexed, decided and stored by the same code as a full reference build.
+    Returns the identity directory the resource build resolves against.
     """
-    from omnipath_build.reference.compact_index import FORMAT, CompactWriter, atomic_json
-    from omnipath_build.reference.full_index import partition
-    from omnipath_resolver.observations import CODES, key
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from omnipath_build.hubs.schema import HUB_SCHEMA, hub_row
+    from omnipath_build.identity import (
+        build_hub_index,
+        build_hub_kv,
+        build_identity,
+        build_identity_kv,
+    )
 
     if path.exists():
         require(path.is_dir() and not path.is_symlink(), f"Unsafe fixture reference path: {path}")
-        manifest = path / "manifest.json"
-        if manifest.exists():
-            previous = json.loads(manifest.read_text())
-            require(
-                previous.get("fixture") is True,
-                f"Refusing to replace a non-fixture reference: {path}",
-            )
-            if previous.get("reference_fingerprint") == digest(FIXTURE):
-                from omnipath_resolver.index import FullRuntime
-
-                try:
-                    runtime = FullRuntime(path)
-                except (OSError, ValueError):
-                    pass  # Interrupted fixture; rebuild these private, synthetic assets.
-                else:
-                    runtime.close()
-                    return path
+        marker = path / "fixture.json"
+        require(marker.is_file(), f"Refusing to replace a non-fixture reference: {path}")
         shutil.rmtree(path)
-    path.mkdir(parents=True)
-    dictionary = b"entity identifier candidates protein uniprot taxon reviewed"
-    dictionaries = {}
-    for kind in ("entities", "identifiers"):
-        filename = f"dictionaries/{kind}.zstd"
-        target = path / filename
-        target.parent.mkdir(exist_ok=True)
-        target.write_bytes(dictionary)
-        dictionaries[kind] = {
-            "file": filename,
-            "bytes": len(dictionary),
-            "sha256": digest(target),
-        }
-    entities, identifiers = [], []
-    for number, item in enumerate(fixture["reference"], start=1):
-        eid = "uniprot:" + item["identifier"]
-        candidate = [number, eid, 2, eid, False, True]
-        entities.append(
-            (
-                eid.encode(),
-                {
-                    "record": {
-                        "entity_id": eid,
-                        "kind": 2,
-                        "anchor": eid,
-                        "taxon": "9606",
-                        "label": item["label"],
-                        "identifiers": item["identifiers"],
-                    },
-                    "meta": {
-                        "id": number,
-                        "entity_id": eid,
-                        "kind": 2,
-                        "anchor": eid,
-                        "quarantined": False,
-                        "reviewed": True,
-                    },
-                },
-            )
-        )
+    hubs = path / "hubs"
+    hubs.mkdir(parents=True)
+    (path / "fixture.json").write_text(json.dumps({"description": fixture["description"]}))
+    rows = []
+    for item in fixture["reference"]:
+        accession = item["identifier"]
+        rows.append(hub_row("name", item["label"], accession, "9606", "uniprot"))
         for namespace, identifier in item["identifiers"]:
-            for taxon in ("", "9606"):
-                identifiers.append(
-                    (
-                        key(2, 1, namespace, taxon, identifier),
-                        {
-                            "gene": namespace == "genesymbol",
-                            "products": False,
-                            "candidates": [candidate],
-                        },
-                        identifier,
-                    )
-                )
-    require(len(entities) <= RECORD_CAP, "Reference entity fixture exceeds the cap")
-    require(len(identifiers) <= RECORD_CAP, "Reference lookup fixture exceeds the cap")
-    files, counts = {}, {}
-    for kind, objects in (("entities", entities), ("identifiers", identifiers)):
-        counts[kind] = 0
-        for number in range(256):
-            shard = f"{number:02x}"
-            writer = CompactWriter(path / kind / shard, kind, dictionary)
-            rows = [
-                (row[0], row[1])
-                for row in objects
-                if partition(row[0].decode() if kind == "entities" else row[2]) == shard
-            ]
-            writer.put_objects(rows)
-            report = writer.close()
-            counts[kind] += report["records"]
-            files[f"{kind}/{shard}/data.mdb"] = report["bytes"]
-    atomic_json(
-        path / "manifest.json",
-        {
-            "format": FORMAT,
-            "complete": True,
-            "reference_fingerprint": digest(FIXTURE),
-            "namespace_codes": CODES,
-            "dictionaries": dictionaries,
-            "files": files,
-            "counts": counts,
-            "fixture": True,
-            "description": fixture["description"],
-        },
+            if namespace == "uniprot" and identifier != accession:
+                namespace = "uniprot-sec"
+            rows.append(hub_row(namespace, identifier, accession, "9606", "uniprot"))
+    require(len(rows) <= RECORD_CAP, "Reference hub fixture exceeds the cap")
+    pq.write_table(pa.Table.from_pylist(rows, schema=HUB_SCHEMA), hubs / "uniprot.parquet")
+    options = dict(memory="256MB", threads=1, min_free_gib=0)
+    build_hub_index("uniprot", hubs, path / "hub-index", **options)
+    build_hub_kv(
+        "uniprot", path / "hub-index", memory="256MB", threads=1, workers=1, min_free_gib=0
     )
-    return path
+    identity = build_identity(path / "hub-index", path / "identity", **options)
+    library = path / "identity" / identity["fingerprint"]
+    build_identity_kv(library, min_free_gib=0)
+    return library
 
 
 class LocalDownload:
@@ -391,7 +319,7 @@ def main(argv=None) -> int:
     fixture_dir = root / "fixtures" / args.version
     fixture_dir.mkdir(parents=True, exist_ok=True)
     rows = source_fixture(fixture_dir / "signor.tsv", fixture)
-    reference = compact_reference(fixture_dir / "reference", fixture)
+    reference = identity_reference(fixture_dir / "reference", fixture)
     dataset = signor.resource.datasets()["interactions"]
     raw_parser = dataset._raw_parser
     consumed = 0

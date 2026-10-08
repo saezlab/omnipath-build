@@ -150,19 +150,21 @@ def test_symmetric_gene_reference_keeps_one_occurrence(library, tmp_path):
     assert len(evidence["annotations"]) == 1
 
 
-def test_incomplete_compact_library_requires_rebuild(library):
-    (library / "identifiers/00/data.mdb").unlink()
-    with pytest.raises(FileNotFoundError):
+def test_identity_library_without_kv_store_requires_rebuild(library):
+    import shutil
+
+    from omnipath_resolver.identity_kv import KvMissing
+
+    shutil.rmtree(library / "kv")
+    with pytest.raises(KvMissing, match="build-identity-kv"):
         EntityResolver(library_dir=library)
 
 
-def test_incomplete_parquet_library_requires_rebuild(library):
-    publication = library.parent / "published"
-    publication.mkdir()
-    (publication / "current").symlink_to(library, target_is_directory=True)
-    (library / "manifest.json").unlink()
-    with pytest.raises(ValueError, match="Incomplete reference generation"):
-        EntityResolver(library_dir=publication)
+def test_directory_that_is_not_an_identity_library_is_rejected(library):
+    (library / "manifest.json").unlink()  # A read-only hard link to the shared template.
+    (library / "manifest.json").write_text('{"format": "omnipath-full-two-index-msgpack-zstd-v2"}')
+    with pytest.raises(ValueError, match="identity directory is required"):
+        EntityResolver(library_dir=library)
 
 
 def test_shared_protein_and_unmapped_gene_keep_all_evidence(library, tmp_path):

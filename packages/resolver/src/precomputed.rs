@@ -1,4 +1,4 @@
-//! Adapter for values fetched from the compact disk index.
+//! Adapter for candidate values the runtime fetched for a batch.
 //! Uses the shared biological decision kernel and does not read Parquet.
 use anchor_resolution_serving::*;
 use pyo3::exceptions::PyValueError;

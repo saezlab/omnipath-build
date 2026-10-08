@@ -16,7 +16,7 @@ def test_goslin_identity_precision_and_chain_order():
 def test_native_abbreviation_lists(tmp_path):
     import pyarrow as pa
     import pyarrow.parquet as pq
-    from omnipath_build.reference.goslin_identifiers import build
+    from omnipath_build.identity.goslin import build
 
     hub = tmp_path / "swiss.parquet"
     pq.write_table(
@@ -48,7 +48,7 @@ def test_cache_reused_across_builds_and_only_new_names_parsed(tmp_path, monkeypa
     import json
     import pyarrow as pa
     import pyarrow.parquet as pq
-    from omnipath_build.reference import goslin_identifiers as goslin
+    from omnipath_build.identity import goslin
 
     hub = tmp_path / "hub.parquet"
     cache = tmp_path / "shared-cache"

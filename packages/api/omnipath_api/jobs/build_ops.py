@@ -64,13 +64,6 @@ class BuildOps:
 
         return export_hubs(**kwargs)
 
-    def build_library(self, **kwargs: Any) -> Any:
-        if _import_build() is None:
-            raise BuildUnavailable("omnipath-build is not installed")
-        from omnipath_build.canonical import build_library
-
-        return build_library(**kwargs)
-
     def build_all(self, **kwargs: Any) -> dict[str, Any]:
         if _import_build() is None:
             raise BuildUnavailable("omnipath-build is not installed")

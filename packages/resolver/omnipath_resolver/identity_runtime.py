@@ -1,6 +1,6 @@
 """On-demand resolution runtime over an ``omnipath-identity-v2`` directory.
 
-Same ``resolve()`` contract as :class:`omnipath_resolver.index.FullRuntime`. Nothing is
+``resolve(queries, votes)`` answers a batch for ``LibraryMatcher``. Nothing is
 materialized for the whole universe: postings are derived per batch from the per-hub ``id``
 store (the ``by_id`` rows), the small identity decisions (exceptions, extra entities, gene
 products) and the hub ``rec`` store (``records`` plus ``by_record`` rows); entity records are
@@ -157,28 +157,13 @@ def _admit(cls, ns, hub, source_ns, tag, identifier, anchor, anchor_count):
     return None
 
 
-def is_identity_snapshot(path) -> bool:
-    """True when ``path`` is a directory whose manifest declares the identity format."""
-    manifest = Path(path) / "manifest.json"
-    if not manifest.is_file():
-        return False
-    try:
-        return json.loads(manifest.read_text()).get("format") == FORMAT
-    except (OSError, ValueError):
-        return False
-
-
 def default_cache_dir(path) -> Path:
     return Path(os.environ.get(CACHE_ENV) or Path(path).resolve().parent / "cache")
 
 
 def open_runtime(path, *, memory_limit=None, cache_dir=None):
-    """The runtime for a pinned reference directory, chosen by its manifest ``format``."""
-    if is_identity_snapshot(path):
-        return IdentityRuntime(path, cache_dir=cache_dir, memory_limit=memory_limit)
-    from .index import FullRuntime
-
-    return FullRuntime(path)
+    """The runtime for a pinned identity directory; any other directory is rejected."""
+    return IdentityRuntime(path, cache_dir=cache_dir, memory_limit=memory_limit)
 
 
 @lru_cache(maxsize=1 << 20)
@@ -316,9 +301,9 @@ def _goslin_shorthand(values):
 
 
 class IdentityRuntime:
-    """``FullRuntime``-compatible runtime over an identity directory and its hub indexes."""
+    """Resolution runtime over an identity directory and its hub indexes."""
 
-    # Reference libraries this runtime serves (the LMDB reference has no reactions).
+    # Reference libraries this runtime serves.
     libraries = ("gene_protein", "chemical", "reaction")
 
     def __init__(self, path, *, cache_dir=None, memory_limit=None, threads=None):

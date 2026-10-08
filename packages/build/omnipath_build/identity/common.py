@@ -11,15 +11,23 @@ from pathlib import Path
 
 import duckdb
 
-from omnipath_build.reference.build_reference import (  # noqa: F401  (re-exported helpers)
-    CHEMICAL,
-    EMPTY_KEYS,
-    PROTEIN,
-    norm,
-    quote,
-    scan,
-)
+from omnipath_resolver.canonical.identifiers import normalize_id_sql
 
+CHEMICAL = (
+    "chebi",
+    "pubchem",
+    "chembl",
+    "hmdb",
+    "lipidmaps",
+    "swisslipids",
+    "bigg",
+    "metanetx",
+    "refmet",
+    "ramp",
+)
+PROTEIN = ("uniprot", "entrez", "ramp_gene")
+# The InChIKeys of an empty structure identify nothing.
+EMPTY_KEYS = ("MOSFIJXAXDLOML-UHFFFAOYSA-N", "MOSFIJXAXDLOML-UHFFFAOYNA-N")
 PARTS = tuple(f"{n:02x}" for n in range(256))
 # Rhea master reactions are the anchors; MetaNetX reactions attach to them (proposal, Reactions).
 REACTION = ("rhea", "metanetx_reaction")
@@ -45,6 +53,19 @@ HUB_PREFERENCE = (
 GOSLIN_HUBS = ("swisslipids", "lipidmaps", "hmdb", "chebi", "refmet")
 INCHIKEY_RE = "^[A-Z]{14}-[A-Z]{10}-[A-Z]$"
 STRUCTURE_LEVELS = ("full_structure", "complete_structure")
+
+
+def quote(value) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def scan(path) -> str:
+    return f"read_parquet({quote(path)})"
+
+
+def norm(ns, ident) -> str:
+    """SQL normalizing identifier `ident` of namespace `ns`, as the matcher normalizes it."""
+    return normalize_id_sql(ns, ident)
 
 
 def hub_rank(column="hub") -> str:

@@ -101,7 +101,7 @@ def stage_rows(ctx, directory, hub, path):
 
 def stage_goslin(ctx, directory, hub, path):
     """Goslin names of the record's most specific parsed level (persistent parse cache)."""
-    from omnipath_build.reference.goslin_identifiers import build
+    from .goslin import build
 
     build({hub: str(path)}, directory, ctx.threads, ctx.memory, str(ctx.goslin_cache))
     shutil.rmtree(directory / "spill", ignore_errors=True)

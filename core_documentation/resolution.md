@@ -54,7 +54,7 @@ Every row says *this record of the hub carries this identifier*:
 The miRBase hub is exported but not used for resolution yet.
 
 ```bash
-omnipath-build export-hubs --output-dir data/reference/hubs --max-records 0 --no-library
+omnipath-build export-hubs --output-dir data/reference/hubs --max-records 0
 ```
 
 ## 2. Hub indexes
@@ -131,8 +131,11 @@ code, and every resource build records the fingerprint it used.
 
 ```bash
 omnipath-build build-identity --hub-index-root data/reference/hub-index --output-dir data/reference/identity
-omnipath-build build-identity-kv --identity-dir data/reference/identity/<fingerprint>
 ```
+
+`build-identity` writes the LMDB stores too. `make reference` runs the hub
+indexes, their stores and this step for every hub
+([identity layer guide](../packages/build/REFERENCE.md)).
 
 **Example.** A ChEBI record with InChIKey *K* becomes entity `inchikey:K`. An
 HMDB record without a structure that cross-references only that ChEBI record

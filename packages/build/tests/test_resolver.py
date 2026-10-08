@@ -63,7 +63,7 @@ class TestEntityResolver(unittest.TestCase):
             self.assertEqual(stats["unresolved_entities"], 1)
             self.assertEqual(stats["not_applicable_entities"], 1)
             self.assertEqual(stats["by_entity_type"]["protein"]["resolved"], 1)
-            self.assertEqual(sorted(stats["libraries"]), ["chemical", "gene_protein"])
+            self.assertEqual(sorted(stats["libraries"]), ["chemical", "gene_protein", "reaction"])
         finally:
             resolver.close()
 

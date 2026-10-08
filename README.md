@@ -14,9 +14,9 @@ make setup
 make help
 ```
 
-Setup uses the locked dependencies and the committed pypath submodule revision, and compiles
-the native reference helper (`make native-reference` to compile it separately). A serving
-container needs no resolver, reference rebuild or sibling prototype checkout.
+Setup uses the locked dependencies and the committed pypath submodule revision; the
+resolver's Rust extension is built by `uv sync`. A serving container needs no resolver,
+reference rebuild or sibling prototype checkout.
 
 ## Run existing data
 
@@ -52,9 +52,19 @@ OMNIPATH_LIBRARY_DIR=/path/to/reference/identity/<fingerprint> \
 ```
 
 The limit applies per dataset; a source parser may still download its full input.
-Versions are immutable. Prepare hubs and the identity library only when needed,
-using `make hubs HUB_ARGS="..."` and the identity commands in the
-[identity layer guide](packages/build/REFERENCE.md); see also the
+Versions are immutable. Prepare hubs and the identity library only when needed:
+
+```sh
+make hubs HUB_ARGS="--max-records 0"   # every hub, uncapped
+make reference                         # hub indexes, kv stores, identity library
+```
+
+`make reference` indexes every hub in `HUBS_DIR` (default `$(DATA_ROOT)/reference/hubs`)
+into `HUB_INDEX_ROOT` (`.../hub-index`), reusing an index while its hub export is
+unchanged, then writes the identity library to `IDENTITY_DIR/<fingerprint>`
+(`.../identity`). `IDENTITY_HUBS` restricts the hubs; `HUB_INDEX_ARGS`, `HUB_KV_ARGS`
+and `IDENTITY_ARGS` pass memory and thread limits through. See the
+[identity layer guide](packages/build/REFERENCE.md), the
 [resource pipeline](packages/build/README.md),
 [entity resolution](core_documentation/resolution.md) and
 [orchestration guide](packages/build/ORCHESTRATION.md).

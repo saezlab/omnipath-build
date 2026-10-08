@@ -1,4 +1,4 @@
-"""Goslin 2 normalized shorthand identifiers for normalized reference hubs.
+"""Goslin 2 normalized shorthand identifiers of the chemical hubs (hub-index ``goslin`` stage).
 
 IDs are local level-qualified descriptors, not accession numbers issued by Goslin.
 Only the most specific successfully parsed name level on each record is admitted.
@@ -6,7 +6,6 @@ Only the most specific successfully parsed name level on each record is admitted
 
 from __future__ import annotations
 
-import argparse
 import concurrent.futures
 import contextlib
 import json
@@ -199,20 +198,3 @@ def build(hubs, output, workers=6, memory="4GB", cache_dir=None):
     finally:
         cache.close()
         c.close()
-
-
-if __name__ == "__main__":
-    p = argparse.ArgumentParser()
-    p.add_argument("--hubs", required=True)
-    p.add_argument("--output", required=True)
-    p.add_argument("--workers", type=int, default=6)
-    p.add_argument("--memory", default="4GB")
-    p.add_argument("--cache-dir")
-    args = p.parse_args()
-    build(
-        {s: str(Path(args.hubs) / (s + ".parquet")) for s in SOURCES},
-        args.output,
-        args.workers,
-        args.memory,
-        args.cache_dir,
-    )

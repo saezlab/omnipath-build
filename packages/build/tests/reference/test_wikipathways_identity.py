@@ -27,10 +27,10 @@ def test_native_gene_uri_is_not_overruled_by_enriched_protein_list():
     assert all(x["ns"] != "uniprot" for x in protein.identifiers)
 
 
-def test_replay_scopes_ids_corroborating_a_taxon_qualified_symbol(tmp_path):
-    import json
-    import pyarrow.parquet as pq
-    from omnipath_build.reference.replay_resources import extract
+def test_ids_corroborating_a_taxon_qualified_symbol_are_taxon_scoped():
+    from omnipath_resolver.canonical.match import votes_for
+    from omnipath_resolver.canonical.policy import get_policy
+    from omnipath_resolver.observations import observation_bundle
 
     row = {
         "taxon_id": "10090",
@@ -45,8 +45,13 @@ def test_replay_scopes_ids_corroborating_a_taxon_qualified_symbol(tmp_path):
         "target_uniprot": "P12669",
         "target_label": "Wnt3a",
     }
-    extract(("wikipathways", 0, [("interactions:0", json.dumps(row))], str(tmp_path)))
-    votes = pq.read_table(tmp_path / "v-0.parquet").to_pylist()
+    ex = SilverExtractor("wikipathways", "interactions")
+    ex.process_record(map_interaction(row), row, "interactions:0", 0)
+    votes = []
+    for key, obs in ex.entities.items():
+        policy = get_policy(obs.entity_type)
+        normalized, observed = votes_for(obs, policy)
+        votes += observation_bundle(key, obs, normalized, observed, policy.library)[1]
     protein_ids = [v for v in votes if v["ns"] == "uniprot"]
     assert protein_ids
     assert {v["scope"] for v in protein_ids} == {"10090"}

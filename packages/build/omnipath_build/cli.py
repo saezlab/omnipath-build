@@ -141,48 +141,6 @@ def main(args: list[str] | None = None) -> int:
         default=1,
         help="Number of parallel hub worker threads",
     )
-    hubs_parser.add_argument(
-        "--no-library",
-        action="store_true",
-        help="Skip building the reference entity library after the hub files",
-    )
-
-    library_parser = subparsers.add_parser(
-        "build-library",
-        help="Build and publish the complete compact reference from all source hubs",
-    )
-    library_parser.add_argument(
-        "--hubs-dir",
-        default="data/reference/hubs",
-        help="Directory containing per-source hub Parquet files",
-    )
-    library_parser.add_argument(
-        "--output-dir",
-        default=None,
-        help="Library directory (default: <hubs-dir>/../library)",
-    )
-    library_parser.add_argument(
-        "--taxa",
-        nargs="+",
-        help="Explicitly restrict NCBI taxonomy ids (default: every taxon in the hubs)",
-    )
-    library_parser.add_argument(
-        "--all-taxa",
-        action="store_true",
-        help="Include every taxon present in the hubs (the default; overrides --taxa)",
-    )
-    library_parser.add_argument(
-        "--libraries",
-        nargs="+",
-        choices=["gene_protein", "chemical"],
-        default=None,
-        help="Libraries to build (default: both)",
-    )
-    library_parser.add_argument(
-        "--memory-limit", default=None, help="DuckDB memory limit, e.g. 8GB"
-    )
-    library_parser.add_argument("--threads", type=int, default=None, help="DuckDB thread count")
-
     hub_index_parser = subparsers.add_parser(
         "build-hub-index", help="Build the rule-independent index of one hub (identity layer)"
     )
@@ -301,32 +259,11 @@ def main(args: list[str] | None = None) -> int:
             parsed.output_dir,
             hubs=parsed.hubs,
             max_records=max_records,
-            build_library=not parsed.no_library,
             parallel=parsed.parallel,
         )
         for name, count in counts.items():
             print(f"{name}: {count}")
         return 0
-
-    if parsed.command == "build-library":
-        from .canonical import LIBRARIES, build_library
-
-        result = build_library(
-            parsed.hubs_dir,
-            parsed.output_dir,
-            taxa=parsed.taxa,
-            all_taxa=parsed.all_taxa,
-            libraries=parsed.libraries or LIBRARIES,
-            memory_limit=parsed.memory_limit,
-            threads=parsed.threads,
-            on_progress=lambda name, status: print(f"{name}: {status}", file=sys.stderr),
-        )
-        for name, counts in result.counts.items():
-            print(f"{name}: {counts['nodes']:,} nodes, {counts['xrefs']:,} xrefs")
-        for name in result.skipped:
-            print(f"{name}: skipped (missing hubs)", file=sys.stderr)
-        print(f"library: {result.library_dir} ({result.elapsed_s:.1f}s)")
-        return 0 if result.counts else 1
 
     if parsed.command == "run":
         from .orchestrator import (

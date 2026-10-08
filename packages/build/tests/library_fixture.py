@@ -1,4 +1,4 @@
-"""Synthetic identifier hubs + reference library shared by the canonicalization tests.
+"""Synthetic identifier hubs + identity library shared by the canonicalization tests.
 
 The hubs mirror the shape of the real ``data/reference/hubs/*.parquet`` files
 (``source_type, source_id, hub_id, taxonomy_id, backend``) and cover the
@@ -27,14 +27,23 @@ import shutil
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from omnipath_build.canonical.library import build_library
 from omnipath_build.hubs.schema import HUB_SCHEMA
+from omnipath_build.identity import (
+    build_hub_index,
+    build_hub_kv,
+    build_identity,
+    build_identity_kv,
+)
+from omnipath_build.identity.common import CHEMICAL, HUBS, PROTEIN
 
 WATER = "XLYOFNOQVPJJNP-UHFFFAOYSA-N"
 ASPIRIN = "BSYNRYMUTXBXSQ-UHFFFAOYSA-N"
 LINKED = "KKKKKKKKKKKKKK-LLLLLLLLLL-N"
 MIX_A = "AAAAAAAAAAAAAA-BBBBBBBBBB-C"
 MIX_B = "DDDDDDDDDDDDDD-BBBBBBBBBB-C"
+# WATER's connectivity with another stereo/isotope layer: a different molecule, not a
+# protonation state of WATER (those differ only in the last character).
+VARIANT = WATER[:15] + "ZZZZZZZZZZ-N"
 
 
 def _hub(hubs: Path, name: str, rows, backend: str | None = None) -> None:
@@ -146,6 +155,8 @@ def write_hubs(hubs: Path) -> None:
             ("ensg", "ENSG00000000055", "55", "9606"),
             ("refseq", "NR_000055.1", "55", "9606"),
             ("entrez", "4242", "4242", "9606"),
+            ("entrez", "22059", "22059", "10090"),
+            ("genesymbol", "Trp53", "22059", "10090"),
         ],
         backend="gene2ensembl",
     )
@@ -225,8 +236,6 @@ def write_hubs(hubs: Path) -> None:
         ],
     )
 
-    from omnipath_build.reference.build_reference import CHEMICAL, PROTEIN
-
     for name in CHEMICAL + PROTEIN:
         if not (hubs / f"{name}.parquet").exists():
             _hub(hubs, name, [])
@@ -239,7 +248,7 @@ def _write_external_cid_claim_hubs(hubs: Path) -> None:
     chemistry. The pubchem hub is empty in the shared hubs, so this lives in its
     own cached template instead of the base one.
     """
-    _hub(hubs, "pubchem", [("inchikey", ASPIRIN, "962", "0")])
+    _hub(hubs, "pubchem", [("pubchem", "962", "962", "0"), ("inchikey", ASPIRIN, "962", "0")])
 
 
 def _write_exact_structure_hubs(hubs: Path) -> None:
@@ -254,7 +263,7 @@ def _write_exact_structure_hubs(hubs: Path) -> None:
     _hub(
         hubs,
         "chebi",
-        [("chebi", "CHEBI:1", "CHEBI:1", "0"), ("inchikey", WATER[:-1] + "O", "CHEBI:1", "0")],
+        [("chebi", "CHEBI:1", "CHEBI:1", "0"), ("inchikey", VARIANT, "CHEBI:1", "0")],
     )
     _hub(
         hubs,
@@ -293,12 +302,25 @@ def _build_template(root: Path, variant: str) -> Path:
     write_hubs(root / "hubs")
     if VARIANTS[variant]:
         VARIANTS[variant](root / "hubs")
-    reference = build_library(root / "hubs", root / "library").library_dir
-    # Copies below hard-link these files, so an in-place write by a test would
-    # silently corrupt the shared template: make that fail loudly instead.
-    for path in reference.rglob("*"):
-        if path.is_file() and not path.is_symlink():
-            path.chmod(0o444)
+    hubs, index = root / "hubs", root / "hub-index"
+    options = dict(memory="512MB", threads=2, min_free_gib=0)
+    for hub in HUBS:
+        # The hub index builder needs rows; the empty placeholder hubs are skipped.
+        if (hubs / f"{hub}.parquet").exists() and pq.read_metadata(
+            hubs / f"{hub}.parquet"
+        ).num_rows:
+            build_hub_index(hub, hubs, index, goslin_cache=root / "goslin", **options)
+            build_hub_kv(hub, index, memory="512MB", threads=2, workers=1, min_free_gib=0)
+    snapshot = build_identity(index, root / "identity", **options)
+    reference = root / "identity" / snapshot["fingerprint"]
+    build_identity_kv(reference, min_free_gib=0)
+    # Copies below hard-link these files, and every copy reads the template's hub
+    # indexes, so an in-place write by a test would silently corrupt the shared
+    # template: make that fail loudly instead.
+    for directory in (reference, index):
+        for path in directory.rglob("*"):
+            if path.is_file() and not path.is_symlink():
+                path.chmod(0o444)
     return reference
 
 
@@ -335,7 +357,7 @@ def _link_or_copy(source, destination, *, follow_symlinks=True):
 
 
 def build_fixture_library(root: Path, variant: str = "base") -> Path:
-    """Independent copies of one production-built reference per test process.
+    """Independent copies of one production-built identity library per test process.
 
     Each variant is built once per process (lazily, on first use). Callers get
     their own directory tree whose (read-only) files are hard links to the

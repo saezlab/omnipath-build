@@ -393,7 +393,7 @@ which mappers retain molecular detail and which require further source work.
 - [Current entity and relation keys](../packages/core/omnipath_core/keys.py)
 - [Shared input schemas](../packages/core/omnipath_core/silver_schema.py)
 - [UniProt reference identifiers](../packages/build/omnipath_build/hubs/sources/uniprot.py)
-- [Gene–product mappings and current projection policy](../packages/build/omnipath_build/reference/build_reference.py)
+- [Gene–product mappings and identity decisions](../packages/build/omnipath_build/identity/decisions.py)
 - [Migration-branch integration](reports/molecular-parquet-migration-integration-20261005.md)
 
 These code links describe the implementation. The coverage audit distinguishes

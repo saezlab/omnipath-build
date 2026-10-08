@@ -164,7 +164,8 @@ python -m omnipath_build.cli build --sources signor chebi \
 The versions JSON maps source names to numeric versions. Omit `--max-records`
 for an unrestricted resource build. Reference library discovery uses an explicit
 Python `library_dir`, then `OMNIPATH_LIBRARY_DIR`, then
-`<output-dir>/reference/library`. Missing libraries leave identities unmatched.
+`<output-dir>/reference/library`. A missing library leaves identities unmatched; a
+directory that is not an `omnipath-identity-v2` library is rejected.
 
 | Control | Default | Scope |
 |---|---:|---|

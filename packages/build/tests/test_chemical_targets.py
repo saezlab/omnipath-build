@@ -2,19 +2,18 @@ import json
 
 import pytest
 
-from library_fixture import WATER, ASPIRIN, build_fixture_library
+from library_fixture import ASPIRIN, VARIANT, WATER, build_fixture_library
 from omnipath_resolver.resolver import EntityResolver
 from omnipath_build.silver import RawEntityObservation, SilverExtractor
 from writer_fixture import write_observations
 
-VARIANT = WATER[:-1] + "O"
 MISSING = "ZZZZZZZZZZZZZZ-UHFFFAOYSA-N"
 
 
 @pytest.fixture(scope="module")
 def chemical_library(tmp_path_factory):
-    # Authoritative identities are built through the same compiler and compact
-    # index as real resources (shared "exact-structures" reference: PubChem
+    # Authoritative identities are built by the same identity builders as real
+    # resources (shared "exact-structures" reference: PubChem
     # CID 1 is WATER, ChEBI:1 a WATER-connectivity VARIANT, CHEMBL1 ASPIRIN);
     # modifying retired Parquet exports cannot affect lookup.
     return build_fixture_library(

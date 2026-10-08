@@ -29,7 +29,7 @@ def log(event: str, **kw: Any) -> None:
 
 
 def raise_open_file_limit() -> None:
-    """A classic library opens up to ~1000 LMDB shards; lift the soft fd limit."""
+    """Every hub index opens its own LMDB shards; lift the soft fd limit."""
     try:
         import resource
 
@@ -42,28 +42,15 @@ def raise_open_file_limit() -> None:
 
 
 def load_runtime(path: str | Path, *, cache_dir: str | Path | None = None) -> tuple[Any, dict]:
-    """Open the runtime a library or identity snapshot directory calls for.
+    """Open the identity runtime of an ``omnipath-identity-v2`` directory."""
+    from omnipath_resolver.identity_runtime import IdentityRuntime
 
-    ``FullRuntime`` serves a classic LMDB library (its gene-role component lives
-    inside the same directory). ``IdentityRuntime`` is imported lazily and used
-    when the manifest format is ``omnipath-identity-v2``.
-    """
     path = Path(path)
     raise_open_file_limit()
     manifest = json.loads((path / "manifest.json").read_text())
-    fmt = manifest.get("format")
-    if fmt == IDENTITY_FORMAT:
-        try:
-            from omnipath_resolver.identity_runtime import IdentityRuntime
-        except ImportError as exc:
-            raise RuntimeError(
-                f"{path} is an identity snapshot ({IDENTITY_FORMAT}) but "
-                "omnipath_resolver.identity_runtime is not importable: " + str(exc)
-            ) from exc
-        return IdentityRuntime(path, cache_dir=cache_dir), manifest
-    from omnipath_resolver.index import FullRuntime
-
-    return FullRuntime(path), manifest
+    if manifest.get("format") != IDENTITY_FORMAT:
+        raise ValueError(f"{path} is not an identity directory ({IDENTITY_FORMAT})")
+    return IdentityRuntime(path, cache_dir=cache_dir), manifest
 
 
 def result_rows(resolved: dict[str, Any]) -> list[dict[str, Any]]:

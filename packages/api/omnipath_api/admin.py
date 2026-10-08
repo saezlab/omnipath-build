@@ -171,8 +171,6 @@ class AdminService:
                 logger.exception("Cannot read hub manifest %s", manifest_path)
                 manifest = None
         library_dir = self.library_dir().resolve()
-        if (library_dir / "current").is_symlink():
-            library_dir = (library_dir / "current").resolve(strict=True)
         library_manifest: dict[str, Any] | None = None
         if (library_dir / "manifest.json").is_file():
             try:
@@ -183,17 +181,8 @@ class AdminService:
                 logger.exception("Cannot read library manifest %s", library_dir)
                 library_manifest = None
         library_ready = bool(
-            library_manifest
-            and library_manifest.get("complete") is True
-            and library_manifest.get("format") == "omnipath-full-two-index-msgpack-zstd-v2"
+            library_manifest and library_manifest.get("format") == "omnipath-identity-v2"
         )
-        counts = (library_manifest or {}).get("counts", {})
-        library = {
-            "entities": int(counts.get("entities", 0)),
-            "identifiers": int(counts.get("identifiers", 0)),
-            "candidate_limit": (library_manifest or {}).get("candidate_limit"),
-            "ambiguous": (library_manifest or {}).get("ambiguous"),
-        }
         built = self._built_resources()
         self._refresh_jobs()
         with self._lock:
@@ -208,7 +197,6 @@ class AdminService:
                 "ready": library_ready,
                 "hubs_dir": str(hubs_dir),
                 "library_dir": str(library_dir),
-                "library": library,
                 "library_manifest": library_manifest,
                 "hubs": hub_files,
                 "dictionaries": dictionaries,
@@ -474,12 +462,8 @@ class AdminService:
             stages = [f"emit:{name}" for name in names]
             if params.get("include_dictionaries", True):
                 stages.append("dictionaries")
-            if params.get("build_library", True) and names:
-                stages.append("library:parquet")
             stages.append("manifest")
             return stages
-        if action == "build_library":
-            return ["library:parquet"]
         if action in {"build_resource", "build_resources"}:
             sources = params.get("sources") or ([params["source"]] if params.get("source") else [])
             stages = ["discover"]
@@ -567,23 +551,9 @@ class AdminService:
                 hubs=job.params.get("hubs"),
                 max_records=max_records,
                 include_dictionaries=job.params.get("include_dictionaries", True),
-                build_library=job.params.get("build_library", True),
                 parallel=parallel,
                 on_progress=on_progress,
                 should_cancel=should_cancel,
-            )
-        if job.action == "build_library":
-            return self.ops.build_library(
-                hubs_dir=hubs_dir,
-                library_dir=self.library_dir(),
-                on_progress=lambda name, status: on_progress(
-                    {
-                        "pipeline": "resolver",
-                        "stage": f"library:{name}",
-                        "status": status,
-                        "message": f"{'Building' if status == 'running' else 'Built'} {name} library",
-                    }
-                ),
             )
         if job.action in {"build_resource", "build_resources"}:
             sources = job.params.get("sources") or [job.params["source"]]
@@ -713,10 +683,6 @@ class AdminService:
         if job.action == "export_hubs":
             names = list(job.params.get("hubs") or hub_names())
             paths.extend(self._hub_log_path(name) for name in names)
-            if job.params.get("build_library", True):
-                paths.append(self.library_dir() / "build.log")
-        elif job.action == "build_library":
-            paths.append(self.library_dir() / "build.log")
         elif job.action in {"build_resource", "build_resources"}:
             sources = job.params.get("sources") or (
                 [job.params["source"]] if job.params.get("source") else []
@@ -762,9 +728,7 @@ class AdminService:
                     return job.log_path
             candidate = self.data_root / "logs" / "jobs" / f"{name}.log"
             return candidate if candidate.is_file() else None
-        if kind in {"hub", "library"}:
-            if kind == "library":
-                return self.library_dir() / "build.log"
+        if kind == "hub":
             return self._hub_log_path(name)
         if kind == "resource":
             if version:

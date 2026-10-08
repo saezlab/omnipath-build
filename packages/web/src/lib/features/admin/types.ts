@@ -62,11 +62,6 @@ export type AdminStatus = {
   resolver: {
     ready: boolean;
     hubs: FileInfo[];
-    library?: {
-      name: string;
-      nodes: FileInfo;
-      xrefs: FileInfo;
-    }[];
   };
   resources: { built: BuiltResource[]; logs?: Record<string, LogInfo> };
   job: Job | null;

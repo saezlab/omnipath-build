@@ -128,14 +128,14 @@ def test_admin_is_disabled_without_secret_and_readonly_blocks_every_mutation(eng
         create_app(engine=engine, settings=Settings(admin_secret="", read_only=False))
     )
     assert client.get("/admin/status").status_code == 503
-    assert client.post("/admin/jobs", json={"action": "build_library"}).status_code == 503
+    assert client.post("/admin/jobs", json={"action": "export_hubs"}).status_code == 503
     client = TestClient(
         create_app(engine=engine, settings=Settings(admin_secret="secret", read_only=True))
     )
     assert client.get("/admin/status").status_code == 401
     client.headers["x-admin-secret"] = "secret"
     for path, body in [
-        ("/admin/jobs", {"action": "build_library"}),
+        ("/admin/jobs", {"action": "export_hubs"}),
         ("/admin/releases", {}),
         ("/admin/jobs/abc/cancel", None),
     ]:
@@ -251,26 +251,26 @@ class WorkerOps:
     def available(self):
         return True
 
-    def build_library(self, **kwargs):
+    def export_hubs(self, **kwargs):
         return {"completed": True}
 
 
 def test_durable_jobs_survive_api_restart_and_worker_is_separate(tmp_path):
     first = AdminService(tmp_path, ops=WorkerOps())
-    initial = first.start("build_library")
+    initial = first.start("export_hubs")
     assert initial["status"] == "queued"
     assert not any(t.name.startswith("admin-") for t in threading.enumerate())
     restarted = AdminService(tmp_path, ops=WorkerOps())
     assert restarted.get_job(initial["id"])["status"] == "queued"
     with pytest.raises(RuntimeError, match="already"):
-        restarted.start("build_library")
+        restarted.start("export_hubs")
     run_worker(tmp_path, ops=WorkerOps(), once=True)
     assert restarted.get_job(initial["id"])["status"] == "done"
 
 
 def test_cancel_after_completed_work_still_records_result(tmp_path):
     service = AdminService(tmp_path, ops=WorkerOps())
-    job = Job("build_library", {}, [])
+    job = Job("export_hubs", {}, [])
     service.run_job(job, should_stop=lambda: True)
     assert job.status == "done"
     assert job.result == {"completed": True}
@@ -278,7 +278,7 @@ def test_cancel_after_completed_work_still_records_result(tmp_path):
 
 def test_worker_lock_recovery_and_cancelled_queue(tmp_path):
     store = JobStore(tmp_path)
-    job = Job("build_library", {}, [])
+    job = Job("export_hubs", {}, [])
     store.enqueue(job)
     claimed = store.claim()
     assert claimed.id == job.id
@@ -288,7 +288,7 @@ def test_worker_lock_recovery_and_cancelled_queue(tmp_path):
     run_worker(tmp_path, ops=WorkerOps(), once=True)
     assert store.get(job.id).status == "failed"
     assert "stopped before completion" in store.get(job.id).error
-    next_job = Job("build_library", {}, [])
+    next_job = Job("export_hubs", {}, [])
     store.enqueue(next_job)
     assert store.cancel(next_job.id).status == "cancelled"
     assert store.claim() is None
@@ -302,7 +302,7 @@ def test_queue_persistence_failure_is_not_success(tmp_path, monkeypatch):
 
     monkeypatch.setattr(service.job_store, "enqueue", fail)
     with pytest.raises(OSError, match="disk full"):
-        service.start("build_library")
+        service.start("export_hubs")
 
 
 def test_queue_readers_tolerate_file_created_before_its_table(tmp_path):

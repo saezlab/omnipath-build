@@ -191,7 +191,7 @@ def test_process_records_runs_the_silver_extractor():
 
 
 class FakeRuntime:
-    """Resolve by looking at the first vote's identifier; mimics FullRuntime's shapes."""
+    """Resolve by looking at the first vote's identifier; mimics the identity runtime's shapes."""
 
     def __init__(self, table):
         self.table = table
@@ -276,33 +276,27 @@ def test_resolve_resource_writes_results_and_metrics(tmp_path):
     assert again.calls == []
 
 
-def test_load_runtime_dispatches_on_manifest_format(tmp_path, monkeypatch):
+def test_load_runtime_opens_only_identity_directories(tmp_path, monkeypatch):
     library = tmp_path / "library"
     library.mkdir()
     (library / "manifest.json").write_text(json.dumps({"format": "omnipath-reference-v1"}))
-    created = []
-
-    class Classic:
-        def __init__(self, path):
-            created.append(("classic", path))
-
-    monkeypatch.setattr("omnipath_resolver.index.FullRuntime", Classic)
-    runtime, manifest = regression_resolve.load_runtime(library)
-    assert isinstance(runtime, Classic) and created == [("classic", library)]
+    with pytest.raises(ValueError, match="not an identity directory"):
+        regression_resolve.load_runtime(library)
 
     snapshot = tmp_path / "snapshot"
     snapshot.mkdir()
     (snapshot / "manifest.json").write_text(json.dumps({"format": "omnipath-identity-v2"}))
+    created = []
 
     class Identity:
         def __init__(self, path, cache_dir=None):
-            created.append(("identity", path, cache_dir))
+            created.append((path, cache_dir))
 
     module = types.ModuleType("omnipath_resolver.identity_runtime")
     module.IdentityRuntime = Identity
     monkeypatch.setitem(sys.modules, "omnipath_resolver.identity_runtime", module)
     runtime, _ = regression_resolve.load_runtime(snapshot, cache_dir="/cache")
-    assert isinstance(runtime, Identity) and created[-1] == ("identity", snapshot, "/cache")
+    assert isinstance(runtime, Identity) and created == [(snapshot, "/cache")]
 
 
 def test_diff_classifies_every_change_and_keeps_votes(tmp_path):

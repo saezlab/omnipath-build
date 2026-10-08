@@ -84,7 +84,6 @@
 
   type ResolverCard = {
     id: string;
-    kind: 'hub' | 'library';
     title: string;
     file: FileInfo;
   };
@@ -97,21 +96,9 @@
     datasets: number;
   };
 
-  const resolverCards = $derived.by((): ResolverCard[] => {
-    const library = (status?.resolver.library ?? []).map((item) => ({
-      id: item.name,
-      kind: 'library' as const,
-      title: item.name.replaceAll('_', ' '),
-      file: item.nodes,
-    }));
-    const hubs = (status?.resolver.hubs ?? []).map((file) => ({
-      id: file.name,
-      kind: 'hub' as const,
-      title: file.name,
-      file,
-    }));
-    return [...library, ...hubs];
-  });
+  const resolverCards = $derived.by((): ResolverCard[] =>
+    (status?.resolver.hubs ?? []).map((file) => ({ id: file.name, title: file.name, file })),
+  );
 
   function builtStamp(item: BuiltResource): number {
     return Math.max(item.entities.mtime || 0, item.relations.mtime || 0, item.payloads.mtime || 0);
@@ -381,12 +368,7 @@
       hubs: [name],
       max_records: parsedMaxRecords(),
       parallel: parsedParallel(),
-      build_library: true,
     });
-  }
-
-  function rebuildLibrary() {
-    return trigger({ action: 'build_library' });
   }
 
   function validateResourceVersion() {
@@ -412,7 +394,6 @@
         action: 'export_hubs',
         max_records: parsedMaxRecords(),
         parallel: parsedParallel(),
-        build_library: true,
       });
     }
     if (!validateResourceVersion()) return;
@@ -433,21 +414,10 @@
   function jobTouchesHub(name: string) {
     const job = status?.job;
     if (!job || !jobRunning) return false;
-    if (job.action === 'build_library') return false;
     if (job.action !== 'export_hubs') return false;
     const hubs = job.params.hubs as string[] | undefined;
     if (!hubs?.length) return true;
     return hubs.includes(name);
-  }
-
-  function jobTouchesLibrary(name: string) {
-    const job = status?.job;
-    if (!job || !jobRunning) return false;
-    if (job.action === 'build_library') return true;
-    if (job.action === 'export_hubs' && job.params.build_library !== false) {
-      return runningStage?.id === `library:${name}` || runningStage?.id?.startsWith('library:');
-    }
-    return false;
   }
 
   function jobTouchesResource(name: string) {
@@ -710,15 +680,14 @@
           {:else if searchedResolver.length > 0}
             <div class="grid grid-cols-1 items-start gap-4 xl:grid-cols-2 2xl:grid-cols-3">
               {#each searchedResolver as card (card.id)}
-                {@const active =
-                  card.kind === 'hub' ? jobTouchesHub(card.id) : jobTouchesLibrary(card.id)}
+                {@const active = jobTouchesHub(card.id)}
                 <AdminCard
                   title={card.title}
                   subtitle={card.file.exists
                     ? `${fmtBytes(card.file.size_bytes)} parquet`
                     : 'Not built'}
                   actionLabel={card.file.exists ? 'Rebuild' : 'Build'}
-                  onAction={() => (card.kind === 'hub' ? rebuildHub(card.id) : rebuildLibrary())}
+                  onAction={() => rebuildHub(card.id)}
                   disabled={!canBuild}
                   busy={active}
                   statusMessage={active ? runningStage?.message || '' : ''}
@@ -735,8 +704,7 @@
                       ]
                     : []}
                   hasLogs={Boolean(card.file.log?.exists) || active}
-                  onOpenLogs={() =>
-                    openLogs(card.kind === 'hub' ? 'hub' : 'library', card.id, `${card.title} log`)}
+                  onOpenLogs={() => openLogs('hub', card.id, `${card.title} log`)}
                 />
               {/each}
             </div>

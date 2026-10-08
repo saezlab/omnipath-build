@@ -1501,7 +1501,6 @@ source = { editable = "packages/build" }
 dependencies = [
     { name = "duckdb" },
     { name = "lmdb" },
-    { name = "msgpack" },
     { name = "omnipath-core" },
     { name = "omnipath-resolver" },
     { name = "psutil" },
@@ -1511,7 +1510,6 @@ dependencies = [
     { name = "pyyaml" },
     { name = "rdkit" },
     { name = "urllib3" },
-    { name = "zstandard" },
 ]
 
 [package.optional-dependencies]
@@ -1525,7 +1523,6 @@ requires-dist = [
     { name = "cython", marker = "extra == 'goslin-native'", specifier = ">=3,<4" },
     { name = "duckdb", specifier = ">=1.5,<2" },
     { name = "lmdb", specifier = ">=1.8.1,<2" },
-    { name = "msgpack", specifier = ">=1.1,<2" },
     { name = "omnipath-core", editable = "packages/core" },
     { name = "omnipath-resolver", editable = "packages/resolver" },
     { name = "psutil", specifier = ">=5.9" },
@@ -1536,7 +1533,6 @@ requires-dist = [
     { name = "rdkit", specifier = ">=2025.3,<2027" },
     { name = "setuptools", marker = "extra == 'goslin-native'", specifier = ">=61" },
     { name = "urllib3", specifier = ">=2.0.0" },
-    { name = "zstandard", specifier = ">=0.25,<1" },
 ]
 provides-extras = ["goslin-native"]
 

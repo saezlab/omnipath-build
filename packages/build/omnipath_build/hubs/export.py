@@ -25,7 +25,6 @@ def export_hubs(
     hubs: Sequence[str] | None = None,
     max_records: int | None = 100,
     include_dictionaries: bool = True,
-    build_library: bool = True,
     parallel: int = 1,
     on_progress: ProgressCallback | None = None,
     should_cancel: CancelCheck | None = None,
@@ -122,25 +121,6 @@ def export_hubs(
             current=counts["id_type"] + counts["backend"] + counts["organism"],
             message="Wrote dictionaries",
         )
-
-    if build_library and selected:
-        check_cancel(should_cancel)
-        from ..canonical import build_library as _build_library
-
-        def _library_progress(name: str, status: str) -> None:
-            check_cancel(should_cancel)
-            emit(
-                on_progress,
-                pipeline="resolver",
-                stage=f"library:{name}",
-                status=status,
-                message=f"{'Building' if status == 'running' else 'Built'} {name} library",
-            )
-
-        library = _build_library(target, target.parent / "library", on_progress=_library_progress)
-        for name, lib_counts in library.counts.items():
-            counts[f"library:{name}:nodes"] = lib_counts["nodes"]
-            counts[f"library:{name}:xrefs"] = lib_counts["xrefs"]
 
     check_cancel(should_cancel)
     emit(

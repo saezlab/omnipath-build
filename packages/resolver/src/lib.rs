@@ -1,4 +1,4 @@
-//! Python binding for compact-index entity decisions.
+//! Python binding for batch entity decisions.
 use pyo3::prelude::*;
 mod precomputed;
 

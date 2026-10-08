@@ -1,4 +1,4 @@
-"""Normalize observation evidence and resolve it through the compact index."""
+"""Normalize observation evidence and resolve it through the identity library."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from omnipath_core.naming import normalize_namespace
 from .identifiers import normalize_identifier, normalize_ns
 from .label import assign_label
 from .library import pin_library
-from .policy import LIBRARIES, EntityPolicy, CHEMICAL, PROTEIN_ENTITY_TYPES, get_policy
+from .policy import EntityPolicy, CHEMICAL, PROTEIN_ENTITY_TYPES, get_policy
 
 # Record kind -> reference library (1 chemical, 2 protein, 3 gene, 4 reaction).
 REFERENCE_LIBRARY = {1: "chemical", 4: "reaction"}
@@ -167,7 +167,7 @@ def votes_for(obs: Any, policy: EntityPolicy) -> tuple[list[Vote], dict[str, lis
 
 
 class LibraryMatcher:
-    """Batch resolution against one pinned immutable compact reference."""
+    """Batch resolution against one pinned immutable identity library."""
 
     def __init__(self, library_dir, *, defer_aliases=False, memory_limit=None):
         self.library_dir = pin_library(library_dir)
@@ -187,14 +187,12 @@ class LibraryMatcher:
         }
         from ..identity_runtime import open_runtime
 
-        # Identity snapshots (manifest format omnipath-identity-v2) resolve on demand
-        # from Parquet; anything else is a compiled LMDB reference (FullRuntime).
         self.runtime = (
             open_runtime(self.library_dir, memory_limit=memory_limit)
             if self.library_dir is not None and self.library_dir.exists()
             else None
         )
-        self.libraries = list(getattr(self.runtime, "libraries", LIBRARIES)) if self.runtime else []
+        self.libraries = list(self.runtime.libraries) if self.runtime else []
 
     def available(self, library):
         return library in self.libraries
@@ -395,7 +393,7 @@ class LibraryMatcher:
         label = assign_label(ns, ident, aliases, policy)
         if policy.entity_class == "cv_term" and label == ident:
             # A term cited by its id alone (UniProt's GO terms) is named by its ontology.
-            label = getattr(self.runtime, "term_label", lambda term: None)(ident) or label
+            label = (self.runtime.term_label(ident) if self.runtime else None) or label
         return Match(
             canonical_namespace=ns,
             canonical_identifier=ident,

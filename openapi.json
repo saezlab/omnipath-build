@@ -7,7 +7,6 @@
           "action": {
             "enum": [
               "export_hubs",
-              "build_library",
               "build_resource",
               "build_resources"
             ],
@@ -25,11 +24,6 @@
               }
             ],
             "title": "Batch Size"
-          },
-          "build_library": {
-            "default": true,
-            "title": "Build Library",
-            "type": "boolean"
           },
           "force_refresh": {
             "default": false,

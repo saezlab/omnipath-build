@@ -1055,14 +1055,9 @@ export interface components {
              * Action
              * @enum {string}
              */
-            action: "export_hubs" | "build_library" | "build_resource" | "build_resources";
+            action: "export_hubs" | "build_resource" | "build_resources";
             /** Batch Size */
             batch_size?: number | null;
-            /**
-             * Build Library
-             * @default true
-             */
-            build_library: boolean;
             /**
              * Force Refresh
              * @default false

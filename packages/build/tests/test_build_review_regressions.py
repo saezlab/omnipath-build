@@ -2,14 +2,11 @@
 
 import subprocess
 import sys
-from pathlib import Path
 from types import SimpleNamespace
 
 import pyarrow.parquet as pq
 import pytest
 
-from omnipath_build.canonical.library import build_library
-from omnipath_resolver.canonical.library import pin_library
 from omnipath_build.hubs.export import export_hubs
 from omnipath_build.hubs.writer import HubParquetWriter
 from omnipath_build.locking import BuildLock
@@ -37,7 +34,7 @@ def test_failed_hub_refresh_preserves_published_bytes(tmp_path, monkeypatch):
         fail,
     )
     with pytest.raises(RuntimeError, match="upstream"):
-        export_hubs(tmp_path, hubs=["chebi"], include_dictionaries=False, build_library=False)
+        export_hubs(tmp_path, hubs=["chebi"], include_dictionaries=False)
     assert path.read_bytes() == published
     assert not list(tmp_path.glob(".*.tmp"))
 
@@ -85,55 +82,6 @@ def test_relation_taxon_keeps_assertions_and_projects_consensus(tmp_path):
     assert tables["relation"][0]["taxon"] == "9606"
 
 
-def test_reference_refresh_pins_matcher_and_finalizer(tmp_path, monkeypatch):
-    from library_fixture import build_fixture_library
-    from omnipath_build.reference import build_reference, finalize_source_reference
-    from omnipath_build.reference import direct_compact_index
-    import shutil
-
-    fixture = build_fixture_library(tmp_path / "fixture")
-    # Exercise real publication/locking/failure paths with an already-built
-    # graph. The fixture itself goes through the complete production builder.
-    monkeypatch.setattr(
-        build_reference.Build, "__init__", lambda self, args: setattr(self, "args", args)
-    )
-    monkeypatch.setattr(
-        build_reference.Build, "run", lambda self: self.args.output.mkdir(parents=True)
-    )
-    monkeypatch.setattr(
-        finalize_source_reference, "finalize", lambda src, dst, *_: dst.mkdir(parents=True)
-    )
-    monkeypatch.setattr(
-        direct_compact_index,
-        "build_direct_compact",
-        lambda assigned, output, **kwargs: shutil.copytree(fixture, output),
-    )
-    library = tmp_path / "library"
-    first = build_library(tmp_path / "hubs", library)
-    resolver = EntityResolver(library)
-    writer = ParquetWriter(tmp_path / "resource", library_dir=library)
-    original = (first.library_dir / "manifest.json").read_bytes()
-    try:
-        second = build_library(tmp_path / "hubs", library)
-        assert first.library_dir != second.library_dir
-        assert pin_library(library) == second.library_dir.resolve()
-        assert resolver.library_dir == writer.library_dir == first.library_dir.resolve()
-        assert (first.library_dir / "manifest.json").read_bytes() == original
-
-        def fail(*args, **kwargs):
-            raise RuntimeError("graph failed")
-
-        monkeypatch.setattr(build_reference.Build, "run", fail)
-        with pytest.raises(RuntimeError, match="graph failed"):
-            build_library(tmp_path / "hubs", library)
-        assert pin_library(library) == second.library_dir.resolve()
-        assert not list((library / ".generations").glob(".*.tmp"))
-        assert not list(library.rglob("*.sqlite"))
-    finally:
-        resolver.close()
-        writer.abort()
-
-
 def test_resolution_keys_are_on_disk_and_shard_stats_deduplicate(tmp_path):
     from omnipath_build.silver import RawEntityObservation
 
@@ -154,40 +102,6 @@ def test_resolution_keys_are_on_disk_and_shard_stats_deduplicate(tmp_path):
             writer.abort()
     finally:
         resolver.close()
-
-
-def test_resume_invalidates_imported_normalizer_and_grammar(tmp_path, monkeypatch):
-    from omnipath_build.reference.build_reference import Build, CHEMICAL
-    from omnipath_resolver import goslin_cache
-    from omnipath_resolver.canonical import identifiers
-    import pyarrow as pa
-
-    hubs = tmp_path / "hubs"
-    hubs.mkdir()
-    for name in CHEMICAL:
-        pq.write_table(pa.table({"source_id": ["x"]}), hubs / f"{name}.parquet")
-    binary = tmp_path / "components"
-    binary.write_bytes(b"binary")
-    args = SimpleNamespace(
-        output=str(tmp_path / "out"), hubs=str(hubs), components=str(binary), domain="chemical"
-    )
-    monkeypatch.setattr(goslin_cache, "cache_fingerprint", lambda _: "grammar-a")
-    Build(args)
-    frozen = Path(args.output) / "inputs" / f"{CHEMICAL[0]}.parquet"
-    original = frozen.read_bytes()
-    frozen.write_bytes(bytes([original[0] ^ 1]) + original[1:])
-    with pytest.raises(RuntimeError, match="Input snapshot content"):
-        Build(args)
-    frozen.write_bytes(original)
-    monkeypatch.setattr(goslin_cache, "cache_fingerprint", lambda _: "grammar-b")
-    with pytest.raises(RuntimeError, match="Input/code changed"):
-        Build(args)
-    monkeypatch.setattr(goslin_cache, "cache_fingerprint", lambda _: "grammar-a")
-    normalizer = tmp_path / "changed_normalizer.py"
-    normalizer.write_text("changed normalizer semantics")
-    monkeypatch.setattr(identifiers, "__file__", str(normalizer))
-    with pytest.raises(RuntimeError, match="Input/code changed"):
-        Build(args)
 
 
 def test_discovery_reports_broken_imports(tmp_path, monkeypatch):

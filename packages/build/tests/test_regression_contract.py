@@ -26,7 +26,7 @@ def test_resolution_contract_across_batches(tmp_path):
             k: asdict(v)
             for k, v in resolver.resolve_entities({o.entity_key: o for o in rows}).items()
         }
-        # Chemical identity is unchanged: preserve the independent frozen oracle.
+        # Chemical identity under the identity rules (resolution.md): a frozen oracle.
         for observation in rows:
             if observation.entity_type == "chemical_entity":
                 golden = fixture["matches"][observation.entity_key]

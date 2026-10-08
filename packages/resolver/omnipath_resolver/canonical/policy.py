@@ -24,9 +24,6 @@ INCHIKEY_RE = re.compile(r"^[A-Z]{14}-[A-Z]{10}-[A-Z]$")
 GENE_PROTEIN = "gene_protein"
 CHEMICAL = "chemical"
 REACTION = "reaction"
-LIBRARIES: tuple[str, ...] = (GENE_PROTEIN, CHEMICAL)
-# The precomputed LMDB reference serves the first two; identity snapshots also serve reactions.
-IDENTITY_LIBRARIES: tuple[str, ...] = (GENE_PROTEIN, CHEMICAL, REACTION)
 REACTION_NAMESPACES = frozenset(
     {
         "rhea",

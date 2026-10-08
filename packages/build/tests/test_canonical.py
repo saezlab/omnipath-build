@@ -101,17 +101,14 @@ class TestPolicy(unittest.TestCase):
 
 
 class TestLibraryBuild(LibraryTestCase):
-    def test_complete_compact_generation(self):
+    def test_complete_identity_library(self):
         import json
 
         manifest = json.loads((self.library / "manifest.json").read_text())
-        self.assertTrue(manifest["complete"])
-        self.assertEqual(manifest["format"], "omnipath-full-two-index-msgpack-zstd-v2")
-        self.assertEqual(manifest["candidate_limit"], 10)
-        self.assertGreater(manifest["counts"]["entities"], 0)
-        self.assertGreater(manifest["counts"]["identifiers"], 0)
-        self.assertFalse(list(self.library.rglob("*.sqlite")))
-        self.assertFalse(any(p.is_symlink() for p in self.library.rglob("*")))
+        self.assertEqual(manifest["format"], "omnipath-identity-v2")
+        self.assertTrue(manifest["fingerprint"])
+        self.assertIn("uniprot", manifest["hub_indexes"])
+        self.assertTrue((self.library / "kv" / "manifest.json").is_file())
 
 
 class TestGeneProteinMatching(LibraryTestCase):

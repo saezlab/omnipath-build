@@ -628,7 +628,7 @@ class RelationPayloadsResponse(APIModel):
 
 
 class AdminJobRequest(APIModel):
-    action: Literal["export_hubs", "build_library", "build_resource", "build_resources"]
+    action: Literal["export_hubs", "build_resource", "build_resources"]
     hubs: list[str] | None = None
     sources: list[str] | None = None
     source: str | None = None
@@ -637,7 +637,6 @@ class AdminJobRequest(APIModel):
     max_records: int | None = Field(default=None, ge=0)
     batch_size: int | None = Field(default=None, ge=1)
     parallel: int | None = Field(default=1, ge=1, le=32)
-    build_library: bool = True
     include_dictionaries: bool = True
     force_refresh: bool = False
 

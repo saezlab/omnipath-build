@@ -168,7 +168,9 @@ def check(directory, packages, *, offline=False):
                 "assert all(software[name]['vocabulary']['content_sha256'] for name in ('omnipath-core', 'pypath-omnipath', 'biolink-model'))\n"
             )
         if package == "resolver":
-            code += "from omnipath_resolver import EntityResolver, LibraryMatcher, FullRuntime\n"
+            code += (
+                "from omnipath_resolver import EntityResolver, LibraryMatcher, IdentityRuntime\n"
+            )
         if package == "subsets":
             code += "from omnipath_subsets.scientific import run_product\n"
         run(str(python), "-I", "-c", code, cwd=directory)

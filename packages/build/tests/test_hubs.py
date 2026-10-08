@@ -352,7 +352,6 @@ class TestExportProgress(unittest.TestCase):
                 hubs=[],
                 max_records=1,
                 include_dictionaries=True,
-                build_library=False,
                 on_progress=events.append,
             )
         stages = [(event["stage"], event["status"]) for event in events]

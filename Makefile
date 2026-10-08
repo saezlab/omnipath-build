@@ -1,4 +1,4 @@
-.PHONY: help setup setup-python setup-web native-reference test test-pypath test-postgres test-subsets test-api check check-web build sample hubs reference publish-release api web dev load-postgres finish-postgres build-subsets serving-build serving-up serving-status serving-logs serving-stop worker-up docs
+.PHONY: help setup setup-python setup-web test test-pypath test-postgres test-subsets test-api check check-web build sample hubs reference publish-release api web dev load-postgres finish-postgres build-subsets serving-build serving-up serving-status serving-logs serving-stop worker-up docs
 
 export PKG_INFRA_CONFIG ?= $(CURDIR)/config/pkg_infra_quiet.yaml
 SOURCE ?= signor
@@ -7,6 +7,15 @@ MAX_RECORDS ?= 20
 DATA_ROOT ?= data
 POSTGRES_SCHEMA ?= omnipath
 POSTGRES_ARGS ?=
+# Identity layer (packages/build/REFERENCE.md): hub exports -> per-hub indexes -> identity library.
+HUBS_DIR ?= $(DATA_ROOT)/reference/hubs
+HUB_INDEX_ROOT ?= $(DATA_ROOT)/reference/hub-index
+IDENTITY_DIR ?= $(DATA_ROOT)/reference/identity
+# Every hub the identity layer indexes; ontology only supplies term labels and has no kv store.
+IDENTITY_HUBS ?= $(shell uv run --frozen --package omnipath-build python -c 'from omnipath_build.identity.common import HUBS, ONTOLOGY; print(*HUBS, *ONTOLOGY)')
+HUB_INDEX_ARGS ?=
+HUB_KV_ARGS ?=
+IDENTITY_ARGS ?=
 # pytest-xdist: PYTEST_WORKERS=0 runs serially; PYTEST_WORKERS=auto uses every core. 4 is the
 # default because the build tests already fork worker processes and DuckDB threads of their own.
 # Integration targets get their own (smaller) pool: each worker starts a private PostgreSQL.
@@ -21,7 +30,7 @@ COMPOSE_ENV ?=
 COMPOSE = docker compose $(if $(COMPOSE_ENV),--env-file "$(COMPOSE_ENV)") $(COMPOSE_FILES)
 
 help:
-	@echo 'setup | native-reference | sample | build | hubs | reference | publish-release'
+	@echo 'setup | sample | build | hubs | reference | publish-release'
 	@echo 'dev | api | web | serving-build | serving-up | serving-status | serving-logs | serving-stop'
 	@echo 'load-postgres | finish-postgres | build-subsets | test | check | check-web | docs'
 	@echo 'See README.md for variables and deploy/README.md for container deployment.'
@@ -30,9 +39,6 @@ setup: setup-python setup-web
 setup-python:
 	git submodule update --init pypath
 	uv sync --frozen --all-packages
-	$(MAKE) native-reference
-native-reference:
-	cargo build --release --locked --manifest-path packages/resolver/rust/reference/Cargo.toml --features parquet-input --bin anchor-components
 setup-web:
 	pnpm --dir packages/web install --frozen-lockfile
 
@@ -78,10 +84,18 @@ build:
 	uv run --frozen --package omnipath-build omnipath-build build "$(SOURCE)" --version "$(VERSION)" --max-records $(MAX_RECORDS) --output-dir "$(DATA_ROOT)"
 sample:
 	uv run --frozen --package omnipath-build python scripts/migration_smoke.py --output-dir "$(DATA_ROOT)/migration-smoke" --version "$(VERSION)" --max-records $(MAX_RECORDS)
-hubs: native-reference
-	uv run --frozen --package omnipath-build omnipath-build export-hubs $(HUB_ARGS)
-reference: native-reference
-	uv run --frozen --package omnipath-build omnipath-build build-library $(REFERENCE_ARGS)
+hubs:
+	uv run --frozen --package omnipath-build omnipath-build export-hubs --output-dir "$(HUBS_DIR)" $(HUB_ARGS)
+# Hub indexes are reused while their hub export is unchanged; build-identity also writes its kv store.
+reference:
+	@test -n "$(IDENTITY_HUBS)" || (echo 'Cannot list the identity hubs'; exit 2)
+	for hub in $(IDENTITY_HUBS); do \
+		uv run --frozen --package omnipath-build omnipath-build build-hub-index --hub $$hub --hubs-dir "$(HUBS_DIR)" --output-root "$(HUB_INDEX_ROOT)" $(HUB_INDEX_ARGS) || exit 1; \
+	done
+	for hub in $(filter-out ontology,$(IDENTITY_HUBS)); do \
+		uv run --frozen --package omnipath-build omnipath-build build-hub-kv --hub $$hub --hub-index-root "$(HUB_INDEX_ROOT)" $(HUB_KV_ARGS) || exit 1; \
+	done
+	uv run --frozen --package omnipath-build omnipath-build build-identity --hub-index-root "$(HUB_INDEX_ROOT)" --output-dir "$(IDENTITY_DIR)" $(IDENTITY_ARGS)
 publish-release:
 	@test -n "$(RELEASE_MANIFEST)" || (echo 'Set RELEASE_MANIFEST to an explicit pinned JSON file'; exit 2)
 	uv run --frozen --package omnipath-api python -m omnipath_api.publish_release "$(RELEASE_MANIFEST)" --data-root "$(DATA_ROOT)"
@@ -123,12 +137,11 @@ setup-serving:
 setup-build:
 	git submodule update --init pypath
 	uv sync --frozen --package omnipath-build
-	$(MAKE) native-reference
 setup-postgres:
 	git submodule update --init pypath
 	uv sync --frozen --package omnipath-postgres
 test-native:
-	cargo test --locked --manifest-path packages/resolver/rust/reference/Cargo.toml --features parquet-input
+	cargo test --locked --manifest-path packages/resolver/rust/reference/Cargo.toml
 check-generated:
 	uv run --frozen python scripts/generate_openapi.py --check
 	uv run --frozen python scripts/sync_biolink.py --check

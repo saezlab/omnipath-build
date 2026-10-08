@@ -35,15 +35,15 @@ links; reviewed status does not disambiguate products. Taxon-qualified symbols
 retain their organism scope. Conflicting evidence remains unresolved.
 
 `omnipath_build.hubs` and `omnipath_build.identity` own hub export and the identity
-library; see the [identity layer guide](../build/REFERENCE.md). Writers reuse
-resolver's lossless wire codecs and key encoding. The Rust `parquet-input` feature
-is enabled only for the `anchor-components` binary of the previous compact
-reference, never by the Python extension dependency. Rust sources remain in
-`src/`; Python uses the flat `omnipath_resolver/` package.
+library; see the [identity layer guide](../build/REFERENCE.md). The kv writers reuse
+the resolver's key encoding and store layout (`observations.key`, `identity_kv`).
+The Rust decision kernel lives in `rust/reference` (crate
+`anchor-resolution-serving`) and is linked into the Python extension, whose
+bindings remain in `src/`; Python uses the flat `omnipath_resolver/` package.
 
 ```sh
 uv sync --frozen --all-packages
 cargo test --locked --manifest-path packages/resolver/Cargo.toml
-cargo test --locked --manifest-path packages/resolver/rust/reference/Cargo.toml --features parquet-input
-uv run pytest packages/resolver/tests packages/build/tests/test_resolver.py packages/build/tests/test_compact_index.py
+cargo test --locked --manifest-path packages/resolver/rust/reference/Cargo.toml
+uv run pytest packages/resolver/tests packages/build/tests/test_resolver.py packages/build/tests/identity
 ```

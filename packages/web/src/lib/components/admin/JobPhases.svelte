@@ -20,7 +20,6 @@
 
   const verbs: Record<string, string> = {
     emit: 'Export',
-    library: 'Library',
     ingest: 'Ingest',
     build: 'Build',
     resolve: 'Resolve',

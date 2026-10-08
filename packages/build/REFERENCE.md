@@ -7,16 +7,29 @@ gene–product links) are computed once for all hubs. Rules and decisions are
 described in [entity resolution](../../core_documentation/resolution.md); the
 implementation spec is [docs/identity-layer-spec.md](../../docs/identity-layer-spec.md).
 
+From the repository root, `make hubs` and `make reference` run the whole sequence
+(see the [README](../../README.md#build-and-publish-resources) for their variables):
+
 ```sh
 export PYPATH_DOWNLOAD_DATADIR="$PWD/data/pypath-data"
-omnipath-build export-hubs --output-dir data/reference/hubs --max-records 0 --no-library
+make hubs HUB_ARGS="--max-records 0"
+make reference
+```
+
+`make reference` runs these commands for every identity hub (`HUBS` and `ontology`
+in `omnipath_build.identity.common`):
+
+```sh
 # Per hub: the rule-independent index and its LMDB point-lookup store.
 omnipath-build build-hub-index --hub chebi --hubs-dir data/reference/hubs --output-root data/reference/hub-index
 omnipath-build build-hub-kv --hub chebi --hub-index-root data/reference/hub-index
 # Once for all hubs: the identity decisions and their LMDB store.
 omnipath-build build-identity --hub-index-root data/reference/hub-index --output-dir data/reference/identity
-omnipath-build build-identity-kv --identity-dir data/reference/identity/<fingerprint>
 ```
+
+The ontology hub only supplies term labels, so it gets an index but no kv store.
+`build-identity` also writes the identity kv store; `build-identity-kv --force`
+rebuilds it for an existing `data/reference/identity/<fingerprint>`.
 
 A hub index is rebuilt only when its hub export changes. The identity library is
 named by a fingerprint of its hub indexes and rules code; a build passes it as
@@ -27,6 +40,5 @@ and matching abstains when more than one survives.
 Entity records are assembled on first use and cached per fingerprint in SQLite
 (`OMNIPATH_IDENTITY_CACHE`); a cached record equals a freshly built one.
 
-The previous compact reference (`build-library`, `omnipath_build.reference`) is no
-longer used by resource builds. Its code remains for the regression comparison in
-`omnipath_build.regression`.
+`omnipath-build resolution-regression` compares two identity libraries on the same
+extracted observations (`extract`, then `resolve` once per library, then `diff`).

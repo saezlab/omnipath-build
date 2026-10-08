@@ -15,8 +15,7 @@ RUN uv export --frozen --package omnipath-api --extra build --no-dev --no-emit-w
     && uv build --package omnipath-resolver --wheel --build-constraints deploy/build-constraints.txt --out-dir /wheels \
     && uv build --package omnipath-build --wheel --build-constraints deploy/build-constraints.txt --out-dir /wheels \
     && uv build --package omnipath-api --wheel --build-constraints deploy/build-constraints.txt --out-dir /wheels \
-    && uv build pypath --wheel --build-constraints deploy/build-constraints.txt --out-dir /wheels \
-    && cargo build --release --locked --manifest-path packages/resolver/rust/reference/Cargo.toml --features parquet-input --bins
+    && uv build pypath --wheel --build-constraints deploy/build-constraints.txt --out-dir /wheels
 
 FROM python:3.12-slim-bookworm AS runtime
 COPY --from=uv /uv /usr/local/bin/uv
@@ -36,7 +35,6 @@ RUN apt-get update \
 COPY --from=wheels /wheels /wheels
 COPY --from=wheels /worker-requirements.txt /requirements.txt
 COPY --from=wheels /src/deploy/build-constraints.txt /build-constraints.txt
-COPY --from=wheels /src/packages/resolver/rust/reference/target/release/anchor-components /usr/local/bin/anchor-components
 RUN uv pip install --system --no-cache --no-deps --build-constraints /build-constraints.txt -r /requirements.txt /wheels/*.whl \
     && rm -rf /wheels /requirements.txt /build-constraints.txt
 CMD ["python", "-m", "omnipath_api.jobs.worker", "--data-root", "/data"]
