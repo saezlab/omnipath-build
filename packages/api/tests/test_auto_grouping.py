@@ -128,6 +128,8 @@ def test_auto_combines_groups_and_preserves_all_singletons(mixed_engine):
     assert gene["entity"]["memberEntityTypes"] == ["gene", "protein", "rna_product"]
     # named by its gene, not by a product
     assert gene["entity"]["displayName"] == "Needle gene"
+    # a group card counts its members' relations
+    assert chemical["entity"]["relationCount"] == 2 and gene["entity"]["relationCount"] == 1
     expected_singletons = {
         r["entity_key"]
         for name, r in records.items()

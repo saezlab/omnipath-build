@@ -220,6 +220,8 @@ def _search_groups(
         )
         if is_group:
             entity.update(
+                # the group's relations, not its representative member's
+                relationCount=sum(int(m.get("relation_count") or 0) for m in members),
                 entityPk=group["group_key"],
                 groupMemberKeys=[
                     s["entityPk"]
