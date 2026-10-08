@@ -80,20 +80,26 @@ class ExportQueries:
                 object_molecular_form := object_molecular_form) ORDER BY ordinal) AS evidence
             FROM ({evidence}) GROUP BY ALL
         ), rows AS (
-            SELECT s.* EXCLUDE (resource, relation_id, evidence_count),
+            SELECT s.* EXCLUDE (evidence_count),
                 coalesce(a.annotations, []) AS annotations, coalesce(e.evidence, []) AS evidence,
                 {"len(coalesce(e.evidence, []))" if form_params else "s.evidence_count"} AS evidence_count
             FROM selected s LEFT JOIN annotations a USING (resource, relation_id)
             LEFT JOIN evidence e USING (resource, relation_id)
         ), product_keys AS (
-            SELECT DISTINCT unnest([f.subject_molecular_form.protein_entity_key,
+            SELECT DISTINCT resource, relation_id, unnest([f.subject_molecular_form.protein_entity_key,
                 f.subject_molecular_form.transcript_entity_key,
                 f.object_molecular_form.protein_entity_key,
                 f.object_molecular_form.transcript_entity_key]) AS entity_key
             FROM rows, unnest(rows.evidence) AS occurrences(f)
-        ) SELECT rows.*, (SELECT list(e ORDER BY e.entity_key, e.resource) FROM {self._table("entity", scope)} e
-            WHERE e.entity_key IN (SELECT entity_key FROM product_keys)) AS referenced_product_records
-        FROM rows"""
+        ), products AS (
+            -- each row's own products: one list shared by every row repeated it per row
+            SELECT k.resource, k.relation_id,
+                list(e ORDER BY e.entity_key, e.resource) AS referenced_product_records
+            FROM product_keys k JOIN {self._table("entity", scope)} e USING (entity_key)
+            GROUP BY ALL
+        ) SELECT rows.* EXCLUDE (resource, relation_id),
+            coalesce(products.referenced_product_records, []) AS referenced_product_records
+        FROM rows LEFT JOIN products USING (resource, relation_id)"""
         return self._write_parquet(sql, [*relation_params, *annotation_params, *evidence_params]), PARQUET
 
     def export_entities(
