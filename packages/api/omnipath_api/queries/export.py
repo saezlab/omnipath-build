@@ -40,7 +40,14 @@ class ExportQueries:
         from omnipath_core.measurements import QUANTITY_STRUCT
 
         filters = normalize_filters(filters)
+        scope = resources or filters["sources"] or None
         selection, params = self._relation_selection(filters, resources)
+        # Two phases, like the relation pages: the matching relations first, then only
+        # their annotations and evidence, read per resource by sorted relation id (a join
+        # against every resource's evidence table read millions of nested rows).
+        pairs = self._db.execute(
+            f"SELECT resource, relation_id FROM ({selection}) LIMIT {int(limit)}", params
+        ).fetchall()
         names = [f"quantity_{field.name}" for field in QUANTITY_STRUCT]
         quantity = (
             f"CASE WHEN {' AND '.join(f'{n} IS NULL' for n in names)} THEN NULL ELSE struct_pack("
@@ -50,25 +57,28 @@ class ExportQueries:
         form, form_params = "TRUE", []
         if has_form_filters(filters):
             form, form_params = form_match_sql(filters)
+        relations, relation_params = self._lookup_sql("relation", "relation_id", pairs)
+        annotations, annotation_params = self._lookup_sql(
+            "relation_annotation", "relation_id", pairs
+        )
+        evidence, evidence_params = self._lookup_sql(
+            "relation_evidence", "relation_id", pairs, where=form, params=form_params
+        )
         # Rows as the published tables nest them: each relation with its annotations and
         # evidence (only the matching occurrences under a molecular form filter), and
         # the product entities its evidence names.
-        sql = f"""WITH selected AS MATERIALIZED (SELECT * FROM ({selection}) LIMIT {int(limit)}),
+        sql = f"""WITH selected AS MATERIALIZED ({relations}),
         annotations AS (
             SELECT resource, relation_id, list(struct_pack(term := term, value := value,
                 quantity := {quantity}, source := source, dataset := dataset, scope := scope)
                 ORDER BY ordinal) AS annotations
-            FROM {self._table("relation_annotation", resources)}
-            WHERE (resource, relation_id) IN (SELECT resource, relation_id FROM selected)
-            GROUP BY ALL
+            FROM ({annotations}) GROUP BY ALL
         ), evidence AS (
             SELECT resource, relation_id, list(struct_pack(source := source, dataset := dataset,
                 row_id := row_id, upstream_id := upstream_id, annotations := annotations,
                 subject_molecular_form := subject_molecular_form,
                 object_molecular_form := object_molecular_form) ORDER BY ordinal) AS evidence
-            FROM {self._table("relation_evidence", resources)}
-            WHERE (resource, relation_id) IN (SELECT resource, relation_id FROM selected) AND {form}
-            GROUP BY ALL
+            FROM ({evidence}) GROUP BY ALL
         ), rows AS (
             SELECT s.* EXCLUDE (resource, relation_id, evidence_count),
                 coalesce(a.annotations, []) AS annotations, coalesce(e.evidence, []) AS evidence,
@@ -81,10 +91,10 @@ class ExportQueries:
                 f.object_molecular_form.protein_entity_key,
                 f.object_molecular_form.transcript_entity_key]) AS entity_key
             FROM rows, unnest(rows.evidence) AS occurrences(f)
-        ) SELECT rows.*, (SELECT list(e ORDER BY e.entity_key, e.resource) FROM {self._table("entity", resources)} e
+        ) SELECT rows.*, (SELECT list(e ORDER BY e.entity_key, e.resource) FROM {self._table("entity", scope)} e
             WHERE e.entity_key IN (SELECT entity_key FROM product_keys)) AS referenced_product_records
         FROM rows"""
-        return self._write_parquet(sql, [*params, *form_params]), PARQUET
+        return self._write_parquet(sql, [*relation_params, *annotation_params, *evidence_params]), PARQUET
 
     def export_entities(
         self,
