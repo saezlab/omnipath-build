@@ -34,7 +34,8 @@ def test_term_labels_from_the_ontology_hub(tmp_path):
     hubs = tmp_path / "hubs"
     hubs.mkdir()
     writer = HubParquetWriter(hubs / "ontology.parquet")
-    emit(writer, {"go": GO.splitlines(), "chemont": CHEMONT.splitlines(), "hpo": [], "mondo": [], "psi_mi": []})
+    # streamed lines keep their line ends
+    emit(writer, {"go": GO.splitlines(keepends=True), "chemont": CHEMONT.splitlines(keepends=True), "hpo": [], "mondo": [], "psi_mi": []})
     writer.close()
     build_hub_index("ontology", hubs, tmp_path / "index", memory="1GB", threads=1, min_free_gib=0)
     index = find_term_index(tmp_path / "index")

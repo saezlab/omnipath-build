@@ -29,7 +29,7 @@ def _terms(lines: Iterable[str]):
     """``(id, name, alt_ids)`` of every non-obsolete ``[Term]`` stanza."""
     from pypath.inputs_v2.parsers.obo import parse_obo_text
 
-    for term in parse_obo_text("\n".join(lines)):
+    for term in parse_obo_text("\n".join(line.rstrip("\r\n") for line in lines)):
         if term.get("id") and term.get("name") and not term.get("is_obsolete"):
             yield term["id"], term["name"], term.get("alt_ids") or []
 
