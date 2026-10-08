@@ -105,6 +105,7 @@ const labels: Record<string, string> = {
   'biopax:cellularlocation': 'Compartment',
   'biopax:displayname': 'Participant state / name',
   'biopax:feature': 'Participant modification',
+  'reactome:physical_entity': 'Reactome physical entity',
   supporting_study_method_description: 'Method / sample context',
   supporting_data_source: 'Supporting database',
   xref: 'Cross-reference',
