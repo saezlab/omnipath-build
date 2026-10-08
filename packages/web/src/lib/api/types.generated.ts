@@ -1004,6 +1004,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Serving Status
+         * @description How busy the service is: query slots in use and waiting, the median response time
+         *     of the last minute, and the container's CPU load and memory use (fractions).
+         */
+        get: operations["serving_status_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/terms": {
         parameters: {
             query?: never;
@@ -1850,6 +1871,17 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /** QuerySlots */
+        QuerySlots: {
+            /** Running */
+            running: number;
+            /** Slots */
+            slots: number;
+            /** Waiting */
+            waiting: number;
+        } & {
+            [key: string]: unknown;
+        };
         /** RelationEvidenceResponse */
         RelationEvidenceResponse: {
             /** Annotations */
@@ -2339,6 +2371,29 @@ export interface components {
             seedEntityPks?: string[];
             /** Termentitypks */
             termEntityPks?: string[];
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * ServingStatus
+         * @description Coarse serving load; ``state`` is ok, busy (every query slot in use, high load or
+         *     slow responses) or queued (requests are waiting for a slot).
+         */
+        ServingStatus: {
+            /** Cpuload */
+            cpuLoad?: number | null;
+            /** Medianresponsems */
+            medianResponseMs?: number | null;
+            /** Memory */
+            memory?: number | null;
+            queries: components["schemas"]["QuerySlots"];
+            /** Requestslastminute */
+            requestsLastMinute: number;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "ok" | "busy" | "queued";
         } & {
             [key: string]: unknown;
         };
@@ -4625,6 +4680,35 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["StatsSource"][];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    serving_status_status_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServingStatus"];
                 };
             };
             /** @description Internal Server Error */

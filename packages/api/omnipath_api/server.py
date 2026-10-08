@@ -9,6 +9,7 @@ accepted as aliases so existing callers keep working.
 from __future__ import annotations
 
 import threading
+import time
 import logging
 from contextlib import asynccontextmanager
 from urllib.parse import quote
@@ -112,6 +113,9 @@ def create_app(
     app.state.settings = settings
     app.state.engine = serving_engine
     app.state.engine_lock = threading.Lock()
+    from omnipath_api.status import RequestTimes
+
+    app.state.request_times = RequestTimes()
     app.state.admin = AdminService(data_root=serving_engine.data_root, ops=admin_ops)
     register_admin_routes(app)
 
@@ -122,6 +126,14 @@ def create_app(
         allow_headers=["*"],
     )
     app.add_middleware(GZipMiddleware, minimum_size=1000, compresslevel=5)
+
+    @app.middleware("http")
+    async def time_requests(request: Request, call_next):
+        started = time.perf_counter()
+        response = await call_next(request)
+        app.state.request_times.record(request.url.path, time.perf_counter() - started)
+        return response
+
     app.add_middleware(StripPublicPrefixMiddleware)
 
     @app.exception_handler(Exception)

@@ -2332,6 +2332,30 @@
         "title": "OntologyTreeRequest",
         "type": "object"
       },
+      "QuerySlots": {
+        "additionalProperties": true,
+        "properties": {
+          "running": {
+            "title": "Running",
+            "type": "integer"
+          },
+          "slots": {
+            "title": "Slots",
+            "type": "integer"
+          },
+          "waiting": {
+            "title": "Waiting",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "running",
+          "slots",
+          "waiting"
+        ],
+        "title": "QuerySlots",
+        "type": "object"
+      },
       "RelationEvidenceResponse": {
         "additionalProperties": true,
         "properties": {
@@ -3754,6 +3778,68 @@
           }
         },
         "title": "SelectionScopeResponse",
+        "type": "object"
+      },
+      "ServingStatus": {
+        "additionalProperties": true,
+        "description": "Coarse serving load; ``state`` is ok, busy (every query slot in use, high load or\nslow responses) or queued (requests are waiting for a slot).",
+        "properties": {
+          "cpuLoad": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cpuload"
+          },
+          "medianResponseMs": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Medianresponsems"
+          },
+          "memory": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Memory"
+          },
+          "queries": {
+            "$ref": "#/components/schemas/QuerySlots"
+          },
+          "requestsLastMinute": {
+            "title": "Requestslastminute",
+            "type": "integer"
+          },
+          "state": {
+            "enum": [
+              "ok",
+              "busy",
+              "queued"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "queries",
+          "requestsLastMinute"
+        ],
+        "title": "ServingStatus",
         "type": "object"
       },
       "StatsEntityType": {
@@ -6975,6 +7061,38 @@
         "summary": "Stats Sources",
         "tags": [
           "stats"
+        ]
+      }
+    },
+    "/status": {
+      "get": {
+        "description": "How busy the service is: query slots in use and waiting, the median response time\nof the last minute, and the container's CPU load and memory use (fractions).",
+        "operationId": "serving_status_status_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServingStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Serving Status",
+        "tags": [
+          "health"
         ]
       }
     },

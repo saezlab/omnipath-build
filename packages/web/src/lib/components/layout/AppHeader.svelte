@@ -22,6 +22,7 @@
   import { getUiPreferences } from '$lib/stores/ui-preferences.svelte';
   import { getSelectionStore } from '$lib/stores/selection.svelte';
   import { cn } from '$lib/utils.js';
+  import ServiceStatus from '$lib/components/layout/ServiceStatus.svelte';
 
   onMount(() => workspaceWidth.load());
   const selection = getSelectionStore();
@@ -96,6 +97,7 @@
     </nav>
 
     <div class="ml-auto flex items-center gap-2">
+      <ServiceStatus />
       <a
         href="/api/docs"
         target="_blank"

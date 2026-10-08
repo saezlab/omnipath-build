@@ -17,6 +17,24 @@ class APIModel(BaseModel):
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
 
+class QuerySlots(APIModel):
+    running: int
+    slots: int
+    waiting: int
+
+
+class ServingStatus(APIModel):
+    """Coarse serving load; ``state`` is ok, busy (every query slot in use, high load or
+    slow responses) or queued (requests are waiting for a slot)."""
+
+    state: Literal["ok", "busy", "queued"]
+    queries: QuerySlots
+    requestsLastMinute: int
+    medianResponseMs: float | None = None
+    cpuLoad: float | None = None
+    memory: float | None = None
+
+
 class HealthResponse(APIModel):
     status: str
     engine: str = "duckdb-parquet"

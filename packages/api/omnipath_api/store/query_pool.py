@@ -16,8 +16,12 @@ class QueryPool:
             raise ValueError("Query concurrency must be positive and wait timeout nonnegative")
         self.factory, self.generation = factory, generation
         self.timeout = timeout
+        self.size = size
         self._slots = BoundedSemaphore(size)
         self._idle = LifoQueue(size)
+        # Queries holding a slot and requests waiting for one, for /status.
+        self.running = 0
+        self.waiting = 0
         self._lock = Lock()
         self._connections = set()
         self._closed = False
@@ -31,8 +35,17 @@ class QueryPool:
 
     @contextmanager
     def acquire(self):
-        if not self._slots.acquire(timeout=self.timeout):
+        with self._lock:
+            self.waiting += 1
+        try:
+            acquired = self._slots.acquire(timeout=self.timeout)
+        finally:
+            with self._lock:
+                self.waiting -= 1
+        if not acquired:
             raise QueryCapacityError("Query capacity is busy; retry shortly")
+        with self._lock:
+            self.running += 1
         connection = None
         try:
             if self._closed:
@@ -59,6 +72,8 @@ class QueryPool:
                     else:
                         self._idle.put_nowait((generation, connection))
             finally:
+                with self._lock:
+                    self.running -= 1
                 self._slots.release()
 
     def close(self):
