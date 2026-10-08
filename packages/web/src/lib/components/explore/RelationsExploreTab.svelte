@@ -100,12 +100,15 @@
   });
   // An export names what it contains: filters, or entity and group keys (a text search
   // contributes its top hit's key), never the whole collection.
-  const exportable = $derived(
-    !queryEntityIdsLoading &&
-      Object.values(effectiveFilters).some((value) =>
+  // The filters that select something, so a copied API command lists only those.
+  const exportFilters = $derived(
+    Object.fromEntries(
+      Object.entries(effectiveFilters).filter(([, value]) =>
         Array.isArray(value) ? value.length > 0 : value != null && value !== '',
       ),
+    ),
   );
+  const exportable = $derived(!queryEntityIdsLoading && Object.keys(exportFilters).length > 0);
 
   const preferences = getUiPreferences();
   const queryKey = $derived(
@@ -361,7 +364,7 @@
 {#snippet resultsActions()}
   <ExportMenu
     endpoint="/export"
-    body={{ filters: effectiveFilters }}
+    body={{ filters: exportFilters }}
     name="relations"
     limit={100_000}
     disabledReason={exportable
