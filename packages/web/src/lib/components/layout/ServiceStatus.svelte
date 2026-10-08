@@ -23,6 +23,7 @@
 
   onMount(() => {
     const sync = () => (document.visibilityState === 'visible' ? poller.start() : poller.stop());
+    void poller.refresh(); // once even in a background tab, so it never shows only "…"
     sync();
     document.addEventListener('visibilitychange', sync);
     return () => {
