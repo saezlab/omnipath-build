@@ -145,3 +145,33 @@
     display: none;
   }
 }
+
+/* A filter option whose click is being applied: replaces its count, after 150 ms so cached
+   responses do not flicker. */
+.pending-spinner {
+  display: inline-block;
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 9999px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  opacity: 0;
+  animation:
+    pending-spin 0.7s linear infinite,
+    pending-show 0s linear 150ms forwards;
+}
+@keyframes pending-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes pending-show {
+  to {
+    opacity: 0.7;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pending-spinner {
+    animation: pending-show 0s linear 150ms forwards;
+  }
+}

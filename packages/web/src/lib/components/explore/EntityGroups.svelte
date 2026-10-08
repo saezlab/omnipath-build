@@ -22,15 +22,17 @@
     filters,
     renderMember,
     strategy = 'auto',
+    loading = $bindable(false),
   }: {
     strategy?: string;
+    /** A page of groups is being loaded. */
+    loading?: boolean;
     query: string;
     filters: SearchFilters;
     renderMember: Snippet<[EntityWithIdentifiers]>;
   } = $props();
   let groups = $state<Group[]>([]);
   let nextCursor = $state<string | null>(null);
-  let loading = $state(false);
   let error = $state('');
   let generation = 0;
   const requestKey = $derived(
@@ -77,8 +79,7 @@
     const [q, f, selectedStrategy] = JSON.parse(requestKey);
     controller = new AbortController();
     const current = ++generation;
-    groups = [];
-    nextCursor = null;
+    // The current groups stay, dimmed by the panel, until the new page replaces them.
     loading = true;
     error = '';
     untrack(() => request({}, q, f, selectedStrategy))
@@ -88,7 +89,10 @@
         nextCursor = data.nextCursor;
       })
       .catch((e) => {
-        if (current === generation) error = e.message;
+        if (current !== generation) return;
+        groups = [];
+        nextCursor = null;
+        error = e.message;
       })
       .finally(() => {
         if (current === generation) loading = false;

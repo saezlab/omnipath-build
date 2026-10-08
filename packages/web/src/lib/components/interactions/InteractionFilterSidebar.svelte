@@ -71,6 +71,8 @@
     new Map(),
   );
   let loading = $state(true);
+  // The option whose click is being applied, until the new counts arrive.
+  let pendingKey = $state<string | null>(null);
 
   // Fetch facet counts (scoped when selection present, global otherwise) and build filter options.
   // Counts reflect the current scope AND all OTHER active filters (cross-facet filtering).
@@ -177,7 +179,10 @@
         }
       })
       .finally(() => {
-        if (!cancelled) loading = false;
+        if (!cancelled) {
+          loading = false;
+          pendingKey = null;
+        }
       });
     return () => {
       cancelled = true;
@@ -300,7 +305,10 @@
       <Checkbox
         id={`${filterKey}-${value}`}
         checked={selectedValues?.includes(value) || false}
-        onCheckedChange={onToggle}
+        onCheckedChange={() => {
+          pendingKey = `${filterKey}:${value}`;
+          onToggle();
+        }}
         class="h-4 w-4 flex-shrink-0"
       />
       <span class="truncate" use:truncateTitle={label}>
@@ -308,7 +316,9 @@
         {label}
       </span>
     </Label>
-    {#if count != null}
+    {#if loading && pendingKey === `${filterKey}:${value}`}
+      <span class="pending-spinner text-muted-foreground" aria-hidden="true"></span>
+    {:else if count != null}
       <span class="text-xs text-muted-foreground tabular-nums flex-shrink-0">
         {formatNumber(count)}
       </span>
@@ -333,8 +343,8 @@
 {/snippet}
 
 {#snippet content()}
-  <div class={isMobile ? 'space-y-6' : 'contents'} class:opacity-70={loading}>
-    <WorkspacePanel id="filters" title="Relation filters" enabled={!isMobile}>
+  <div class={isMobile ? 'space-y-6' : 'contents'}>
+    <WorkspacePanel id="filters" title="Relation filters" enabled={!isMobile} busy={loading}>
       <div class="space-y-6">
         {#if Object.keys(predicatesByCategory).length > 0}
           <div class="space-y-2">
@@ -377,7 +387,7 @@
       </div>
     </WorkspacePanel>
     {#if hasEffectFilters}
-      <WorkspacePanel id="effect" title="Effect" enabled={!isMobile}>
+      <WorkspacePanel id="effect" title="Effect" enabled={!isMobile} busy={loading}>
         <div class="space-y-4">
           {#if isMobile}{@render sectionHeading('Effect')}{/if}
           {#if directionValues.length}
@@ -390,15 +400,22 @@
                     size="xs"
                     variant={pressed ? 'secondary' : 'outline'}
                     aria-pressed={pressed}
-                    onclick={() => handleArrayToggle('object_direction_qualifier', value)}
+                    onclick={() => {
+                      pendingKey = `object_direction_qualifier:${value}`;
+                      handleArrayToggle('object_direction_qualifier', value);
+                    }}
                   >
                     <span aria-hidden="true"
                       >{value === 'increased' ? '↑' : value === 'decreased' ? '↓' : ''}</span
                     >
                     {formatCategory(value)}
-                    <span class="tabular-nums text-muted-foreground"
-                      >{formatNumber(getCount('object_direction_qualifier', value) ?? 0)}</span
-                    >
+                    {#if loading && pendingKey === `object_direction_qualifier:${value}`}
+                      <span class="pending-spinner text-muted-foreground" aria-hidden="true"></span>
+                    {:else}
+                      <span class="tabular-nums text-muted-foreground"
+                        >{formatNumber(getCount('object_direction_qualifier', value) ?? 0)}</span
+                      >
+                    {/if}
                   </Button>
                 {/each}
               </div>
@@ -456,7 +473,12 @@
       </WorkspacePanel>
     {/if}
     {#if interactionTypeOptions.length > 0}
-      <WorkspacePanel id="interaction_types" title="Participant types" enabled={!isMobile}>
+      <WorkspacePanel
+        id="interaction_types"
+        title="Participant types"
+        enabled={!isMobile}
+        busy={loading}
+      >
         <div class="space-y-2">
           {#if isMobile}{@render sectionHeading(
               'Participant types',
@@ -479,7 +501,7 @@
         </div>
       </WorkspacePanel>
     {/if}
-    <WorkspacePanel id="sources" title="Sources" enabled={!isMobile}>
+    <WorkspacePanel id="sources" title="Sources" enabled={!isMobile} busy={loading}>
       <div class="space-y-2">
         {#if isMobile}{@render sectionHeading(
             'Sources',
@@ -501,7 +523,7 @@
       </div>
     </WorkspacePanel>
     {#if taxonomyOptions.length > 0 || taxonomyQuery}
-      <WorkspacePanel id="ncbi_tax_id" title="Taxonomy" enabled={!isMobile}>
+      <WorkspacePanel id="ncbi_tax_id" title="Taxonomy" enabled={!isMobile} busy={loading}>
         <div class="space-y-2">
           {#if isMobile}{@render sectionHeading(
               'Taxonomy',

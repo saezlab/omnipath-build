@@ -318,9 +318,6 @@
         </div>
       </div>
     {:else if results.length > 0}
-      {#if loading}<p role="status" class="text-sm text-muted-foreground">
-          Updating relations…
-        </p>{/if}
       <RelationsTable
         rows={results}
         {hasMore}
@@ -346,7 +343,9 @@
     name="relations"
     panels={['results', 'filters', 'effect', 'interaction_types', 'sources', 'ncbi_tax_id']}
   >
-    <WorkspacePanel id="results" title="Results">{@render searchPanel()}</WorkspacePanel>
+    <WorkspacePanel id="results" title="Results" busy={loading && results.length > 0}
+      >{@render searchPanel()}</WorkspacePanel
+    >
     <InteractionFilterSidebar
       filters={effectiveFilters}
       {onFilterChange}

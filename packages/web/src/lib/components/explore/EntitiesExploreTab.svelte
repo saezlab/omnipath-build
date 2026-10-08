@@ -73,6 +73,9 @@
   let hasMore = $state(true);
   let cursor = $state<EntitySearchCursor | null>(null);
   let facetCountsLoading = $state(true);
+  // The option whose click is being applied, until the new counts arrive.
+  let pendingOption = $state<string | null>(null);
+  let groupsLoading = $state(false);
   let entityTypeOptions = $state<FilterOption[]>([]);
   let sourceOptions = $state<FilterOption[]>([]);
   let taxonomyOptions = $state<FilterOption[]>([]);
@@ -155,7 +158,10 @@
         }
       })
       .finally(() => {
-        if (!cancelled) facetCountsLoading = false;
+        if (!cancelled) {
+          facetCountsLoading = false;
+          pendingOption = null;
+        }
       });
     return () => {
       cancelled = true;
@@ -267,6 +273,7 @@
     filterKey: 'entity_types' | 'sources' | 'taxonomy_ids',
     value: string,
   ) {
+    pendingOption = `${filterKey}:${value}`;
     const currentValues = filters[filterKey] || [];
     const nextValues = currentValues.includes(value)
       ? currentValues.filter((entry) => entry !== value)
@@ -377,10 +384,15 @@
   </div>
 {:else}
   <ExplorerWorkspace name="entities" panels={['results', 'entity_types', 'sources', 'ncbi_tax_id']}>
-    <WorkspacePanel id="results" title="Results" bodyClass="" actions={groupToggle}
+    <WorkspacePanel
+      id="results"
+      title="Results"
+      bodyClass=""
+      actions={groupToggle}
+      busy={groupResults && !showExamples ? groupsLoading : loading && results.length > 0}
       >{@render resultsPane()}</WorkspacePanel
     >
-    <WorkspacePanel id="entity_types" title="Entity types"
+    <WorkspacePanel id="entity_types" title="Entity types" busy={facetCountsLoading}
       >{@render filterSection(
         'Entity Types',
         'entity_types',
@@ -391,7 +403,7 @@
         handleClearFilters,
       )}</WorkspacePanel
     >
-    <WorkspacePanel id="sources" title="Sources"
+    <WorkspacePanel id="sources" title="Sources" busy={facetCountsLoading}
       >{@render filterSection(
         'Data Sources',
         'sources',
@@ -401,7 +413,7 @@
         () => {},
       )}</WorkspacePanel
     >
-    <WorkspacePanel id="ncbi_tax_id" title="Taxonomy"
+    <WorkspacePanel id="ncbi_tax_id" title="Taxonomy" busy={facetCountsLoading}
       >{@render filterSection(
         'Taxonomy',
         'taxonomy_ids',
@@ -503,7 +515,9 @@
                 {option.displayName}
               </span>
             </Label>
-            {#if count != null}
+            {#if facetCountsLoading && pendingOption === `${filterKey}:${option.value}`}
+              <span class="pending-spinner text-muted-foreground" aria-hidden="true"></span>
+            {:else if count != null}
               <span class="text-xs text-muted-foreground tabular-nums flex-shrink-0">
                 {formatNumber(count)}
               </span>
@@ -538,7 +552,12 @@
 {#snippet resultsPane()}
   <div>
     {#if groupResults && !showExamples}
-      <EntityGroups {query} filters={effectiveFilters} renderMember={resultCard} />
+      <EntityGroups
+        {query}
+        filters={effectiveFilters}
+        renderMember={resultCard}
+        bind:loading={groupsLoading}
+      />
     {:else if loading && results.length === 0}
       <EntityResultsList>
         {#each Array.from({ length: 6 }) as _, _i}
@@ -546,9 +565,6 @@
         {/each}
       </EntityResultsList>
     {:else if results.length > 0}
-      {#if loading}<p role="status" class="px-4 py-2 text-sm text-muted-foreground">
-          Updating results…
-        </p>{/if}
       <EntityResultsList>
         {#each results as result}
           {@render resultCard(result)}
