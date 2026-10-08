@@ -818,14 +818,10 @@
         </div>
       {/if}
       <Tabs.Root bind:value={activeTab} class="min-h-0 flex-1 gap-0">
-        <div class="shrink-0 overflow-x-auto border-b px-6">
-          <Tabs.List
-            variant="line"
-            class="h-11 justify-start gap-4 p-0"
-            aria-label="Entity details"
-          >
-            <Tabs.Trigger value="overview" class="flex-none">Overview</Tabs.Trigger>
-            <Tabs.Trigger value="relations" class="flex-none"
+        <div class="shrink-0 overflow-x-auto border-b px-6 pb-3">
+          <Tabs.List class="justify-start" aria-label="Entity details">
+            <Tabs.Trigger value="overview" class="flex-none px-3">Overview</Tabs.Trigger>
+            <Tabs.Trigger value="relations" class="flex-none px-3"
               >Relations {#if relationTotal !== undefined}<span
                   class="text-xs text-muted-foreground tabular-nums"
                   >{formatNumber(relationTotal)}</span
@@ -833,24 +829,26 @@
             >
             {#if detailIdentifierRows.length > 0 || detailIdentifierTotal > 0}<Tabs.Trigger
                 value="identifiers"
-                class="flex-none"
+                class="flex-none px-3"
                 >Identifiers <span class="text-xs text-muted-foreground tabular-nums"
                   >{formatNumber(detailIdentifierTotal)}</span
                 ></Tabs.Trigger
               >{/if}
             {#if detailNonPubmedAnnotations.length > 0 || moreAttributesPending}<Tabs.Trigger
                 value="annotations"
-                class="flex-none"
+                class="flex-none px-3"
                 >Annotations <span class="text-xs text-muted-foreground tabular-nums"
                   >{detailNonPubmedAnnotations.length}{moreAttributesPending ? '+' : ''}</span
                 ></Tabs.Trigger
               >{/if}
-            {#if detailPublications.length > 0}<Tabs.Trigger value="publications" class="flex-none"
+            {#if detailPublications.length > 0}<Tabs.Trigger
+                value="publications"
+                class="flex-none px-3"
                 >Publications <span class="text-xs text-muted-foreground tabular-nums"
                   >{detailPublications.length}{moreAttributesPending ? '+' : ''}</span
                 ></Tabs.Trigger
               >{/if}
-            {#if ontologyHierarchy}<Tabs.Trigger value="ontology" class="flex-none"
+            {#if ontologyHierarchy}<Tabs.Trigger value="ontology" class="flex-none px-3"
                 >Ontology</Tabs.Trigger
               >{/if}
           </Tabs.List>
