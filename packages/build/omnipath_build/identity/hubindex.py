@@ -33,6 +33,7 @@ from .common import (
     EMPTY_KEYS,
     GOSLIN_HUBS,
     HUBS,
+    ONTOLOGY,
     INCHIKEY_RE,
     PARTS,
     Context,
@@ -268,7 +269,7 @@ def build_hub_index(
     min_free_gib=50,
     keep_work=False,
 ):
-    if hub not in HUBS:
+    if hub not in HUBS + ONTOLOGY:
         raise ValueError(f"Unknown hub {hub}")
     path = Path(hubs_dir) / f"{hub}.parquet"
     root = Path(output_root) / hub

@@ -24,6 +24,8 @@ PARTS = tuple(f"{n:02x}" for n in range(256))
 # Rhea master reactions are the anchors; MetaNetX reactions attach to them (proposal, Reactions).
 REACTION = ("rhea", "metanetx_reaction")
 HUBS = CHEMICAL + PROTEIN + REACTION
+# Names only: ontology terms keep their accession as identity, nothing is matched against it.
+ONTOLOGY = ("ontology",)
 # Rule 4: preferred hub for the id of a grouped entity (earlier wins).
 HUB_PREFERENCE = (
     "chebi",

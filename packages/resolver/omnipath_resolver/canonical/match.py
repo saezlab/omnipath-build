@@ -393,6 +393,9 @@ class LibraryMatcher:
         if ident not in aliases.setdefault(ns, []):
             aliases[ns].append(ident)
         label = assign_label(ns, ident, aliases, policy)
+        if policy.entity_class == "cv_term" and label == ident:
+            # A term cited by its id alone (UniProt's GO terms) is named by its ontology.
+            label = getattr(self.runtime, "term_label", lambda term: None)(ident) or label
         return Match(
             canonical_namespace=ns,
             canonical_identifier=ident,

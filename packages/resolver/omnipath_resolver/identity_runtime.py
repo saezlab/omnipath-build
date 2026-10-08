@@ -344,6 +344,7 @@ class IdentityRuntime:
         self.codes = {code: ns for ns, code in CODES.items()}
         # ``memory_limit`` and ``threads`` are accepted for compatibility: LMDB needs neither.
         self._lipids = None
+        self._term_labels = None
         self.decisions = DecisionsKv(self.path, self.fingerprint)
         try:
             self.hub_kv = {hub: HubKv(hub, directory) for hub, directory in self.hub_dirs.items()}
@@ -956,6 +957,18 @@ class IdentityRuntime:
     # ------------------------------------------------------------- resolve
 
     # --------------------------------------------------------------- resolve
+
+    def term_label(self, term: str) -> str | None:
+        """The ontology's name of a term id (``term_labels.parquet``; absent in older snapshots)."""
+        if self._term_labels is None:
+            path = self.path / "term_labels.parquet"
+            self._term_labels = {}
+            if path.is_file():
+                import pyarrow.parquet as pq
+
+                table = pq.read_table(path, columns=["term", "label"]).to_pydict()
+                self._term_labels = dict(zip(table["term"], table["label"]))
+        return self._term_labels.get(term) or self._term_labels.get(term.upper())
 
     def close(self):
         if self._cache is not None:

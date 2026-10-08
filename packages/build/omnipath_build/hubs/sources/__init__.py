@@ -16,6 +16,7 @@ from .lipidmaps import emit as emit_lipidmaps
 from .metanetx import emit as emit_metanetx
 from .metanetx_reaction import emit as emit_metanetx_reaction
 from .mirbase import emit as emit_mirbase
+from .ontology import emit as emit_ontology
 from .pubchem import emit as emit_pubchem
 from .refmet import emit as emit_refmet
 from .rhea import emit as emit_rhea
@@ -43,6 +44,7 @@ HUB_EMITTERS: dict[str, Callable[[HubParquetWriter], None]] = {
     "rhea": emit_rhea,
     "metanetx_reaction": emit_metanetx_reaction,
     "taxon_species": emit_taxon_species,
+    "ontology": emit_ontology,
 }
 
 __all__ = [

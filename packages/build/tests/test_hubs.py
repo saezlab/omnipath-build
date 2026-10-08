@@ -384,6 +384,7 @@ class TestHubRegistry(unittest.TestCase):
                 "rhea",
                 "metanetx_reaction",
                 "taxon_species",
+                "ontology",
             ],
         )
 

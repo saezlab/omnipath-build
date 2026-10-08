@@ -29,6 +29,7 @@ from .common import (
     GOSLIN_HUBS,
     INCHIKEY_RE,
     HUBS,
+    ONTOLOGY,
     PROTEIN,
     REACTION,
     STRUCTURE_LEVELS,
@@ -59,6 +60,30 @@ def find_indexes(root, hubs=HUBS) -> dict[str, Path]:
     if not found:
         raise RuntimeError(f"No hub indexes under {root}")
     return found
+
+
+def find_term_index(root) -> Path | None:
+    """The newest complete ontology hub index, if any (term names; see hubs/sources/ontology.py)."""
+    try:
+        return find_indexes(root, ONTOLOGY)["ontology"]
+    except RuntimeError:
+        return None
+
+
+def stage_term_labels(ctx, directory, index, out):
+    """``term_labels.parquet``: the name of every ontology term id and alt_id (a term's own id
+    wins over another term's alt_id). The resolver names terms cited by id alone with it."""
+    c = ctx.connect("term_labels")
+    rows = files(str(index / "by_record" / "*" / "*.parquet"))
+    n = ctx.copy(
+        c,
+        f"""SELECT term, arg_min(name, alt) AS label FROM (
+              SELECT o.value AS term, n.value AS name, o.value<>o.local_id AS alt
+              FROM {rows} o JOIN {rows} n ON n.local_id=o.local_id AND n.source_type='name'
+              WHERE o.source_type={quote(ONTOLOGY[0])}) GROUP BY term ORDER BY term""",
+        out / "term_labels.parquet",
+    )
+    return dict(term_labels=n)
 
 
 def fingerprint(indexes, rules) -> str:
@@ -489,8 +514,9 @@ def build_identity(
 ):
     started = time.monotonic()
     indexes = find_indexes(hub_index_root)
+    terms = find_term_index(hub_index_root)
     rules = code_sha256(*CODE_FILES)
-    fp = fingerprint(indexes, rules)
+    fp = fingerprint({**indexes, **({ONTOLOGY[0]: terms} if terms else {})}, rules)
     out = Path(output_dir) / fp
     if (out / "manifest.json").is_file():
         log("identity_exists", path=str(out))
@@ -522,11 +548,23 @@ def build_identity(
         [building / "exceptions.parquet", building / "entities_extra.parquet"],
         decisions,
     )
+    if terms is not None:
+        ctx.stage(
+            "term_labels",
+            [building / "term_labels.parquet"],
+            lambda c, d: stage_term_labels(c, d, terms, building),
+        )
     manifest = dict(
         format=FORMAT,
         fingerprint=fp,
         hub_indexes={h: str(p) for h, p in indexes.items()},
         hub_index_manifest_sha256={h: sha256_file(p / "manifest.json") for h, p in indexes.items()},
+        # Not a matching hub: the runtime opens no store for it, only term_labels.parquet.
+        **(
+            dict(term_label_index=str(terms), term_label_index_manifest_sha256=sha256_file(terms / "manifest.json"))
+            if terms
+            else {}
+        ),
         rules_sha256=rules,
         counts=ctx.info,
         output_bytes={p.name: p.stat().st_size for p in sorted(building.glob("*.parquet"))},
