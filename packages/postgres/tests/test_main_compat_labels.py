@@ -29,6 +29,7 @@ def test_published_protein_symbols_keep_main_ranking_and_identifier_fallback():
     schema = "main_label_" + uuid.uuid4().hex
     identifier = sql.Identifier(schema)
     genes = [uuid.uuid4() for _ in range(3)]
+    term, chemical = uuid.uuid4(), uuid.uuid4()
     created = False
     try:
         with conn.cursor() as cur:
@@ -49,11 +50,11 @@ def test_published_protein_symbols_keep_main_ranking_and_identifier_fallback():
             )
             cur.executemany(
                 sql.SQL("INSERT INTO {}.vocab_entity_type VALUES (%s,%s)").format(identifier),
-                [(1, "gene"), (2, "protein")],
+                [(1, "gene"), (2, "protein"), (3, "ontology_class"), (4, "chemical_entity")],
             )
-            cur.execute(
-                sql.SQL("INSERT INTO {}.vocab_identifier_type VALUES (5,%s)").format(identifier),
-                ["Gene Name Primary:OM:0200"],
+            cur.executemany(
+                sql.SQL("INSERT INTO {}.vocab_identifier_type VALUES (%s,%s)").format(identifier),
+                [(5, "Gene Name Primary:OM:0200"), (16, "Name:OM:0202")],
             )
             cur.executemany(
                 sql.SQL("INSERT INTO {}.entity VALUES (%s,%s,%s,NULL,NULL)").format(identifier),
@@ -61,6 +62,8 @@ def test_published_protein_symbols_keep_main_ranking_and_identifier_fallback():
                     (str(genes[0]), 1, "gene-id"),
                     (str(genes[1]), 2, "protein-id"),
                     (str(genes[2]), 2, "fallback-protein"),
+                    (str(term), 3, "GO:0001675"),
+                    (str(chemical), 4, "CHEBI:1"),
                 ],
             )
             # More attestations win before shortest and alphabetical tie breaks.
@@ -71,6 +74,9 @@ def test_published_protein_symbols_keep_main_ranking_and_identifier_fallback():
                 (4, 5, "ZZ"),
                 (5, 5, "AA"),
                 (6, 5, "LONG"),
+                (7, 16, "acrosome assembly"),
+                (8, 16, "GO:0001675"),
+                (9, 16, "a chemical name"),
             ]
             cur.executemany(
                 sql.SQL("INSERT INTO {}.identifier_evidence VALUES (%s,%s,%s)").format(identifier),
@@ -78,7 +84,9 @@ def test_published_protein_symbols_keep_main_ranking_and_identifier_fallback():
             )
             cur.executemany(
                 sql.SQL("INSERT INTO {}.entity_identifier VALUES (%s,%s)").format(identifier),
-                [(str(genes[0]), i) for i in (1, 2, 3)] + [(str(genes[1]), i) for i in (4, 5, 6)],
+                [(str(genes[0]), i) for i in (1, 2, 3)]
+                + [(str(genes[1]), i) for i in (4, 5, 6)]
+                + [(str(term), 7), (str(term), 8), (str(chemical), 9)],
             )
         stats = populate_entity_labels(conn, schema=schema)
         with conn.cursor() as cur:
@@ -87,14 +95,18 @@ def test_published_protein_symbols_keep_main_ranking_and_identifier_fallback():
                     "SELECT canonical_identifier,label,label_rule FROM {}.entity ORDER BY canonical_identifier"
                 ).format(identifier)
             )
+            # an ontology term is named; a chemical waits for its own cascade
             assert cur.fetchall() == [
+                ("CHEBI:1", "CHEBI:1", "identifier_fallback"),
+                ("GO:0001675", "acrosome assembly", "name"),
                 ("fallback-protein", "fallback-protein", "identifier_fallback"),
                 ("gene-id", "ATTESTED", "gene_symbol"),
                 ("protein-id", "AA", "published_gene_symbol"),
             ]
         assert stats.gene_symbol == 1
         assert stats.published_gene_symbol == 1
-        assert stats.identifier_fallback == 1
+        assert stats.name == 1
+        assert stats.identifier_fallback == 2
         assert stats.without_label == 0
     finally:
         conn.rollback()

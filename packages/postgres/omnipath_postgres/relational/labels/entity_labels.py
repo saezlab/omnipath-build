@@ -7,7 +7,10 @@ distinct from synonyms). A gene carrying several primary-symbol identifiers
 (across sources) takes the most-attested one (then shortest, then alphabetical)
 for determinism. Published protein identities use the same ranking with the
 ``published_gene_symbol`` rule; this labels them without gene recanonicalization.
-Any entity still without a label falls back to its canonical
+Other entities without a label take their ``Name`` (an ontology term's or
+pathway's name, which the build resolved), ranked the same way, under the
+``name`` rule; chemicals are left to their own cascade. Any entity still
+without a label falls back to its canonical
 identifier so every entity has a non-empty ``label``; the chemical and lipid
 cascades overwrite their types' labels when they land.
 """
@@ -25,9 +28,13 @@ import psycopg2.extensions
 GENE_ENTITY_TYPE = "gene"
 PROTEIN_ENTITY_TYPE = "protein"
 GENE_NAME_PRIMARY_TYPE = "Gene Name Primary:OM:0200"
+NAME_TYPE = "Name:OM:0202"
+# Labelled by chemical_labels.populate_chemical_labels, which runs after this.
+CHEMICAL_ENTITY_TYPES = ("chemical_entity", "small_molecule")
 
 GENE_SYMBOL_RULE = "gene_symbol"
 PUBLISHED_GENE_SYMBOL_RULE = "published_gene_symbol"
+NAME_RULE = "name"
 IDENTIFIER_FALLBACK_RULE = "identifier_fallback"
 
 
@@ -35,6 +42,7 @@ IDENTIFIER_FALLBACK_RULE = "identifier_fallback"
 class EntityLabelStats:
     gene_symbol: int = 0
     published_gene_symbol: int = 0
+    name: int = 0
     identifier_fallback: int = 0
     without_label: int = 0
 
@@ -50,7 +58,7 @@ def populate_entity_labels(
     *,
     schema: str = "public",
 ) -> EntityLabelStats:
-    """Populate ``entity.label`` / ``entity.label_rule`` (gene symbol + fallback)."""
+    """Populate ``entity.label`` / ``entity.label_rule`` (gene symbol, name, fallback)."""
 
     schema_id = sql.Identifier(schema)
     with conn.cursor() as cur:
@@ -133,6 +141,55 @@ def populate_entity_labels(
             gene_symbol = sum(type_id == gene_type_id for (type_id,) in assigned)
             published_gene_symbol = len(assigned) - gene_symbol
 
+        name = 0
+        name_type_id = _scalar(
+            cur,
+            sql.SQL(
+                "SELECT identifier_type_id FROM {}.vocab_identifier_type WHERE name = %s"
+            ).format(schema_id),
+            [NAME_TYPE],
+        )
+        if name_type_id:
+            cur.execute(
+                sql.SQL(
+                    "SELECT entity_type_id FROM {}.vocab_entity_type WHERE name = ANY(%s)"
+                ).format(schema_id),
+                [list(CHEMICAL_ENTITY_TYPES)],
+            )
+            chemical_type_ids = [row[0] for row in cur.fetchall()]
+            # Name = the most-attested Name identifier (tie-break shortest, then
+            # alphabetical), as for gene symbols; an accession given as a name is no name.
+            cur.execute(
+                sql.SQL(
+                    """
+                    WITH entity_name AS (
+                      SELECT ei.entity_id, ie.value AS name, count(*) AS attestations
+                      FROM {schema}.entity_identifier ei
+                      JOIN {schema}.entity e ON e.entity_id = ei.entity_id
+                      JOIN {schema}.identifier_evidence ie ON ie.identifier_id = ei.identifier_id
+                      WHERE (e.label IS NULL OR e.label = '')
+                        AND NOT (e.entity_type_id = ANY(%(chemical_types)s))
+                        AND ie.identifier_type_id = %(name_type)s
+                        AND ie.value IS NOT NULL AND ie.value <> ''
+                        AND ie.value IS DISTINCT FROM e.canonical_identifier
+                      GROUP BY ei.entity_id, ie.value
+                    ),
+                    ranked AS (
+                      SELECT entity_id, name, row_number() OVER (
+                        PARTITION BY entity_id ORDER BY attestations DESC, length(name), name
+                      ) AS rk
+                      FROM entity_name
+                    )
+                    UPDATE {schema}.entity e
+                    SET label = ranked.name, label_rule = %(rule)s
+                    FROM ranked
+                    WHERE ranked.entity_id = e.entity_id AND ranked.rk = 1
+                    """
+                ).format(schema=schema_id),
+                {"chemical_types": chemical_type_ids, "name_type": name_type_id, "rule": NAME_RULE},
+            )
+            name = cur.rowcount
+
         # Universal fallback: any entity still without a label takes its
         # canonical identifier, so every entity has a non-empty label.
         cur.execute(
@@ -162,6 +219,7 @@ def populate_entity_labels(
     return EntityLabelStats(
         gene_symbol=gene_symbol,
         published_gene_symbol=published_gene_symbol,
+        name=name,
         identifier_fallback=identifier_fallback,
         without_label=without_label,
     )
