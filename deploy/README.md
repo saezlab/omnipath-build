@@ -67,8 +67,9 @@ The current nicesrv deployment and exact rollback commands are recorded in
 ## Optional build worker
 
 The worker is excluded from normal startup. `make worker-up` explicitly builds
-and starts it with a writable data mount. Before using it, provision the reference
-library at `/data/reference/library` and configure build limits/queues according
+and starts it with a writable data mount. Before using it, provision an identity
+library (see [the identity layer guide](../packages/build/REFERENCE.md)), point
+`OMNIPATH_LIBRARY_DIR` at it, and configure build limits/queues according
 to the [API guide](../packages/api/README.md) and
 [resource orchestration guide](../packages/build/ORCHESTRATION.md).
 Stopping the worker does not stop read-only serving.

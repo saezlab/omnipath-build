@@ -1,5 +1,11 @@
 # Reference resolver
 
+> **Superseded.** This describes the previous compact reference (`build-library`).
+> Resource builds now resolve against the identity layer; see
+> [entity resolution](../core_documentation/resolution.md) and
+> [the identity layer guide](../packages/build/REFERENCE.md). The old code remains
+> for regression comparisons.
+
 The reference resolver maps already-normalized identifiers to canonical chemical
 and protein entities. Chemical entities are anchored primarily by full InChIKey;
 protein entities are anchored primarily by primary UniProt accession. Additional

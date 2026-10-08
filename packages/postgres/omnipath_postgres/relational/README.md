@@ -79,6 +79,9 @@ previously committed product.
 * Primary gene symbols use main's attestation/shortest/alphabetical ranking for
   genes and published proteins. Proteins carry `published_gene_symbol` label
   provenance without gene recanonicalization.
+* Other non-chemical entities without a symbol (ontology terms, pathways,
+  complexes, reactions, miRNAs) take their most attested published name, ranked
+  the same way (`name` rule), before the identifier fallback.
 * Source-owned known taxonomy can populate interaction facts when a shared
   canonical identity has conflicting organism occurrences; ambiguous values are
   not guessed.

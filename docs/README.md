@@ -7,9 +7,9 @@ entity resolution, PostgreSQL, subsets, decisions and glossary. Then see the
 ## Current guides
 
 - [Build pipeline](../packages/build/README.md)
-- [Reference construction](../packages/build/REFERENCE.md)
+- [Identity layer](../packages/build/REFERENCE.md)
 - [Native resolution](../packages/resolver/README.md)
-- [Reference methods](reference-resolver.md)
+- [Identity layer spec](identity-layer-spec.md)
 - [API](../packages/api/README.md)
 - [Python client](../packages/client/README.md)
 - [Web explorer](../packages/web/README.md)
@@ -29,4 +29,6 @@ entity resolution, PostgreSQL, subsets, decisions and glossary. Then see the
 Dated reports record specific experiments and deployments. Their paths, producer
 revisions and numbers describe those runs. Earlier exploratory artifacts are
 listed in [history](history/README.md); the numbered [pipeline notes](pipeline/README.md)
-describe the previous implementation.
+describe the previous implementation, and [reference methods](reference-resolver.md)
+and the [compiler semantics brief](reference-compiler-semantics.md) describe the
+previous compact reference that the identity layer replaced.

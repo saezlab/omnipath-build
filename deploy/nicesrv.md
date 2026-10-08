@@ -1,108 +1,80 @@
-# nicesrv serving deployment — 3 October 2026
+# nicesrv serving deployment — 8 October 2026
 
-The API, explorer and HTTPS file service run from `omnipath-build` commit
-`2b04935`, including the bounded API query pool. The [current deployment report](../docs/reports/nicesrv-serving-limits-20261003.json)
-records the checks, image IDs and effective limits. The [initial cutover report](../docs/reports/nicesrv-consolidated-serving-20261003.json)
-preserves the earlier deployment history.
+The API, explorer and HTTPS file service follow branch `parquet-migration`:
+`deploy.sh` checks out the branch head, builds images tagged with its short
+commit and restarts the stack. The deployed commit is recorded in
+`source-commit.txt`.
 
 - Explorer: https://omnipath-metabo-dev.schaul.click/explore
 - Files: https://data.omnipath-metabo-dev.schaul.click
-- Artifact root: `/root/projects/full_parquet/data`, mounted read-only at `/data`.
-- Serving source: `2b04935098e256880e83eed33eb27c6e5f82dfab`, archived under
-  `/root/projects/omnipath-releases/20261003-serving-2b04935/source`.
-- Maintained checkout: `/root/projects/omnipath-migration/omnipath-build`,
-  branch `parquet-migration`. Pulling this checkout does not update deployed images.
-- Project: `omnipath-serving-20261003-2b04935`; loopback API/web/files ports:
-  `8285` / `8282` / `8280`.
+- Deployment root: `/root/projects/omnipath-releases/20261007-serving-tables`
+  (`deploy.sh`, `serving.env`, `source-commit.txt` and one log per deploy).
+- Source checkout used by `deploy.sh`: `/root/projects/omnipath-migration/wt-normalized`
+  (detached at `origin/parquet-migration`).
+- Artifact root: `/root/data/release-20261007-native` (release `2026.10.9`, all 46
+  resources), mounted read-only at `/data`.
+- Project: `omnipath-serving-20261007-full`; loopback API/web/files ports:
+  `8295` / `8292` / `8290`.
+- Maintained checkout for builds and loads: `/root/projects/omnipath-migration/omnipath-build`.
 
-Existing Parquets and serving indexes were reused in place. Latest still selects
-the same 46 resource versions. No resource, reference or PostgreSQL rebuild ran.
-During the initial cutover, ten public manifest/taxonomy files were made readable
-by Nginx without changing their contents. This refresh changed no artifact permissions.
-
-## Inspect or restart the current stack
-
-Use the archived source and its environment file to keep the deployed image tags
-and routing configuration explicit:
+## Deploy, inspect or restart
 
 ```sh
 ssh -T -o BatchMode=yes -o ForwardAgent=no -o ConnectTimeout=15 nicesrv
-deployment_root=/root/projects/omnipath-releases/20261003-serving-2b04935
-cd "$deployment_root/source"
+deployment_root=/root/projects/omnipath-releases/20261007-serving-tables
+# Deploy the current head of parquet-migration (push first).
+"$deployment_root/deploy.sh"
+# Inspect the running stack.
+cd /root/projects/omnipath-migration/wt-normalized
 make serving-status COMPOSE_ENV="$deployment_root/serving.env" \
   COMPOSE_FILES='-f compose.serving.yaml -f deploy/compose.traefik.yaml'
 make serving-logs COMPOSE_ENV="$deployment_root/serving.env" \
   COMPOSE_FILES='-f compose.serving.yaml -f deploy/compose.traefik.yaml'
-# Restart only when needed; this starts serving and performs no data build.
-make serving-up COMPOSE_ENV="$deployment_root/serving.env" \
-  COMPOSE_FILES='-f compose.serving.yaml -f deploy/compose.traefik.yaml'
 ```
 
-The optional worker image `omnipath-worker:consolidated-c9de08f` was built and
-its help entrypoint checked. It is not processing jobs. Starting a worker remains
-an explicit, separate action with a writable artifact mount.
+A deploy builds and starts serving only; it runs no resource build, identity
+build or PostgreSQL load. Changing the served data means changing `DATA_DIR` in
+`serving.env`.
 
 ## Effective API limits
 
-- Container: 4 GiB RAM and 4 CPUs.
-- Query pool: at most two concurrent/retained DuckDB databases.
-- Each database: 1 GB DuckDB memory (953.6 MiB) and two threads.
-- Capacity wait: up to 30 seconds, then HTTP 503 with a retry hint.
+Set in `serving.env`:
 
-These limits are explicit in this deployment's `serving.env`. They apply to the
-API; web and file containers retain their existing configuration. Small protein,
-chemical and reaction queries, evidence retrieval and a filtered CSV export
-matched the preceding API. Eight requests from four concurrent clients passed.
-The API used approximately 233 MiB after these checks; this is not a load benchmark.
+- Container: 6 GB RAM and 4 CPUs.
+- Query pool: two concurrent DuckDB queries, each with two threads and 2,500 MB.
+- Capacity wait: up to 30 seconds, then HTTP 503 with a retry hint.
+- Cache warming at startup (`API_WARM_CACHE=true`): examples and relation filter
+  counts are prepared before the first request.
+
+`GET /api/status` reports the query slots in use and waiting, recent response
+times and coarse host load; the explorer header shows it.
 
 ## Rollback
 
-The previous `omnipath-consolidated-20261003` containers and images are retained,
-stopped. Start them, then remove the new stack's public routing labels:
+Every deployed commit keeps its images (`omnipath-api:serving-<commit>`,
+`omnipath-web:serving-<commit>`). To roll back, set `API_IMAGE` and `WEB_IMAGE`
+in `serving.env` to an earlier tag and run `make serving-up` with the same
+`COMPOSE_ENV` and `COMPOSE_FILES` as above. Running `deploy.sh` again returns to
+the branch head.
 
-```sh
-ssh -T -o BatchMode=yes -o ForwardAgent=no -o ConnectTimeout=15 nicesrv
-docker start omnipath-consolidated-20261003-api-1 \
-  omnipath-consolidated-20261003-web-1 omnipath-consolidated-20261003-data-1
-deployment_root=/root/projects/omnipath-releases/20261003-serving-2b04935
-cd "$deployment_root/source"
-make serving-up COMPOSE_ENV="$deployment_root/serving.env" \
-  COMPOSE_FILES='-f compose.serving.yaml'
-curl --fail --silent --output /dev/null \
-  https://omnipath-metabo-dev.schaul.click/api/health
-curl --fail --silent --output /dev/null \
-  https://data.omnipath-metabo-dev.schaul.click/releases/2026.9.6.4.json
-```
-
-The preceding deployment source and configuration remain at
-`/root/projects/omnipath-releases/20261003-consolidated-5e46fca`.
-To route back to the updated stack, use `serving-up` with the HTTPS override;
-its priority 110 exceeds the preceding stack's 100. Check public requests before
-stopping the preceding containers again. Keep PostgreSQL, artifacts and other apps.
+Backups of the configuration before the switch to the normalized tables are
+`deploy.sh.bak-normalized-tables` and `serving.env.bak-tables`. Earlier
+deployment roots remain under `/root/projects/omnipath-releases/`. Keep
+PostgreSQL, artifacts and other apps.
 
 ## HTTPS PostgreSQL input
 
-The maintained checkout accepts an explicit HTTPS release and artifact root:
+The data host serves releases and tables with byte ranges, so PostgreSQL can
+load a release without copying files:
 
 ```sh
-cd /root/projects/omnipath-migration/omnipath-build
 make load-postgres \
-  RELEASE_MANIFEST=https://data.omnipath-metabo-dev.schaul.click/releases/2026.9.6.4.json \
+  RELEASE_MANIFEST=https://data.omnipath-metabo-dev.schaul.click/releases/2026.10.9.json \
   DATA_ROOT=https://data.omnipath-metabo-dev.schaul.click \
   POSTGRES_SCHEMA=an_explicit_new_schema
 ```
 
-Set `OMNIPATH_DATABASE_URL` for the intended database first. This command would
-perform an import; it was not run on server PostgreSQL during the cutover.
-Use the normal user environment, including `HOME`, so DuckDB can load its
-HTTP extension. Local DuckDB staging is temporary; no persistent Parquet download
-cache is created. Full artifact hash validation also transfers file contents.
-
-The live sample used only the existing 86 KB SIGNOR version `2026.9.5.13`.
-All 15 projected table counts and row hashes, dimensions and compatibility metadata
-matched local input. Projection took 0.818 s locally and 1.113 s over HTTPS.
-This is a functionality check, not a full-release speed estimate.
-
-PostgreSQL's private `2026.9.30.4` snapshot and its monthly schedule remain
-independent. Its seven newer resource versions were not added to API Latest or
-the file endpoint during this code cutover; publishing them is a separate step.
+Set `OMNIPATH_DATABASE_URL` for the intended database first. Use the normal user
+environment, including `HOME`, so DuckDB can load its HTTP extension. Local
+DuckDB staging is temporary; no persistent Parquet download cache is created.
+Release `2026.10.9` was loaded this way into dev5 on beauty in 1 h 47 min.

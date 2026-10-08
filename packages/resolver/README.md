@@ -1,15 +1,16 @@
 # Entity resolver
 
 `omnipath_resolver` owns complete runtime matching: the `EntityResolver` facade,
-`LibraryMatcher`, identifier normalization, biological decision policy, compact
-index reads, enrichment, and the shared namespace/key encoding. It depends on core
+`LibraryMatcher`, identifier normalization, biological decision policy, identity
+library reads (`IdentityRuntime`), entity records, and the shared namespace/key
+encoding. It depends on core
 and declared matching libraries; it does not import `omnipath_build`, source
 parsers, replay commands, or reference compilers.
 
 ```python
 from omnipath_resolver import EntityResolver, RawEntityObservation
 
-resolver = EntityResolver(library_dir="data/reference/library")
+resolver = EntityResolver(library_dir="data/reference/identity/<fingerprint>")
 try:
     observation = RawEntityObservation(
         entity_key="input", entity_type="protein", namespace="uniprot",
@@ -23,8 +24,8 @@ finally:
 `RawEntityObservation`, `ResolvedEntityInfo`, and `ResolvedEntityTarget` are public
 input/result contracts. `resolve_entities` provides scalar matching;
 `resolve_entity_targets` keeps gene reference and asserted product identity separate. Readers pin one
-complete immutable reference generation. Without a library, observations retain
-their native identities. Runtime resolution reads index records and does not scan
+immutable identity library, named by its fingerprint. Without a library, observations retain
+their native identities. Runtime resolution reads LMDB point-lookup stores and does not scan
 or create Parquet references.
 
 Full InChIKeys take precedence for chemicals. Protein accessions remain separate.
@@ -33,11 +34,12 @@ Primary UniProt product identity uses explicit source evidence and supported gen
 links; reviewed status does not disambiguate products. Taxon-qualified symbols
 retain their organism scope. Conflicting evidence remains unresolved.
 
-`omnipath_build.reference` owns hub conversion, reference construction, offline
-replay and index compilation. Writers reuse resolver's lossless wire codecs and
-key encoding. The Rust `parquet-input` feature is enabled only for the build-time
-`anchor-components` binary, never by the Python extension dependency. Rust sources
-remain in `src/`; Python uses the flat `omnipath_resolver/` package.
+`omnipath_build.hubs` and `omnipath_build.identity` own hub export and the identity
+library; see the [identity layer guide](../build/REFERENCE.md). Writers reuse
+resolver's lossless wire codecs and key encoding. The Rust `parquet-input` feature
+is enabled only for the `anchor-components` binary of the previous compact
+reference, never by the Python extension dependency. Rust sources remain in
+`src/`; Python uses the flat `omnipath_resolver/` package.
 
 ```sh
 uv sync --frozen --all-packages

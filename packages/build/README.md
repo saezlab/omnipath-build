@@ -11,7 +11,7 @@ into the published and serving tables.
 flowchart TD
     A[Discover datasets and snapshot parsed rows] --> B[Bounded disk task queue]
     B --> C[Parallel workers: map, extract, resolve, append private shards]
-    L[Immutable reference library] --> C
+    L[Immutable identity library] --> C
     C --> D[All preparation workers exit]
     D --> E[Finalizer imports flat shards and remaps event IDs]
     E --> F[Merge resolution statistics by observation key]
@@ -218,12 +218,12 @@ the finalizer deduplicates them in SQL. `abort()`, `set_threads()`,
 `resolution_summary()` and `export_resolution_keys()` expose the resource and
 statistics operations without accessing another object's private storage.
 
-Hub writers stage, validate and atomically replace successful exports. Reference
-libraries publish complete immutable `.generations/<id>` directories through the
-`current` symlink. Builds pin that generation before preparation and retain it
-through final alias materialization. Reindexing creates a new generation as well.
-Old generations remain available while readers may still hold them. Advisory
-build locks are released by the OS on process exit; their empty files stay in place.
+Hub writers stage, validate and atomically replace successful exports. Identity
+libraries are immutable directories named by their fingerprint; a new hub snapshot
+or rules change produces a new directory, and old ones stay available while readers
+may still hold them. Builds pin one library for their whole run, including final
+alias materialization. Advisory build locks are released by the OS on process
+exit; their empty files stay in place.
 
 Relation-level `in_taxon` annotations remain attached to their evidence occurrence.
 The scalar serving `taxon` reports a unanimous explicit assertion; when an occurrence
@@ -231,7 +231,8 @@ has no explicit assertion it uses agreeing participant taxa. Conflicting asserti
 or participant taxa project to an empty scalar instead of selecting an arbitrary
 species. Mixed occurrences keep their distinct evidence annotations.
 
-Published manifests include source shard hashes, reference generation and file
-hashes, build code hashes/revision, dependency versions and resolution policies.
-Offline Python reference orchestration belongs to `omnipath_build.reference`;
+Published manifests include source shard hashes, the identity library fingerprint,
+file hashes, build code hashes/revision, dependency versions and resolution policies.
+Offline library construction belongs to `omnipath_build.hubs` and
+`omnipath_build.identity` (see [the identity layer guide](REFERENCE.md));
 `omnipath_resolver` supplies native matching and explicit format contracts only.

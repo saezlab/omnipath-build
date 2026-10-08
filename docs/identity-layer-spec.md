@@ -1,6 +1,10 @@
 # Identity layer and on-demand resolution: implementation spec (phase 1)
 
-Status: working spec for branch `resolution-v2`, 6 October 2026. Rules come from the
+Status: implemented on `parquet-migration` (8 October 2026), including reactions
+from phase 2; miRNA resolution and the omnipath-utils pair export are not done.
+The current behaviour is described in
+[entity resolution](../core_documentation/resolution.md). Written 6 October 2026
+as the working spec for branch `resolution-v2`. Rules come from the
 proposal "Entity resolution: rules and implementation"; current semantics are mapped
 in the compiler brief (section numbers below refer to it as "brief §").
 

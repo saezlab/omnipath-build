@@ -36,7 +36,7 @@ make serving-status COMPOSE_ENV=deploy/serving.env
 ```
 
 These commands start only the read-only API, web app and file service. Existing
-Parquets, serving indexes, references and caches can remain outside the checkout.
+Parquets, references and caches can remain outside the checkout.
 See [deployment](deploy/README.md) for HTTPS routing, parallel cutover and rollback.
 
 ## Build and publish resources
@@ -44,18 +44,19 @@ See [deployment](deploy/README.md) for HTTPS routing, parallel cutover and rollb
 For a small offline example, use `make sample`; it processes at most 20 fixture
 records under `data/migration-smoke/`. It does not download source datasets.
 
-A real build uses an existing reference library:
+A real build uses an existing identity library:
 
 ```sh
-OMNIPATH_LIBRARY_DIR=/path/to/reference/library \
+OMNIPATH_LIBRARY_DIR=/path/to/reference/identity/<fingerprint> \
   make build SOURCE=signor VERSION=1.0.0 MAX_RECORDS=20 DATA_ROOT=data
 ```
 
 The limit applies per dataset; a source parser may still download its full input.
-Versions are immutable. Prepare hubs and the reference only when needed, using
-`make hubs HUB_ARGS="..."` and `make reference REFERENCE_ARGS="..."`; see the
+Versions are immutable. Prepare hubs and the identity library only when needed,
+using `make hubs HUB_ARGS="..."` and the identity commands in the
+[identity layer guide](packages/build/REFERENCE.md); see also the
 [resource pipeline](packages/build/README.md),
-[reference guide](docs/reference-resolver.md) and
+[entity resolution](core_documentation/resolution.md) and
 [orchestration guide](packages/build/ORCHESTRATION.md).
 
 A named snapshot lists exact resource versions:
@@ -67,9 +68,9 @@ A named snapshot lists exact resource versions:
 Publish it from existing local artifacts with
 `make publish-release RELEASE_MANIFEST=release.json DATA_ROOT=data`.
 Publication validates availability and adds a cached taxonomy reference when
-provisioned. It runs no source build. Optional acceleration indexes are prepared
-separately with `make serving-indexes DATA_ROOT=data`; existing matching indexes
-are reused. API Latest continues selecting each resource's newest version.
+provisioned. It runs no source build and needs no separate index step: the
+serving tables are part of each resource version. API Latest continues selecting
+each resource's newest version.
 
 ## PostgreSQL and products
 

@@ -65,8 +65,9 @@ Resolution's choice to leave an observation unresolved because its evidence is
 missing, conflicting or ambiguous. Deliberate behaviour, not a failure.
 
 ### Parquet contract
-The three Parquet files and their schemas (`omnipath_core/schema.py`), currently
-`serving_schema_version = 4`. The only interface between build, serving and PostgreSQL.
+The published tables of a resource version and their schemas
+(`omnipath_core/schema.py`), currently `serving_schema_version = 5`. The only
+interface between build, serving and PostgreSQL.
 
 ## Other terms
 
@@ -173,7 +174,7 @@ PostgreSQL, `relation` is main's graph triple (subject, predicate, object); seve
 qualified statements can share one triple.
 
 ### Serving schema version
-The version of the Parquet record contract (currently 4). Separate from the
+The version of the Parquet record contract (currently 5). Separate from the
 build-manifest `schema_version` (1).
 
 ### Subset

@@ -23,12 +23,12 @@ flowchart TB
 | Stage | What happens | Owner package | Details |
 | --- | --- | --- | --- |
 | Parse | `pypath.inputs_v2` maps source rows to typed entities and relations | `pypath` (submodule) | — |
-| Build | Extract, [resolve](resolution.md), aggregate, write three Parquets, publish atomically | `build`, `resolver`, `core` | [Entities](entities.md), [Resolution](resolution.md) |
+| Build | Extract, [resolve](resolution.md), aggregate, write the normalized tables, publish atomically | `build`, `resolver`, `core` | [Entities](entities.md), [Resolution](resolution.md) |
 | Serve | API and explorer query Parquet through DuckDB; the client reads the same files | `api`, `web`, `client` | — |
 | Load | Pinned release → PostgreSQL relational schema → derived products | `postgres`, `subsets` | [PostgreSQL](postgres.md), [Subsets](subsets.md) |
 
-> **Decision: the Parquet files are the contract between systems.** The three
-> Parquets per resource version are the only interface between builder, serving
+> **Decision: the Parquet files are the contract between systems.** The published
+> tables of each resource version are the only interface between builder, serving
 > and PostgreSQL. There is no shared database or cache.
 > *Why:* the systems can run on different servers and update on their own
 > schedules. See the [Parquet contract](glossary.md#parquet-contract).

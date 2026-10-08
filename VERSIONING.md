@@ -35,16 +35,15 @@ The admin page has a resource-version input for individual and batch builds too.
 Builds run in temporary directories. Only after successful finalization and
 Parquet validation is the complete directory moved into
 `data/resources/<source>/<version>/`. Failed builds remain invisible to the API.
-The directory includes the three serving Parquets, resolution statistics and a
-`build_manifest.json` containing the resource version, schema version, timestamp,
-row counts and file checksums. A per-version lock prevents concurrent overwrites.
+The directory includes the eight published tables, the three serving tables,
+resolution statistics and a `build_manifest.json` containing the resource version,
+schema versions, timestamp, row counts and file checksums. A per-version lock prevents concurrent overwrites.
 
 The build manifest stays at `schema_version = 1`, with filename-keyed entries
-for the same three Parquets. Molecular-context outputs use
-`serving_schema_version = 4`. This changes the record contract, not the manifest
-layout or the independent publication schedules. PostgreSQL loads of the new
-contract preserve gene references and molecular occurrences in additional
-context tables; existing monthly snapshots require a new load to obtain them.
+for every table file. The normalized tables use `serving_schema_version = 5`.
+This changes the record contract, not the manifest layout or the independent
+publication schedules. PostgreSQL loads the normalized tables directly; existing
+monthly snapshots require a new load to obtain the current contract.
 
 ## Publish a pinned OmniPath release
 

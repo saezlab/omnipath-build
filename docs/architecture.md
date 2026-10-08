@@ -8,8 +8,8 @@ resource updates. PostgreSQL chooses its own explicit release on its monthly sch
 | Owner | Responsibility |
 | --- | --- |
 | core | Published schemas, vocabulary, identities, manifest contracts and version validation |
-| resolver | Runtime matching, normalization, index lookup, enrichment and the native policy kernel |
-| build | Inputs, reference construction, resource assembly and atomic publication |
+| resolver | Runtime matching, normalization, identity library lookup, entity records and the native policy kernel |
+| build | Inputs, hub export and the identity library, resource assembly and atomic publication |
 | postgres | Pinned local/HTTPS input, DuckDB projection, COPY, relational schema/indexes and shared derivations |
 | subsets | MetSigDB, network views, COSMOS and their shared transaction/checkpoint runner |
 | api | Inventory snapshots, bounded DuckDB queries, exports and optional job adapters |
@@ -19,14 +19,14 @@ resource updates. PostgreSQL chooses its own explicit release on its monthly sch
 The package dependency direction is postgres -> subsets -> core; subsets does
 not import PostgreSQL build internals. Build depends on resolver and core.
 Serving requires core and API only; a separately installed worker also uses build.
-The Python client runs independently of the API, builder and resolver. Optional
-serving projections are scoped to one resource version; gene and chemical
-grouping across resources happens at query time.
+The Python client runs independently of the API, builder and resolver. The
+serving tables are written by the build and scoped to one resource version; gene
+and chemical grouping across resources happens at query time.
 Public Python names remain `omnipath_*`; outer project folders use short names.
 Only Python's extra `src` level was removed; Rust and Svelte use their usual layout.
 
-PostgreSQL never repeats entity resolution. It stages resolved entity/relation
-Parquets in DuckDB, projects the established relational tables, streams COPY,
+PostgreSQL never repeats entity resolution. It stages the resolved normalized
+tables in DuckDB, projects the established relational tables, streams COPY,
 restores constraints/indexes, then commits the base. Shared derivations and each
 complete subset have durable checkpoints. The standalone subsets command explicitly
 rebuilds selected products. PostgreSQL finish resumes unfinished phases/products.
@@ -45,6 +45,6 @@ the base checkpoint; projection reads add traffic. The API currently inventories
 local mounted artifact directory. Public download URLs need not be on that server.
 The Parquet contract is the boundary between systems, not a shared database or cache.
 
-Start from [the root workflow](../README.md), [reference methods](reference-resolver.md),
+Start from [the root workflow](../README.md), [entity resolution](../core_documentation/resolution.md),
 [PostgreSQL](../packages/postgres/README.md) or [serving operations](../deploy/README.md).
 The numbered [old pipeline notes](pipeline/README.md) are historical.
