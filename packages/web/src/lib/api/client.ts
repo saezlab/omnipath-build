@@ -64,6 +64,55 @@ export async function fetchEntityExamples(signal?: AbortSignal) {
   };
 }
 
+export type TopHit = { key: string; label: string; detail: string };
+
+/**
+ * The top hit of an entity search, which a relations search shows the relations of: the
+ * top group (its group key, e.g. 'gene:entrez:7157') when grouping, else the top entity.
+ */
+export async function fetchTopHit(
+  query: string,
+  filters: SearchFilters,
+  grouped: boolean,
+  signal?: AbortSignal,
+): Promise<TopHit | null> {
+  if (!grouped) {
+    const entity = (await fetchEntitiesSearch({ query, limit: 1, filters }, signal)).entities[0];
+    return entity
+      ? {
+          key: entity.entityPk,
+          label: entity.displayName || entity.canonicalIdentifier || entity.entityPk,
+          detail: entity.entityType ?? '',
+        }
+      : null;
+  }
+  const response = await releaseFetch('/app-api/entities/groups', {
+    method: 'POST',
+    signal,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ strategy: 'auto', query, filters, limit: 1, member_limit: 1 }),
+  });
+  if (!response.ok) throw new Error('Failed to resolve the search');
+  const group = (
+    (await response.json()) as {
+      groups: Array<{
+        group_key: string;
+        is_group: boolean;
+        member_count: number;
+        entity: { displayName?: string | null; entityType?: string | null };
+      }>;
+    }
+  ).groups[0];
+  if (!group) return null;
+  return {
+    key: group.group_key,
+    label: group.entity.displayName || group.group_key,
+    detail: group.is_group
+      ? `${group.group_key.startsWith('gene:') ? 'Gene group' : 'Structure group'} · ${group.member_count} entities`
+      : (group.entity.entityType ?? ''),
+  };
+}
+
 export async function fetchEntitiesSearch(
   params: {
     query?: string;

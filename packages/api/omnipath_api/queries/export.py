@@ -19,9 +19,8 @@ def copy_parquet_command(select_sql: str, target_path: Path) -> str:
     )
 
 
-# Rows a single export returns; whole resources are downloads of their published tables.
+# Relations one export returns; whole resources are downloads of their published tables.
 RELATION_EXPORT_LIMIT = 100_000
-ENTITY_EXPORT_LIMIT = 500_000
 PARQUET = "application/vnd.apache.parquet"
 
 
@@ -33,29 +32,13 @@ class ExportQueries:
         filters: dict[str, Any] | None = None,
         resources: list[str] | None = None,
         limit: int = RELATION_EXPORT_LIMIT,
-        query: str = "",
-        entity_filters: dict[str, Any] | None = None,
     ) -> tuple[bytes, str]:
-        """A filtered relation slice as Parquet, with its annotations and evidence.
-
-        ``query`` selects the relations of the entities an entity search for it matches
-        (under ``entity_filters``), as the relations page does.
-        """
+        """A filtered relation slice as Parquet, with its annotations and evidence."""
         from omnipath_api.molecular import form_match_sql, has_form_filters
         from omnipath_api.models import normalize_filters
         from omnipath_core.measurements import QUANTITY_STRUCT
 
         filters = normalize_filters(filters)
-        if query.strip():
-            searched = normalize_filters(entity_filters)
-            clauses, values = self._entity_filter_clauses(searched, resources=resources)
-            where, values = self._entity_match_where(query, clauses, values, searched["sources"] or None)
-            keys = self._db.execute(
-                f"SELECT DISTINCT entity_key FROM {self._table('entity', searched['sources'] or None)} WHERE {where}",
-                values,
-            ).fetchall()
-            # A search without matches selects no relations, not every relation.
-            filters["entity_ids"] = [*filters["entity_ids"], *(key for (key,) in keys)] or ["\x00"]
         scope = resources or filters["sources"] or None
         selection, params = self._relation_selection(filters, resources)
         # Two phases, like the relation pages: the matching relations first, then only
@@ -117,30 +100,6 @@ class ExportQueries:
             coalesce(products.referenced_product_records, []) AS referenced_product_records
         FROM rows LEFT JOIN products USING (resource, relation_id)"""
         return self._write_parquet(sql, [*relation_params, *annotation_params, *evidence_params]), PARQUET
-
-    def export_entities(
-        self,
-        query: str = "",
-        filters: dict[str, Any] | None = None,
-        resources: list[str] | None = None,
-        limit: int = ENTITY_EXPORT_LIMIT,
-    ) -> tuple[bytes, str]:
-        """The entities an entity search matches as Parquet, one row each, most connected
-        first."""
-        from omnipath_api.models import normalize_filters
-
-        filters = normalize_filters(filters)
-        scope = resources or filters["sources"] or None
-        clauses, params = self._entity_filter_clauses(filters, resources=resources)
-        where, params = self._entity_match_where(query, clauses, params, scope)
-        sources = "list(DISTINCT split_part(resource, '/', 1) ORDER BY split_part(resource, '/', 1))"
-        sql = f"""SELECT entity_key, arg_max(label, relation_count) AS label,
-                min(entity_type) AS entity_type, min(namespace) AS namespace,
-                min(identifier) AS identifier, min(taxon) AS taxon, {sources} AS sources,
-                sum(relation_count)::BIGINT AS relation_count
-            FROM {self._table("entity", scope)} WHERE {where}
-            GROUP BY entity_key ORDER BY relation_count DESC, entity_key LIMIT {int(limit)}"""
-        return self._write_parquet(sql, params), PARQUET
 
     def _write_parquet(self, sql: str, params: list[Any]) -> bytes:
         import tempfile

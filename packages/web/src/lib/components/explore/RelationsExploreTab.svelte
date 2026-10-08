@@ -20,12 +20,8 @@
   import InteractionDetailsSheet from '$lib/components/interactions/InteractionDetailsSheet.svelte';
   import RelationsTable from '$lib/components/interactions/RelationsTable.svelte';
   import { IsMobile } from '$lib/hooks/is-mobile.svelte';
-  import { collectEntityKeys } from '$lib/features/explorer/paged-query';
-  import {
-    fetchRelationsSearch,
-    fetchEntitiesSearch,
-    type EntitySearchCursor,
-  } from '$lib/api/client';
+  import { getUiPreferences } from '$lib/stores/ui-preferences.svelte';
+  import { fetchRelationsSearch, fetchTopHit, type TopHit } from '$lib/api/client';
   import type { EntityLike } from '$lib/domain/display';
   import type { SearchFilters } from '$lib/types/search';
   import type { InteractionListRow } from '$lib/types/interactions';
@@ -66,6 +62,8 @@
   let detailsEntity = $state<EntityLike | null>(null);
   let entityDetailsOpen = $state(false);
   let queryEntityIds = $state<string[]>([]);
+  // The entity (or group) a text search resolved to; its relations are shown.
+  let topHit = $state<TopHit | null>(null);
   let queryEntityIdsLoading = $state(false);
   let queryEntityIdsError = $state<string | null>(null);
 
@@ -86,15 +84,6 @@
     }, 0),
   );
 
-  // The export resolves the search text on the server, so the API command stays short.
-  const exportBody = $derived.by(() => {
-    const { entity_ids: _resolved, ...rest } = effectiveFilters as SearchFilters & {
-      entity_ids?: string[];
-    };
-    return query.trim()
-      ? { query: query.trim(), entity_filters: entitySearchFilters, filters: rest }
-      : { filters: rest };
-  });
   const effectiveFilters = $derived({
     ...filters,
     ...(query.trim() && queryEntityIds.length > 0 ? { entity_ids: queryEntityIds } : {}),
@@ -109,15 +98,31 @@
       ? { selection_scope_mode: scopeMode }
       : {}),
   });
-
-  const queryKey = $derived(
-    JSON.stringify([currentPage.data.selectedRelease, query.trim(), entitySearchFilters]),
+  // An export names what it contains: filters, or entity and group keys (a text search
+  // contributes its top hit's key), never the whole collection.
+  const exportable = $derived(
+    !queryEntityIdsLoading &&
+      Object.values(effectiveFilters).some((value) =>
+        Array.isArray(value) ? value.length > 0 : value != null && value !== '',
+      ),
   );
-  // Resolve query text to entity IDs for relation scoping.
+
+  const preferences = getUiPreferences();
+  const queryKey = $derived(
+    JSON.stringify([
+      currentPage.data.selectedRelease,
+      query.trim(),
+      entitySearchFilters,
+      preferences.groupResults,
+    ]),
+  );
+  // A text search shows the relations of its top hit: the entity (or group) the entity
+  // search finds first, not of everything that matches the text.
   $effect(() => {
-    const [, q, searchFilters] = JSON.parse(queryKey);
+    const [, q, searchFilters, grouped] = JSON.parse(queryKey);
     if (!q) {
       queryEntityIds = [];
+      topHit = null;
       queryEntityIdsLoading = false;
       return;
     }
@@ -125,18 +130,14 @@
     let cancelled = false;
     const controller = new AbortController();
     queryEntityIds = [];
+    topHit = null;
     queryEntityIdsError = null;
     queryEntityIdsLoading = true;
-    untrack(() =>
-      collectEntityKeys<EntitySearchCursor>(
-        (cursor, signal) =>
-          fetchEntitiesSearch({ query: q, limit: 200, cursor, filters: searchFilters }, signal),
-        controller.signal,
-      ),
-    )
-      .then((keys) => {
+    untrack(() => fetchTopHit(q, searchFilters, grouped, controller.signal))
+      .then((hit) => {
         if (cancelled) return;
-        queryEntityIds = keys;
+        topHit = hit;
+        queryEntityIds = hit ? [hit.key] : [];
       })
       .catch((err) => {
         if (!cancelled) {
@@ -313,6 +314,14 @@
       </div>
     {/if}
 
+    {#if topHit}
+      <p class="flex flex-wrap items-baseline gap-x-2 border-b px-3 py-2 text-sm">
+        <span class="text-muted-foreground">Relations of</span>
+        <span class="font-medium">{topHit.label}</span>
+        {#if topHit.detail}<span class="text-xs text-muted-foreground">{topHit.detail}</span>{/if}
+        <span class="ml-auto font-mono text-xs text-muted-foreground">{topHit.key}</span>
+      </p>
+    {/if}
     {#if error}
       <div class="p-6">
         <Alert variant="destructive">
@@ -350,7 +359,15 @@
 {/snippet}
 
 {#snippet resultsActions()}
-  <ExportMenu endpoint="/export" body={exportBody} name="relations" limit={100_000} />
+  <ExportMenu
+    endpoint="/export"
+    body={{ filters: effectiveFilters }}
+    name="relations"
+    limit={100_000}
+    disabledReason={exportable
+      ? undefined
+      : 'Choose an entity or filters first: exports cover specific relations, not the whole collection.'}
+  />
 {/snippet}
 
 {#snippet desktopSidebar()}

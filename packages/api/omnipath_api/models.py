@@ -576,25 +576,12 @@ class BuildManifest(APIModel):
 
 
 class ExportRequest(APIModel):
-    """A relation slice: its filters and, like the relations page, an entity search whose
-    entities' relations it keeps."""
+    """A relation slice, defined by filters (entity and group keys included)."""
 
-    query: str = ""
-    entity_filters: SearchFilters = Field(default_factory=SearchFilters)
     filters: SearchFilters = Field(default_factory=SearchFilters)
     resources: list[str] | None = None
     format: Literal["parquet"] = "parquet"
     limit: int = Field(default=100_000, ge=1, le=100_000)
-
-
-class EntityExportRequest(APIModel):
-    """The entities an entity search matches; one row each."""
-
-    query: str = ""
-    filters: SearchFilters = Field(default_factory=SearchFilters)
-    resources: list[str] | None = None
-    format: Literal["parquet"] = "parquet"
-    limit: int = Field(default=500_000, ge=1, le=500_000)
 
 
 class RelationMolecularEvidence(APIModel):

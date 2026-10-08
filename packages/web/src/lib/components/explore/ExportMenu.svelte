@@ -18,15 +18,18 @@
     body,
     name,
     limit,
+    disabledReason,
   }: {
-    /** API path, e.g. '/export' or '/entities/export'. */
+    /** API path of the export, e.g. '/export'. */
     endpoint: string;
-    /** The request body: the filters (and query) of the current results. */
+    /** The request body: the filters and entity or group keys of the current results. */
     body: Record<string, unknown>;
     /** What is exported, e.g. 'relations'; names the file. */
     name: string;
     /** Most rows one export returns. */
     limit: number;
+    /** Why the current results cannot be exported; the menu explains it instead. */
+    disabledReason?: string;
   } = $props();
 
   let downloading = $state(false);
@@ -82,14 +85,13 @@
   </DropdownMenuTrigger>
   <DropdownMenuContent align="end" class="w-64">
     <DropdownMenuLabel class="text-xs font-normal text-muted-foreground">
-      Current results as Parquet, up to {limit.toLocaleString('en')}
-      {name}
+      {disabledReason ?? `Current results as Parquet, up to ${limit.toLocaleString('en')} ${name}`}
     </DropdownMenuLabel>
     <DropdownMenuSeparator />
-    <DropdownMenuItem onSelect={download} disabled={downloading}>
+    <DropdownMenuItem onSelect={download} disabled={downloading || !!disabledReason}>
       <FileDown class="size-4" />Download Parquet
     </DropdownMenuItem>
-    <DropdownMenuItem onSelect={copyCommand}>
+    <DropdownMenuItem onSelect={copyCommand} disabled={!!disabledReason}>
       <Terminal class="size-4" />Copy API command
     </DropdownMenuItem>
   </DropdownMenuContent>

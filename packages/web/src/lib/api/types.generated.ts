@@ -258,27 +258,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/entities/export": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Export Entities
-         * @description The entities an entity search matches as Parquet: at most 500,000, one row each,
-         *     most connected first.
-         */
-        post: operations["export_entities_entities_export_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/entities/filter-options": {
         parameters: {
             query?: never;
@@ -1258,33 +1237,6 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
-        /**
-         * EntityExportRequest
-         * @description The entities an entity search matches; one row each.
-         */
-        EntityExportRequest: {
-            filters?: components["schemas"]["SearchFilters"];
-            /**
-             * Format
-             * @default parquet
-             * @constant
-             */
-            format: "parquet";
-            /**
-             * Limit
-             * @default 500000
-             */
-            limit: number;
-            /**
-             * Query
-             * @default
-             */
-            query: string;
-            /** Resources */
-            resources?: string[] | null;
-        } & {
-            [key: string]: unknown;
-        };
         /** EntityFilterOptions */
         EntityFilterOptions: {
             /** Entity Types */
@@ -1607,11 +1559,9 @@ export interface components {
         };
         /**
          * ExportRequest
-         * @description A relation slice: its filters and, like the relations page, an entity search whose
-         *     entities' relations it keeps.
+         * @description A relation slice, defined by filters (entity and group keys included).
          */
         ExportRequest: {
-            entity_filters?: components["schemas"]["SearchFilters"];
             filters?: components["schemas"]["SearchFilters"];
             /**
              * Format
@@ -1624,11 +1574,6 @@ export interface components {
              * @default 100000
              */
             limit: number;
-            /**
-             * Query
-             * @default
-             */
-            query: string;
             /** Resources */
             resources?: string[] | null;
         } & {
@@ -3055,48 +3000,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["EntityExamplesResponse"];
-                };
-            };
-            /** @description Internal Server Error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    export_entities_entities_export_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["EntityExportRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
             /** @description Internal Server Error */

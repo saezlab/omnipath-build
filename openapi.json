@@ -531,49 +531,6 @@
         "title": "EntityExamplesResponse",
         "type": "object"
       },
-      "EntityExportRequest": {
-        "additionalProperties": true,
-        "description": "The entities an entity search matches; one row each.",
-        "properties": {
-          "filters": {
-            "$ref": "#/components/schemas/SearchFilters"
-          },
-          "format": {
-            "const": "parquet",
-            "default": "parquet",
-            "title": "Format",
-            "type": "string"
-          },
-          "limit": {
-            "default": 500000,
-            "maximum": 500000.0,
-            "minimum": 1.0,
-            "title": "Limit",
-            "type": "integer"
-          },
-          "query": {
-            "default": "",
-            "title": "Query",
-            "type": "string"
-          },
-          "resources": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Resources"
-          }
-        },
-        "title": "EntityExportRequest",
-        "type": "object"
-      },
       "EntityFilterOptions": {
         "additionalProperties": true,
         "properties": {
@@ -1527,11 +1484,8 @@
       },
       "ExportRequest": {
         "additionalProperties": true,
-        "description": "A relation slice: its filters and, like the relations page, an entity search whose\nentities' relations it keeps.",
+        "description": "A relation slice, defined by filters (entity and group keys included).",
         "properties": {
-          "entity_filters": {
-            "$ref": "#/components/schemas/SearchFilters"
-          },
           "filters": {
             "$ref": "#/components/schemas/SearchFilters"
           },
@@ -1547,11 +1501,6 @@
             "minimum": 1.0,
             "title": "Limit",
             "type": "integer"
-          },
-          "query": {
-            "default": "",
-            "title": "Query",
-            "type": "string"
           },
           "resources": {
             "anyOf": [
@@ -4729,56 +4678,6 @@
         "summary": "Entity Examples",
         "tags": [
           "entities"
-        ]
-      }
-    },
-    "/entities/export": {
-      "post": {
-        "description": "The entities an entity search matches as Parquet: at most 500,000, one row each,\nmost connected first.",
-        "operationId": "export_entities_entities_export_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/EntityExportRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Internal Server Error"
-          }
-        },
-        "summary": "Export Entities",
-        "tags": [
-          "export"
         ]
       }
     },

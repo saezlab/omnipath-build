@@ -1,10 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import {
-  createPagedQuery,
-  collectEntityKeys,
-  type PageState,
-} from '../src/lib/features/explorer/paged-query.ts';
+import { createPagedQuery, type PageState } from '../src/lib/features/explorer/paged-query.ts';
 import { createPoller } from '../src/lib/features/admin/polling.ts';
 
 function deferred<T>() {
@@ -45,22 +41,6 @@ test('stale pages cannot append to another query or alter its loading state', as
   await oldPage;
   assert.deepEqual(state.items, ['new']);
   assert.equal(state.loadingMore, false);
-});
-test('relation entity resolution exhausts more than 200 matches and reports cursor loops', async () => {
-  const keys = await collectEntityKeys<number>(
-    async (cursor) => ({
-      entities: Array.from({ length: cursor === null ? 200 : 17 }, (_, i) => ({
-        entityPk: String((cursor ?? 0) + i),
-      })),
-      nextCursor: cursor === null ? 200 : null,
-    }),
-    new AbortController().signal,
-  );
-  assert.equal(keys.length, 217);
-  await assert.rejects(
-    collectEntityKeys(async () => ({ entities: [], nextCursor: 1 }), new AbortController().signal),
-    /repeated/,
-  );
 });
 test('manual refreshes share pending work and stop aborts the request', async () => {
   let calls = 0;

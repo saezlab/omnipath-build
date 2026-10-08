@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 from fastapi.responses import Response
 
-from omnipath_api.models import EntityExportRequest, ExportRequest
+from omnipath_api.models import ExportRequest
 from omnipath_api.routers.common import _call, _dump
 
 router = APIRouter()
@@ -31,23 +31,6 @@ def export_slice(request: Request, payload: ExportRequest) -> Response:
         filters=body.get("filters") or {},
         resources=body.get("resources"),
         limit=body["limit"],
-        query=body.get("query") or "",
-        entity_filters=body.get("entity_filters") or {},
     )
     return _attachment(data, content_type, "omnipath_relations")
 
-
-@router.post("/entities/export", tags=["export"], response_model=None)
-def export_entities(request: Request, payload: EntityExportRequest) -> Response:
-    """The entities an entity search matches as Parquet: at most 500,000, one row each,
-    most connected first."""
-    body = _dump(payload)
-    data, content_type = _call(
-        request,
-        "export_entities",
-        query=body.get("query") or "",
-        filters=body.get("filters") or {},
-        resources=body.get("resources"),
-        limit=body["limit"],
-    )
-    return _attachment(data, content_type, "omnipath_entities")

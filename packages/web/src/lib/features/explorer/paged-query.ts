@@ -68,30 +68,3 @@ export function createPagedQuery<T>(pageSize: number, publish: (state: PageState
     cancel,
   };
 }
-
-/** Traverse backend continuation without a silent cap; reject a broken cursor. */
-export async function collectEntityKeys<C>(
-  load: (
-    cursor: C | null,
-    signal: AbortSignal,
-  ) => Promise<{ entities: { entityPk: string }[]; nextCursor: C | null }>,
-  signal: AbortSignal,
-): Promise<string[]> {
-  const keys = new Set<string>();
-  const seen = new Set<string>();
-  let cursor: C | null = null;
-  do {
-    signal.throwIfAborted();
-    const page = await load(cursor, signal);
-    signal.throwIfAborted();
-    page.entities.forEach((entity) => keys.add(entity.entityPk));
-    cursor = page.nextCursor;
-    if (cursor !== null) {
-      const marker = JSON.stringify(cursor);
-      if (seen.has(marker))
-        throw new Error('Entity search returned a repeated continuation cursor');
-      seen.add(marker);
-    }
-  } while (cursor !== null);
-  return [...keys];
-}

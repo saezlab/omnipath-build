@@ -1,4 +1,4 @@
-"""Exports of what the explorer shows, as Parquet: entities of a search, relations of a filter."""
+"""Relation exports, as Parquet, of filters and entity or group keys."""
 
 import io
 
@@ -41,32 +41,11 @@ def rows(response):
     return pq.read_table(io.BytesIO(response.content)).to_pylist()
 
 
-def test_entity_export_matches_the_search_one_row_per_entity(tmp_path):
-    api = client(tmp_path)
-    response = api.post("/entities/export", json={})
-    assert 'filename="omnipath_entities.parquet"' in response.headers["content-disposition"]
-    # one row per entity, listing the resources that have it
-    assert [(r["label"], r["sources"], r["relation_count"]) for r in rows(response)] == [
-        ("TP53", ["a", "b"], 3),
-        ("MDM2", ["a"], 3),
-    ]
-    found = rows(api.post("/entities/export", json={"query": "MDM2"}))
-    assert [r["label"] for r in found] == ["MDM2"]
-    scoped = rows(api.post("/entities/export", json={"filters": {"sources": ["b"]}}))
-    assert [(r["label"], r["sources"]) for r in scoped] == [("TP53", ["b"])]
-
-
 def test_exports_are_parquet_and_relation_exports_are_bounded(tmp_path):
     api = client(tmp_path)
     assert len(rows(api.post("/export", json={"limit": 2}))) == 2
     assert api.post("/export", json={"limit": 100_001}).status_code == 422
     assert api.post("/export", json={"format": "csv"}).status_code == 422
-
-
-def test_relation_export_resolves_a_search_like_the_relations_page(tmp_path):
-    api = client(tmp_path)
-    assert len(rows(api.post("/export", json={"query": "MDM2"}))) == 3
-    assert rows(api.post("/export", json={"query": "no such entity"})) == []
 
 
 def test_group_keys_select_their_members(tmp_path):

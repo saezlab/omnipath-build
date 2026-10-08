@@ -20,7 +20,6 @@
     SheetTrigger,
   } from '$lib/components/ui/sheet/index.js';
   import EntityGroups from '$lib/components/explore/EntityGroups.svelte';
-  import ExportMenu from '$lib/components/explore/ExportMenu.svelte';
   import GroupToggle from '$lib/components/explore/GroupToggle.svelte';
   import EntityDetailsDialog from '$lib/components/entity/EntityDetailsDialog.svelte';
   import {
@@ -342,7 +341,7 @@
 {#if isMobile.current}
   <div class="flex h-full min-h-0 flex-col overflow-hidden">
     <div class="flex items-center gap-2 border-b p-4">
-      {@render resultsActions()}
+      {@render groupToggle()}
       <Sheet>
         <SheetTrigger>
           {#snippet child({ props })}
@@ -389,7 +388,7 @@
       id="results"
       title="Results"
       bodyClass=""
-      actions={resultsActions}
+      actions={groupToggle}
       busy={groupResults && !showExamples ? groupsLoading : loading && results.length > 0}
       >{@render resultsPane()}</WorkspacePanel
     >
@@ -540,16 +539,6 @@
       <p class="text-sm text-muted-foreground">Loading filters...</p>
     </div>
   {/if}
-{/snippet}
-
-{#snippet resultsActions()}
-  <ExportMenu
-    endpoint="/entities/export"
-    body={{ query, filters: effectiveFilters }}
-    name="entities"
-    limit={500_000}
-  />
-  {@render groupToggle()}
 {/snippet}
 
 {#snippet groupToggle()}
