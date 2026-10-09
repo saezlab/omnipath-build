@@ -40,14 +40,27 @@ build or PostgreSQL load. Changing the served data means changing `DATA_DIR` in
 
 Set in `serving.env`:
 
-- Container: 6 GB RAM and 4 CPUs.
-- Query pool: two concurrent DuckDB queries, each with two threads and 2,500 MB.
+- Container: 13 GB RAM and 7 CPUs, leaving 1 CPU and about 2.6 GB of the host's
+  8 CPUs and 16 GB for the other apps.
+- Query pool: three concurrent DuckDB queries, each with two threads and 3,500 MB.
 - Capacity wait: up to 30 seconds, then HTTP 503 with a retry hint.
 - Cache warming at startup (`API_WARM_CACHE=true`): examples and relation filter
   counts are prepared before the first request.
 
 `GET /api/status` reports the query slots in use and waiting, recent response
 times and coarse host load; the explorer header shows it.
+
+These limits were chosen by load testing on 9 October 2026
+(`docs/reports/nicesrv-explorer-capacity-20261009.md`). They serve about 105
+explorer interactions a minute with the slowest 5% under about 5 s, or roughly
+30–55 people using the explorer at the same time. The previous limits (6 GB,
+4 CPUs, two queries of 2,500 MB) are kept on nicesrv as
+`serving.env.bak-before-capacity-20261009`. Rerun the test after changing them:
+
+```sh
+uv run python scripts/explorer_load_test.py --users 8,12,16,24,32 \
+  --abort-step-p95 15 --out load.json
+```
 
 ## Rollback
 

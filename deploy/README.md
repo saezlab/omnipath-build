@@ -84,7 +84,9 @@ The API pool bounds simultaneous queries and retained DuckDB connections.
 per-process query budget; `API_MEMORY_LIMIT` and `API_CPUS` bound the container.
 The default two databases each have a 1 GB DuckDB limit inside a 4 GB container.
 Additional Arrow/Python buffers need headroom. These are conservative starting
-values, not a full-release throughput benchmark.
+values. `scripts/explorer_load_test.py` measures how many explorer users a
+deployment supports; `docs/reports/nicesrv-explorer-capacity-20261009.md` has the
+results for nicesrv.
 
 A development PostgreSQL instance is a separate explicit operation:
 copy `postgres-dev.env.example` to a private ignored `.env` file, choose a
