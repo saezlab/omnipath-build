@@ -2176,7 +2176,7 @@ export interface components {
              * Dimension
              * @enum {string}
              */
-            dimension: "topic" | "content" | "molecule" | "knowledge_origin";
+            dimension: "topic" | "content" | "knowledge_origin";
             /** Id */
             id: string;
             /** Label */

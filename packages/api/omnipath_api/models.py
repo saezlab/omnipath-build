@@ -504,7 +504,7 @@ class ResourceFile(APIModel):
 class ResourceTag(APIModel):
     id: str
     label: str
-    dimension: Literal["topic", "content", "molecule", "knowledge_origin"]
+    dimension: Literal["topic", "content", "knowledge_origin"]
     description: str
 
 

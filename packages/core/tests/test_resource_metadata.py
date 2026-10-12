@@ -1,26 +1,36 @@
-"""Browsing curation stays independent of immutable acquisition metadata."""
+"""Current browsing metadata stays independent of immutable acquisition metadata."""
 
 import json
 from importlib.resources import files
 
-from omnipath_core.resource_metadata import resource_metadata
+from omnipath_core.resource_metadata import (
+    Content,
+    KnowledgeOrigin,
+    Topic,
+    resource_metadata,
+)
 
 
 VOCAB = files("omnipath_core").joinpath("vocab")
 
 
-def test_catalog_covers_current_resources_with_valid_controlled_tags():
+def test_every_resource_declares_browsing_metadata_from_the_controlled_vocabularies():
     sources = json.loads((VOCAB / "resource_metadata.yaml").read_text())
-    catalog = json.loads((VOCAB / "resource_catalog.yaml").read_text())
     tags = json.loads((VOCAB / "resource_tags.yaml").read_text())
-    assert set(catalog) == set(sources)
-    for source, curated in catalog.items():
-        assert curated["description"]
-        assert curated["tags"] and len(curated["tags"]) == len(set(curated["tags"]))
-        assert set(curated["tags"]) <= set(tags)
-        assert curated["license_reference"] == sources[source]["license"]
-        assert set(curated["license_use"]) == {"academic", "commercial"}
-        assert set(curated["license_use"].values()) <= {
+    for dimension, members in (
+        ("topic", Topic),
+        ("content", Content),
+        ("knowledge_origin", KnowledgeOrigin),
+    ):
+        assert {tag.value for tag in members} == {
+            tag for tag, entry in tags.items() if entry["dimension"] == dimension
+        }
+    for declared in sources.values():
+        assert declared["display_name"] and declared["description"]
+        assert declared["tags"] and len(declared["tags"]) == len(set(declared["tags"]))
+        assert set(declared["tags"]) <= set(tags)
+        assert set(declared["license_use"]) == {"academic", "commercial"}
+        assert set(declared["license_use"].values()) <= {
             "allowed",
             "requires_permission",
             "not_allowed",
@@ -28,7 +38,12 @@ def test_catalog_covers_current_resources_with_valid_controlled_tags():
         }
     for tag in tags.values():
         assert tag["label"] and tag["description"]
-        assert tag["dimension"] in {"topic", "content", "molecule", "knowledge_origin"}
+        assert tag["dimension"] in {"topic", "content", "knowledge_origin"}
+    # Tags are listed grouped by dimension, in the order the page shows the groups.
+    order = ["topic", "content", "knowledge_origin"]
+    for declared in sources.values():
+        positions = [order.index(tags[tag]["dimension"]) for tag in declared["tags"]]
+        assert positions == sorted(positions)
 
 
 def test_curation_merges_after_snapshot_without_rewriting_provenance():
@@ -51,7 +66,7 @@ def test_curation_merges_after_snapshot_without_rewriting_provenance():
     assert snapshot["tags"] == ["obsolete"]
 
 
-def test_matching_license_and_legacy_fallback_use_catalog_classification():
+def test_license_use_follows_the_build_license():
     current = resource_metadata("corum", {})
     assert current["license_use"] == {"academic": "allowed", "commercial": "not_allowed"}
     snapshot = resource_metadata("corum", {"resource_metadata": {"license": current["license"]}})

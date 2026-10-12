@@ -26,24 +26,35 @@ def _download_urls(download, seen=()):
     return set(), False
 
 
+def config_metadata(module_name):
+    """What an input module declares about its source, and where the module is."""
+    module = importlib.import_module(module_name)
+    metadata = {}
+    config = getattr(module, "config", None)
+    if config is not None:
+        license = config.license
+        metadata.update(
+            display_name=config.name,
+            description=config.summary,
+            tags=[str(tag) for tag in config.tags],
+            website=config.url,
+            license=license.definition,
+            license_url=license.source,
+            license_use={"academic": str(license.academic), "commercial": str(license.commercial)},
+        )
+    metadata["input_module_url"] = (
+        "https://github.com/saezlab/pypath/blob/silver_schema_improvement/"
+        + module_name.replace(".", "/")
+        + ("/__init__.py" if hasattr(module, "__path__") else ".py")
+    )
+    return metadata
+
+
 def snapshot_source_metadata(source, datasets, cache_dir):
     metadata = resource_metadata(source, {})
     modules = sorted({dataset.qualified_module for dataset in datasets})
     if modules:
-        module = importlib.import_module(modules[0])
-        config = getattr(module, "config", None)
-        if config is not None:
-            license = getattr(config, "license", None)
-            metadata.update(
-                website=getattr(config, "url", None),
-                license=getattr(license, "definition", None),
-                license_url=getattr(license, "source", None),
-            )
-        metadata["input_module_url"] = (
-            "https://github.com/saezlab/pypath/blob/silver_schema_improvement/"
-            + modules[0].replace(".", "/")
-            + ("/__init__.py" if hasattr(module, "__path__") else ".py")
-        )
+        metadata.update(config_metadata(modules[0]))
     metadata.pop("metadata_source", None)
     # Only recorded completed downloads count. File mtimes are not download
     # provenance, and URL resolvers must not trigger more network requests here.

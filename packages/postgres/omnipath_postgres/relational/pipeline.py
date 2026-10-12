@@ -65,8 +65,6 @@ def _metadata_inputs(published_metadata):
             url=metadata.get("website") or metadata.get("url"),
             license=metadata.get("license"),
             pubmed=metadata.get("pubmed"),
-            resource_kind=metadata.get("resource_kind", "data_resource"),
-            primary_category=metadata.get("primary_category"),
             annotation_ontologies=metadata.get("annotation_ontologies", []),
             mints=metadata.get("mints") or IDENTIFIER_MINTS.get(source, ()),
         )

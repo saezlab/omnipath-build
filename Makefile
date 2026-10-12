@@ -145,9 +145,11 @@ test-native:
 check-generated:
 	uv run --frozen python scripts/generate_openapi.py --check
 	uv run --frozen python scripts/sync_biolink.py --check
+	uv run --frozen python scripts/generate_resource_metadata.py --check
 generate:
 	uv run --frozen python scripts/generate_openapi.py
 	uv run --frozen python scripts/sync_biolink.py
+	uv run --frozen python scripts/generate_resource_metadata.py
 	pnpm --dir packages/web generate:types
 test-wheels:
 	uv run --frozen python scripts/check_wheels.py

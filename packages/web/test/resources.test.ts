@@ -6,6 +6,7 @@ import {
   resourceTags,
   formatBytes,
 } from '../src/lib/resources/catalog.ts';
+import { resourceFromWire } from '../src/lib/resources/types.ts';
 import type { ResourceRecord, ResourceTag } from '../src/lib/resources/types.ts';
 
 const signaling: ResourceTag = {
@@ -21,9 +22,9 @@ const metabolism: ResourceTag = {
   description: '',
 };
 const proteins: ResourceTag = {
-  id: 'proteins',
-  label: 'Proteins',
-  dimension: 'molecule',
+  id: 'entity:protein',
+  label: 'Protein',
+  dimension: 'entity_type',
   description: '',
 };
 const make = (
@@ -51,7 +52,7 @@ const resources = [
 test('resource filters combine alternatives within groups and intersect different groups', () => {
   assert.equal(filterResources(resources, '', ['signaling', 'metabolism'], []).length, 3);
   assert.deepEqual(
-    filterResources(resources, '', ['signaling', 'metabolism', 'proteins'], []).map(
+    filterResources(resources, '', ['signaling', 'metabolism', 'entity:protein'], []).map(
       (r) => r.resource_id,
     ),
     ['Alpha', 'Beta'],
@@ -85,4 +86,26 @@ test('vocabulary is deduplicated and sorting does not mutate API data', () => {
   assert.equal(input[0].resource_id, 'Beta');
   assert.equal(formatBytes(1024 ** 3), '1.0 GB');
   assert.equal(formatBytes(0), '0 B');
+});
+test('the entity types a build holds become tags of their own group', () => {
+  const resource = resourceFromWire({
+    resource_id: 'signor',
+    description: '',
+    queryable: true,
+    tags: [{ id: 'signaling', label: 'Signaling', dimension: 'topic', description: '' }],
+    resolution_stats: {
+      by_entity_type: { protein: { input: 5 }, chemical_entity: { input: 9 }, novel_type: {} },
+    },
+  });
+  assert.deepEqual(
+    resource.tags?.map((tag) => [tag.id, tag.label, tag.dimension]),
+    [
+      ['signaling', 'Signaling', 'topic'],
+      ['entity:chemical_entity', 'Chemical entity', 'entity_type'],
+      ['entity:protein', 'Protein', 'entity_type'],
+      ['entity:novel_type', 'novel_type', 'entity_type'],
+    ],
+  );
+  const legacy = resourceFromWire({ resource_id: 'legacy', description: '', queryable: true });
+  assert.deepEqual(legacy.tags, []);
 });

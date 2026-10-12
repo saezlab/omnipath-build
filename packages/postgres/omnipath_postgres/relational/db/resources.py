@@ -1176,7 +1176,6 @@ def _resource_row(
         else None
     )
     categories = _resource_categories(
-        primary_category=getattr(config, "primary_category", None),
         interaction_count=counts["interaction_count"],
         association_count=counts["association_count"],
         ontology_term_count=counts["ontology_term_count"],
@@ -1193,7 +1192,8 @@ def _resource_row(
         "license": _text_or_none(getattr(config, "license", None)),
         "license_label": _cv_label(getattr(config, "license", None)),
         "pubmed_id": getattr(config, "pubmed", None),
-        "resource_kind": getattr(config, "resource_kind", "data_resource"),
+        # Inputs no longer declare a kind; the column stays for the main-aligned schema.
+        "resource_kind": "data_resource",
         "input_module": module_metadata["module"],
         "input_module_commit": module_metadata["commit"],
         "input_module_dirty": module_metadata["dirty"],
@@ -1641,15 +1641,11 @@ def _bitmap_source_counts(
 
 def _resource_categories(
     *,
-    primary_category: object,
     interaction_count: int,
     association_count: int,
     ontology_term_count: int,
 ) -> list[str]:
     categories = []
-    primary = _text_or_none(primary_category)
-    if primary:
-        categories.append(primary)
     if interaction_count:
         categories.append("interaction")
     if association_count:

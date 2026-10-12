@@ -109,31 +109,6 @@
     "dimension": "content",
     "description": "Entities mentioned in literature figures; mentions do not establish interactions."
   },
-  "proteins": {
-    "label": "Proteins",
-    "dimension": "molecule",
-    "description": "Includes proteins or protein assemblies."
-  },
-  "rna": {
-    "label": "RNA",
-    "dimension": "molecule",
-    "description": "Includes RNA molecules."
-  },
-  "metabolites": {
-    "label": "Metabolites",
-    "dimension": "molecule",
-    "description": "Includes metabolites and related small molecules."
-  },
-  "drugs": {
-    "label": "Drugs",
-    "dimension": "molecule",
-    "description": "Includes drugs or pharmacologically active compounds."
-  },
-  "lipids": {
-    "label": "Lipids",
-    "dimension": "molecule",
-    "description": "Includes lipid molecules."
-  },
   "literature_curated": {
     "label": "Literature curated",
     "dimension": "knowledge_origin",

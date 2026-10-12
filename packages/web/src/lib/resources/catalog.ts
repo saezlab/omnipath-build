@@ -3,8 +3,8 @@ import type { ResourceRecord, ResourceTag } from './types';
 export const dimensions = [
   { id: 'topic', label: 'Biological topic' },
   { id: 'content', label: 'Content' },
-  { id: 'molecule', label: 'Entities' },
   { id: 'knowledge_origin', label: 'Knowledge origin' },
+  { id: 'entity_type', label: 'Entities' },
 ] as const;
 export type LicenseAudience = 'academic' | 'commercial';
 export type ResourceSort = 'name' | 'entities' | 'relations' | 'size';

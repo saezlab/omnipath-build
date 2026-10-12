@@ -3190,7 +3190,6 @@
             "enum": [
               "topic",
               "content",
-              "molecule",
               "knowledge_origin"
             ],
             "title": "Dimension",
