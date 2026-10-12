@@ -1,4 +1,125 @@
 {
+  "abs": {
+    "display_name": "ABS",
+    "description": "Experimentally verified transcription factor binding sites in the promoters of orthologous genes of human, mouse, rat and chicken.",
+    "tags": [
+      "gene_regulation",
+      "physical_interactions",
+      "literature_curated"
+    ],
+    "website": "http://genome.crg.es/datasets/abs2005/index.html",
+    "license": "GNU General Public License v2.0",
+    "license_url": "https://www.gnu.org/licenses/old-licenses/gpl-2.0.en.html",
+    "license_use": {
+      "academic": "unknown",
+      "commercial": "unknown"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/abs.py"
+  },
+  "acsn": {
+    "display_name": "ACSN",
+    "description": "Binary relations between proteins derived from the ACSN 2.0 cancer signaling maps: complex formation and regulation of reactions.",
+    "tags": [
+      "signaling",
+      "physical_interactions",
+      "causal_regulation",
+      "literature_curated"
+    ],
+    "website": "http://acsn.vincent-noel.fr/ACSN2/ACSN2.html",
+    "license": "Creative Commons Attribution 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/acsn.py"
+  },
+  "adhesome": {
+    "display_name": "Adhesome",
+    "description": "Activating, inhibiting and binding interactions between the components of integrin adhesions, with publications.",
+    "tags": [
+      "signaling",
+      "causal_regulation",
+      "physical_interactions",
+      "literature_curated"
+    ],
+    "website": "https://www.adhesome.org/",
+    "license": "Creative Commons Attribution 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/adhesome.py"
+  },
+  "alzpathway": {
+    "display_name": "AlzPathway",
+    "description": "Complexes of the AlzPathway map of Alzheimer's disease signaling, with their components and publications.",
+    "tags": [
+      "signaling",
+      "disease_phenotype",
+      "protein_complexes",
+      "literature_curated"
+    ],
+    "website": "http://alzpathway.org/",
+    "license": "Creative Commons Attribution 3.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by/3.0/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/alzpathway.py"
+  },
+  "apo": {
+    "display_name": "APO",
+    "description": "Ascomycete Phenotype Ontology: the phenotypes observed in yeast mutants, with their qualifiers, mutant types and experiment types.",
+    "tags": [
+      "ontologies"
+    ],
+    "website": "https://www.yeastgenome.org/",
+    "license": "Creative Commons Attribution 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/apo.py"
+  },
+  "arn": {
+    "display_name": "ARN",
+    "description": "Curated stimulating, inhibiting and undirected interactions of human autophagy proteins, with PubMed references.",
+    "tags": [
+      "signaling",
+      "causal_regulation",
+      "physical_interactions",
+      "literature_curated"
+    ],
+    "website": "https://www.autophagynet.org/",
+    "license": "Creative Commons Attribution-ShareAlike 3.0 Unported license",
+    "license_url": "https://creativecommons.org/licenses/by-sa/3.0/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/arn.py"
+  },
+  "baccin2019": {
+    "display_name": "Baccin2019",
+    "description": "Manually checked mouse ligand–receptor pairs, with heteromeric receptors and their publications.",
+    "tags": [
+      "cell_cell_communication",
+      "ligand_receptor_interactions",
+      "literature_curated"
+    ],
+    "website": "https://doi.org/10.1038/s41556-019-0439-6",
+    "license": "Creative Commons Attribution-NonCommercial 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by-nc/4.0/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "not_allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/baccin2019.py"
+  },
   "bindingdb": {
     "display_name": "BindingDB",
     "description": "Measured binding affinities between small molecules and protein targets.",
@@ -16,6 +137,23 @@
     },
     "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/bindingdb.py"
   },
+  "biogrid": {
+    "display_name": "BioGRID",
+    "description": "Physical and genetic interactions of genes and proteins of all organisms curated by BioGRID from the literature (release 5.0.262), with the experimental system, throughput, score and publication of each, the experimental context (cell line, tissue, disease and other ontology terms, with their qualifiers) and the modification observed, and the phenotypes of genetic interactions as associations of the genes to the phenotype terms.",
+    "tags": [
+      "physical_interactions",
+      "literature_curated",
+      "experimental"
+    ],
+    "website": "https://thebiogrid.org/",
+    "license": "MIT License - permissive free software license",
+    "license_url": "https://opensource.org/licenses/MIT",
+    "license_use": {
+      "academic": "unknown",
+      "commercial": "unknown"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/biogrid.py"
+  },
   "brenda": {
     "display_name": "BRENDA",
     "description": "Protein enzyme-class annotations and the enzyme classification hierarchy.",
@@ -32,6 +170,92 @@
       "commercial": "allowed"
     },
     "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/brenda.py"
+  },
+  "bto": {
+    "display_name": "BTO",
+    "description": "BRENDA Tissue Ontology: tissues, cell lines, cell types and cell cultures that are enzyme sources.",
+    "tags": [
+      "ontologies"
+    ],
+    "website": "https://www.brenda-enzymes.org/ontology.php?ontology_id=3",
+    "license": "Creative Commons Attribution 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/bto.py"
+  },
+  "ca1": {
+    "display_name": "CA1",
+    "description": "Activating, inhibitory and neutral links between signaling proteins of the hippocampal CA1 neuron, with publications.",
+    "tags": [
+      "signaling",
+      "causal_regulation",
+      "physical_interactions",
+      "literature_curated"
+    ],
+    "website": "https://www.science.org/doi/10.1126/science.1108876",
+    "license": "Creative Commons Attribution 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/ca1.py"
+  },
+  "cancercellmap": {
+    "display_name": "CancerCellMap",
+    "description": "Protein interactions and state changes of ten cancer signaling pathways, with publications.",
+    "tags": [
+      "signaling",
+      "physical_interactions",
+      "causal_regulation",
+      "literature_curated"
+    ],
+    "website": "https://download.baderlab.org/PathwayCommons/PC1/last_release-2011/",
+    "license": "Creative Commons Attribution 2.5 Generic license",
+    "license_url": "https://creativecommons.org/licenses/by/2.5/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/cancercellmap.py"
+  },
+  "cancerdrugsdb": {
+    "display_name": "CancerDrugsDB",
+    "description": "Licensed cancer drugs with the target genes listed for them.",
+    "tags": [
+      "pharmacology",
+      "compound_target_interactions",
+      "literature_curated"
+    ],
+    "website": "https://data.tp53.org.uk/cancerdrugs.php",
+    "license": "License not specified or unclear",
+    "license_url": null,
+    "license_use": {
+      "academic": "unknown",
+      "commercial": "unknown"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/cancerdrugsdb.py"
+  },
+  "cellcall": {
+    "display_name": "CellCall",
+    "description": "Ligand–receptor pairs of the core and extended CellCall sets for human and mouse.",
+    "tags": [
+      "cell_cell_communication",
+      "ligand_receptor_interactions",
+      "literature_curated",
+      "computationally_predicted"
+    ],
+    "website": "https://github.com/ShellyCoder/cellcall",
+    "license": "Artistic License 2.0",
+    "license_url": "https://opensource.org/license/artistic-2-0",
+    "license_use": {
+      "academic": "unknown",
+      "commercial": "unknown"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/cellcall.py"
   },
   "cellchat": {
     "display_name": "CellChat",
@@ -86,6 +310,23 @@
     },
     "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/cellphonedb.py"
   },
+  "celltalkdb": {
+    "display_name": "CellTalkDB",
+    "description": "Literature-supported ligand–receptor pairs for human and mouse.",
+    "tags": [
+      "cell_cell_communication",
+      "ligand_receptor_interactions",
+      "literature_curated"
+    ],
+    "website": "https://github.com/ZJUFanLab/CellTalkDB",
+    "license": "GNU General Public License v3.0",
+    "license_url": "https://www.gnu.org/licenses/gpl-3.0.html",
+    "license_use": {
+      "academic": "unknown",
+      "commercial": "unknown"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/celltalkdb.py"
+  },
   "chebi": {
     "display_name": "ChEBI",
     "description": "Chemical entities, identifiers and the ChEBI ontology hierarchy.",
@@ -137,6 +378,91 @@
     },
     "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/chemont.py"
   },
+  "cl": {
+    "display_name": "CL",
+    "description": "Cell Ontology: a structured vocabulary of cell types.",
+    "tags": [
+      "ontologies"
+    ],
+    "website": "https://obophenotype.github.io/cell-ontology/",
+    "license": "Creative Commons Attribution 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/cl.py"
+  },
+  "collectri": {
+    "display_name": "CollecTRI",
+    "description": "Transcription factor–target gene regulation with literature references, source databases and the mode of regulation where publications support it.",
+    "tags": [
+      "gene_regulation",
+      "causal_regulation",
+      "literature_curated",
+      "text_mined"
+    ],
+    "website": "https://github.com/saezlab/CollecTRI",
+    "license": "Composite - the constituent databases carry their own licenses",
+    "license_url": null,
+    "license_use": {
+      "academic": "unknown",
+      "commercial": "unknown"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/collectri.py"
+  },
+  "collectri2": {
+    "display_name": "CollecTRI2",
+    "description": "Transcription factor-target gene regulation from text mining and curated resources, with the supporting sources, literature references and the mode of regulation where the evidence states it.",
+    "tags": [
+      "gene_regulation",
+      "causal_regulation",
+      "literature_curated",
+      "text_mined"
+    ],
+    "website": "https://zenodo.org/records/19773408",
+    "license": "Creative Commons Attribution 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/collectri2.py"
+  },
+  "compleat": {
+    "display_name": "COMPLEAT",
+    "description": "Human protein complexes collected from the literature databases and predicted from interaction networks, with their member genes.",
+    "tags": [
+      "protein_complexes",
+      "literature_curated",
+      "computationally_predicted"
+    ],
+    "website": "https://www.flyrnai.org/compleat/",
+    "license": "Creative Commons Attribution-ShareAlike 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by-sa/4.0/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/compleat.py"
+  },
+  "complexportal": {
+    "display_name": "Complex Portal",
+    "description": "Human macromolecular complexes with their members, stoichiometry, evidence code and GO annotations.",
+    "tags": [
+      "protein_complexes",
+      "literature_curated",
+      "computationally_predicted"
+    ],
+    "website": "https://www.ebi.ac.uk/complexportal/",
+    "license": "Creative Commons Zero 1.0 Universal - public domain dedication",
+    "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/complexportal.py"
+  },
   "connectomedb2025": {
     "display_name": "connectomeDB2025",
     "description": "Cell communication interactions and their ligand and receptor complexes.",
@@ -171,6 +497,131 @@
     },
     "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/corum.py"
   },
+  "cpdb": {
+    "display_name": "CPDB",
+    "description": "Human protein interactions, self-interactions and complex interactions that ConsensusPathDB integrates from other interaction databases, with the reporting databases, publications and, for pairs, a confidence score.",
+    "tags": [
+      "physical_interactions",
+      "protein_complexes",
+      "literature_curated",
+      "experimental"
+    ],
+    "website": "http://cpdb.molgen.mpg.de/",
+    "license": "Composite - the constituent databases carry their own licenses",
+    "license_url": null,
+    "license_use": {
+      "academic": "unknown",
+      "commercial": "unknown"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/cpdb.py"
+  },
+  "dbptm": {
+    "display_name": "dbPTM",
+    "description": "Human modification sites with the enzyme Swiss-Prot names for them, from a rescued table of dbPTM 3.0.",
+    "tags": [
+      "signaling",
+      "enzyme_ptm_relationships",
+      "literature_curated"
+    ],
+    "website": "https://biomics.lab.nycu.edu.tw/dbPTM/",
+    "license": "Nucleic Acids Research Open Access - databases of the NAR database issue are freely usable",
+    "license_url": null,
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/dbptm.py"
+  },
+  "deathdomain": {
+    "display_name": "DeathDomain",
+    "description": "Literature-curated physical interactions among death domain superfamily proteins, one record per method and publication.",
+    "tags": [
+      "signaling",
+      "physical_interactions",
+      "literature_curated"
+    ],
+    "website": "http://www.deathdomain.org/",
+    "license": "Nucleic Acids Research Open Access - databases of the NAR database issue are freely usable",
+    "license_url": null,
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/deathdomain.py"
+  },
+  "depod": {
+    "display_name": "DEPOD",
+    "description": "Human phosphatases with their protein and non-protein substrates, dephosphorylation sites and in vitro or in vivo assay types.",
+    "tags": [
+      "signaling",
+      "metabolism",
+      "enzyme_ptm_relationships",
+      "literature_curated"
+    ],
+    "website": "https://depod.zellbiologie.uni-bonn.de/",
+    "license": "Creative Commons Attribution-NonCommercial 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by-nc/4.0/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "not_allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/depod.py"
+  },
+  "dip": {
+    "display_name": "DIP",
+    "description": "Experimentally determined protein-protein interactions involving human proteins, with detection methods, interaction types, publications and the DIP quality status, February 2017 release.",
+    "tags": [
+      "signaling",
+      "physical_interactions",
+      "literature_curated",
+      "experimental"
+    ],
+    "website": "https://dip.doe-mbi.ucla.edu/",
+    "license": "Creative Commons Attribution-NoDerivs 3.0 Unported license",
+    "license_url": "https://creativecommons.org/licenses/by-nd/3.0/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/dip.py"
+  },
+  "domino": {
+    "display_name": "DOMINO",
+    "description": "Protein-protein interactions mediated by interaction domains, with binding sites, detection methods and publications.",
+    "tags": [
+      "signaling",
+      "physical_interactions",
+      "literature_curated",
+      "experimental"
+    ],
+    "website": "http://mint.bio.uniroma2.it/domino/search/searchWelcome.do",
+    "license": "Creative Commons Attribution 2.5 Generic license",
+    "license_url": "https://creativecommons.org/licenses/by/2.5/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/domino.py"
+  },
+  "dorothea": {
+    "display_name": "DoRothEA",
+    "description": "Human transcription factor–target gene pairs with confidence levels A to E, the lines of evidence and their sources; curated pairs are regulation (with the mode where known), pairs with only ChIP-seq or motif evidence are binding, and pairs with only expression inference are associations.",
+    "tags": [
+      "gene_regulation",
+      "causal_regulation",
+      "literature_curated",
+      "experimental",
+      "computationally_predicted"
+    ],
+    "website": "https://saezlab.github.io/dorothea/",
+    "license": "Composite - the constituent databases carry their own licenses",
+    "license_url": null,
+    "license_use": {
+      "academic": "unknown",
+      "commercial": "unknown"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/dorothea.py"
+  },
   "drugcentral": {
     "display_name": "DrugCentral",
     "description": "Drug identities, molecular targets and source-defined target action annotations.",
@@ -186,6 +637,57 @@
       "commercial": "allowed"
     },
     "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/drugcentral.py"
+  },
+  "elm": {
+    "display_name": "ELM",
+    "description": "Interactions between linear motif instances and the protein domains that bind them, with detection methods and publications.",
+    "tags": [
+      "signaling",
+      "physical_interactions",
+      "literature_curated",
+      "experimental"
+    ],
+    "website": "http://elm.eu.org/",
+    "license": "Non-commercial use only",
+    "license_url": null,
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "not_allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/elm.py"
+  },
+  "embrace": {
+    "display_name": "EMBRACE",
+    "description": "Mouse ligand–receptor pairs mapped in the embryonic brain by Sheikh et al. 2019.",
+    "tags": [
+      "cell_cell_communication",
+      "ligand_receptor_interactions"
+    ],
+    "website": "https://doi.org/10.1016/j.isci.2019.10.026",
+    "license": "Creative Commons Attribution 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/embrace.py"
+  },
+  "encode": {
+    "display_name": "ENCODE",
+    "description": "Transcription factor binding to genes and microRNAs, computed from ENCODE ChIP-seq peaks (ENCODE-Nets).",
+    "tags": [
+      "gene_regulation",
+      "causal_regulation",
+      "experimental"
+    ],
+    "website": "http://encodenets.gersteinlab.org/",
+    "license": "Creative Commons Attribution 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/encode.py"
   },
   "foodb": {
     "display_name": "FooDB",
@@ -236,6 +738,57 @@
     },
     "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/guidetopharma.py"
   },
+  "havugimana": {
+    "display_name": "Havugimana2012",
+    "description": "622 putative soluble human protein complexes from biochemical fractionation, with their subunits.",
+    "tags": [
+      "protein_complexes",
+      "experimental",
+      "computationally_predicted"
+    ],
+    "website": "https://doi.org/10.1016/j.cell.2012.08.011",
+    "license": "Creative Commons Attribution 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/havugimana.py"
+  },
+  "hint": {
+    "display_name": "HINT",
+    "description": "High-quality human binary protein interactions and co-complex associations compiled by HINT, with their publications, detection methods and the kind of study (high-throughput or literature curated) of the evidence.",
+    "tags": [
+      "physical_interactions",
+      "literature_curated",
+      "experimental"
+    ],
+    "website": "https://hint.yulab.org/",
+    "license": "License not specified or unclear",
+    "license_url": null,
+    "license_use": {
+      "academic": "unknown",
+      "commercial": "unknown"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/hint.py"
+  },
+  "hippie": {
+    "display_name": "HIPPIE",
+    "description": "Human protein-protein interactions from several interaction databases and studies, with the HIPPIE confidence score, publications and source databases of each pair (release 2.4).",
+    "tags": [
+      "physical_interactions",
+      "literature_curated",
+      "experimental"
+    ],
+    "website": "https://cbdm-01.zdv.uni-mainz.de/~mschaefer/hippie/",
+    "license": "Creative Commons Attribution 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/hippie.py"
+  },
   "hmdb": {
     "display_name": "HMDB",
     "description": "Human metabolite identities, chemical properties and biological annotations.",
@@ -253,6 +806,25 @@
     },
     "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/hmdb.py"
   },
+  "hpmr": {
+    "display_name": "HPMR",
+    "description": "Literature-curated ligands and interacting receptors of human plasma membrane receptors.",
+    "tags": [
+      "cell_cell_communication",
+      "signaling",
+      "ligand_receptor_interactions",
+      "physical_interactions",
+      "literature_curated"
+    ],
+    "website": "https://doi.org/10.1126/stke.2003.187.re9",
+    "license": "Creative Commons Attribution-NonCommercial 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by-nc/4.0/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "not_allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/hpmr.py"
+  },
   "hpo": {
     "display_name": "Human Phenotype Ontology",
     "description": "Human phenotype concepts and gene–phenotype associations.",
@@ -269,6 +841,93 @@
       "commercial": "unknown"
     },
     "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/hpo.py"
+  },
+  "hprd": {
+    "display_name": "HPRD",
+    "description": "Human enzyme-substrate relations with modification sites, protein-protein interactions and protein complexes, with experiment types and publications, release 9 (2010).",
+    "tags": [
+      "signaling",
+      "enzyme_ptm_relationships",
+      "physical_interactions",
+      "protein_complexes",
+      "literature_curated"
+    ],
+    "website": "http://www.hprd.org/",
+    "license": "Non-commercial use only",
+    "license_url": null,
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "not_allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/hprd.py"
+  },
+  "htri": {
+    "display_name": "HTRIdb",
+    "description": "Human transcription factor binding to target genes, with the detection technique and the PubMed ID of each observation.",
+    "tags": [
+      "gene_regulation",
+      "physical_interactions",
+      "literature_curated",
+      "experimental"
+    ],
+    "website": "http://www.lbbc.ibb.unesp.br/htri",
+    "license": "GNU Lesser General Public License v3.0",
+    "license_url": "https://www.gnu.org/licenses/lgpl-3.0.html",
+    "license_use": {
+      "academic": "unknown",
+      "commercial": "unknown"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/htri.py"
+  },
+  "humap": {
+    "display_name": "hu.MAP",
+    "description": "Human protein complexes predicted from mass spectrometry experiments, hu.MAP 1.0, 2.0 and 3.0 as separate datasets.",
+    "tags": [
+      "protein_complexes",
+      "computationally_predicted"
+    ],
+    "website": "https://humap3.proteincomplexes.org/",
+    "license": "Creative Commons Zero 1.0 Universal - public domain dedication",
+    "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/humap.py"
+  },
+  "huri": {
+    "display_name": "HuRI",
+    "description": "Human protein-protein interactions from the CCSB yeast two-hybrid screens (HuRI and its predecessors) and the Lit-BM literature set, as physical associations.",
+    "tags": [
+      "physical_interactions",
+      "experimental",
+      "literature_curated"
+    ],
+    "website": "https://interactome-atlas.org/",
+    "license": "Creative Commons Attribution 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/huri.py"
+  },
+  "i3d": {
+    "display_name": "Interactome3D",
+    "description": "Human protein-protein interactions with the experimental structure or homology model of the complex, its PDB entry and the residues of each protein it covers (representative set, release 2024_12).",
+    "tags": [
+      "physical_interactions",
+      "experimental",
+      "computationally_predicted"
+    ],
+    "website": "https://interactome3d.irbbarcelona.org/",
+    "license": "License not specified or unclear",
+    "license_url": null,
+    "license_use": {
+      "academic": "unknown",
+      "commercial": "unknown"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/i3d.py"
   },
   "icellnet": {
     "display_name": "ICELLNET",
@@ -303,6 +962,41 @@
     },
     "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/imm1415.py"
   },
+  "innatedb": {
+    "display_name": "InnateDB",
+    "description": "Human and mouse molecular interactions of the innate immune response curated by InnateDB from the literature, with their detection methods, interaction types and publications.",
+    "tags": [
+      "signaling",
+      "physical_interactions",
+      "literature_curated",
+      "experimental"
+    ],
+    "website": "https://www.innatedb.com/",
+    "license": "Design Science License",
+    "license_url": "https://www.gnu.org/licenses/dsl.html",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/innatedb.py"
+  },
+  "instruct": {
+    "display_name": "INstruct",
+    "description": "Human protein-protein interactions with the Pfam domain pair that mediates them, where each domain lies in its protein, the supporting PDB entries and the publications of the interaction.",
+    "tags": [
+      "physical_interactions",
+      "literature_curated",
+      "computationally_predicted"
+    ],
+    "website": "http://instruct.yulab.org/",
+    "license": "License not specified or unclear",
+    "license_url": null,
+    "license_use": {
+      "academic": "unknown",
+      "commercial": "unknown"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/instruct.py"
+  },
   "intact": {
     "display_name": "IntAct",
     "description": "Experimentally supported molecular interactions from IntAct.",
@@ -320,6 +1014,58 @@
     },
     "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/intact.py"
   },
+  "iptmnet": {
+    "display_name": "iPTMnet",
+    "description": "Enzyme-substrate relations with modification sites, PTM types, source databases and confidence scores, across species.",
+    "tags": [
+      "signaling",
+      "enzyme_ptm_relationships",
+      "literature_curated",
+      "text_mined"
+    ],
+    "website": "https://research.bioinformatics.udel.edu/iptmnet/",
+    "license": "Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by-nc-sa/4.0/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "not_allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/iptmnet.py"
+  },
+  "italk": {
+    "display_name": "iTALK",
+    "description": "Human ligand–receptor pairs from the iTALK package.",
+    "tags": [
+      "cell_cell_communication",
+      "ligand_receptor_interactions"
+    ],
+    "website": "https://github.com/Coolgenome/iTALK",
+    "license": "Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported license",
+    "license_url": "https://creativecommons.org/licenses/by-nc-sa/3.0/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "not_allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/italk.py"
+  },
+  "kea": {
+    "display_name": "KEA",
+    "description": "Kinase-substrate phosphorylation sites with references and source databases.",
+    "tags": [
+      "signaling",
+      "enzyme_ptm_relationships",
+      "literature_curated",
+      "computationally_predicted"
+    ],
+    "website": "https://www.maayanlab.net/KEA2/",
+    "license": "License not specified or unclear",
+    "license_url": null,
+    "license_use": {
+      "academic": "unknown",
+      "commercial": "unknown"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/kea.py"
+  },
   "kegg": {
     "display_name": "KEGG",
     "description": "Metabolic reactions and their chemical participants from KEGG.",
@@ -335,6 +1081,59 @@
       "commercial": "requires_permission"
     },
     "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/kegg.py"
+  },
+  "kirouac2010": {
+    "display_name": "Kirouac2010",
+    "description": "Manually curated pairs of secreted ligands and their receptors.",
+    "tags": [
+      "cell_cell_communication",
+      "ligand_receptor_interactions",
+      "literature_curated"
+    ],
+    "website": "https://doi.org/10.1038/msb.2010.71",
+    "license": "Creative Commons Attribution-NonCommercial-NoDerivs 3.0 Unported license",
+    "license_url": "https://creativecommons.org/licenses/by-nc-nd/3.0/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "not_allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/kirouac2010.py"
+  },
+  "laudanna": {
+    "display_name": "Laudanna",
+    "description": "Inferred directed links between human signaling proteins: the type of each link, and its activating, inhibiting or docking effect.",
+    "tags": [
+      "signaling",
+      "causal_regulation",
+      "physical_interactions",
+      "computationally_predicted"
+    ],
+    "website": "http://dp.univr.it/~laudanna/LCTST/downloads/",
+    "license": "Creative Commons Attribution 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/laudanna.py"
+  },
+  "li2012": {
+    "display_name": "Li2012",
+    "description": "Curated tyrosine kinase-substrate sites and SH2/PTB domain binding to phosphotyrosine sites.",
+    "tags": [
+      "signaling",
+      "enzyme_ptm_relationships",
+      "physical_interactions",
+      "literature_curated"
+    ],
+    "website": "https://doi.org/10.1101/gr.128819.111",
+    "license": "Creative Commons Attribution-NonCommercial 3.0 Unported license",
+    "license_url": "https://creativecommons.org/licenses/by-nc/3.0/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "not_allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/li2012.py"
   },
   "lipidmaps": {
     "display_name": "LIPID MAPS",
@@ -353,6 +1152,73 @@
     },
     "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/lipidmaps.py"
   },
+  "lmpid": {
+    "display_name": "LMPID",
+    "description": "Protein-protein interactions mediated by a linear motif binding a domain, with the motif instance and its position, the domain and the publications.",
+    "tags": [
+      "physical_interactions",
+      "literature_curated"
+    ],
+    "website": "https://bicresources.jcbose.ac.in/ssaha4/lmpid/",
+    "license": "Creative Commons Attribution-NonCommercial 2.0 Generic license",
+    "license_url": "https://creativecommons.org/licenses/by-nc/2.0/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "not_allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/lmpid.py"
+  },
+  "lncdisease": {
+    "display_name": "LncRNADisease",
+    "description": "Literature-curated interactions of lncRNAs with proteins, RNAs and DNA, and of lncRNA genes with transcription factors.",
+    "tags": [
+      "gene_regulation",
+      "physical_interactions",
+      "literature_curated"
+    ],
+    "website": "http://www.rnanut.net/lncrnadisease/",
+    "license": "Creative Commons Attribution-NonCommercial 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by-nc/4.0/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "not_allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/lncdisease.py"
+  },
+  "lncrnadb": {
+    "display_name": "lncRNAdb",
+    "description": "Literature-curated associations of functional lncRNAs with proteins, genes and transcripts.",
+    "tags": [
+      "gene_regulation",
+      "physical_interactions",
+      "literature_curated"
+    ],
+    "website": "https://web.archive.org/web/20190505115633/http://lncrnadb.org/",
+    "license": "Nucleic Acids Research Open Access - databases of the NAR database issue are freely usable",
+    "license_url": null,
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/lncrnadb.py"
+  },
+  "lrdb": {
+    "display_name": "LRdb",
+    "description": "Human ligand–receptor pairs with their supporting databases and publications.",
+    "tags": [
+      "cell_cell_communication",
+      "ligand_receptor_interactions",
+      "literature_curated"
+    ],
+    "website": "https://github.com/SCA-IRCM/LRdb",
+    "license": "GNU General Public License v3.0",
+    "license_url": "https://www.gnu.org/licenses/gpl-3.0.html",
+    "license_use": {
+      "academic": "unknown",
+      "commercial": "unknown"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/lrdb.py"
+  },
   "macdb": {
     "display_name": "MACdb",
     "description": "Chemical–trait associations with study evidence and reported measurements.",
@@ -370,6 +1236,25 @@
       "commercial": "unknown"
     },
     "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/macdb.py"
+  },
+  "macrophage": {
+    "display_name": "Macrophage",
+    "description": "Binding, activation, inhibition, modification and gene expression relationships between proteins of macrophage activation pathways, with publications.",
+    "tags": [
+      "signaling",
+      "causal_regulation",
+      "physical_interactions",
+      "enzyme_ptm_relationships",
+      "literature_curated"
+    ],
+    "website": "https://bmcsystbiol.biomedcentral.com/articles/10.1186/1752-0509-4-63",
+    "license": "Creative Commons Attribution 2.0 Generic license",
+    "license_url": "https://creativecommons.org/licenses/by/2.0/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/macrophage.py"
   },
   "mebocost": {
     "display_name": "MEBOCOST",
@@ -406,6 +1291,41 @@
     },
     "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/metatlas.py"
   },
+  "mimp": {
+    "display_name": "MIMP",
+    "description": "Human kinase-substrate phosphorylation sites that MIMP combined from PhosphoSitePlus, Phospho.ELM and HPRD.",
+    "tags": [
+      "signaling",
+      "enzyme_ptm_relationships",
+      "literature_curated"
+    ],
+    "website": "https://mimp.baderlab.org/",
+    "license": "GNU Lesser General Public License v3.0",
+    "license_url": "https://www.gnu.org/licenses/lgpl-3.0.html",
+    "license_use": {
+      "academic": "unknown",
+      "commercial": "unknown"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/mimp.py"
+  },
+  "mir2disease": {
+    "display_name": "miR2Disease",
+    "description": "Human microRNA - target pairs validated by luciferase reporter experiments, curated from the literature.",
+    "tags": [
+      "gene_regulation",
+      "disease_phenotype",
+      "causal_regulation",
+      "literature_curated"
+    ],
+    "website": "http://watson.compbio.iupui.edu:8080/miR2Disease/",
+    "license": "Creative Commons Attribution-NonCommercial 2.0 Generic license",
+    "license_url": "https://creativecommons.org/licenses/by-nc/2.0/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "not_allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/mir2disease.py"
+  },
   "mirbase": {
     "display_name": "miRBase",
     "description": "Precursor and mature microRNA identities with maturation relationships.",
@@ -421,6 +1341,57 @@
       "commercial": "allowed"
     },
     "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/mirbase.py"
+  },
+  "mirdeathdb": {
+    "display_name": "miRDeathDB",
+    "description": "Literature-curated microRNA-target gene pairs from studies of apoptosis and autophagy.",
+    "tags": [
+      "gene_regulation",
+      "physical_interactions",
+      "literature_curated"
+    ],
+    "website": "http://www.rna-world.org/mirdeathdb/",
+    "license": "Creative Commons Attribution-NonCommercial 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by-nc/4.0/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "not_allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/mirdeathdb.py"
+  },
+  "mirecords": {
+    "display_name": "miRecords",
+    "description": "Experimentally validated animal microRNA - target gene interactions curated from the literature (release of April 2013).",
+    "tags": [
+      "gene_regulation",
+      "causal_regulation",
+      "literature_curated"
+    ],
+    "website": "http://c1.accurascience.com/miRecords/",
+    "license": "Non-commercial use only",
+    "license_url": null,
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "not_allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/mirecords.py"
+  },
+  "mirtarbase": {
+    "display_name": "miRTarBase",
+    "description": "Experimentally supported microRNA - target gene interactions of all species with their publications and support strength; non-functional results are left out.",
+    "tags": [
+      "gene_regulation",
+      "causal_regulation",
+      "literature_curated"
+    ],
+    "website": "https://awi.cuhk.edu.cn/miRTarBase/",
+    "license": "Public domain - copyright waived in favor of the general public",
+    "license_url": "",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/mirtarbase.py"
   },
   "mondo": {
     "display_name": "Mondo",
@@ -439,6 +1410,22 @@
     },
     "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/mondo.py"
   },
+  "mppi": {
+    "display_name": "MPPI",
+    "description": "Manually curated mammalian protein-protein interactions from individual experiments, with their detection methods and publications.",
+    "tags": [
+      "physical_interactions",
+      "literature_curated"
+    ],
+    "website": "http://mips.helmholtz-muenchen.de/proj/ppi/",
+    "license": "MPPI license - free use, commercial use included",
+    "license_url": "http://mips.helmholtz-muenchen.de/proj/ppi/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/mppi.py"
+  },
   "mrclinksdb": {
     "display_name": "MRClinksDB",
     "description": "Curated metabolite–receptor interactions with compound classification and literature evidence.",
@@ -455,6 +1442,43 @@
       "commercial": "unknown"
     },
     "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/mrclinksdb.py"
+  },
+  "ncrdeathdb": {
+    "display_name": "ncRDeathDB",
+    "description": "Literature-curated interactions of microRNAs, lncRNAs and snoRNAs with genes in apoptosis, autophagy and necrosis, and homology predictions for other species.",
+    "tags": [
+      "gene_regulation",
+      "physical_interactions",
+      "literature_curated",
+      "computationally_predicted"
+    ],
+    "website": "http://www.rna-society.org/ncrdeathdb/",
+    "license": "Creative Commons Attribution-NonCommercial 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by-nc/4.0/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "not_allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/ncrdeathdb.py"
+  },
+  "netpath": {
+    "display_name": "NetPath",
+    "description": "Literature-curated physical interactions of signaling pathways, with their pathway, publications and detection methods.",
+    "tags": [
+      "signaling",
+      "physical_interactions",
+      "protein_complexes",
+      "pathways",
+      "literature_curated"
+    ],
+    "website": "http://www.netpath.org/",
+    "license": "Creative Commons Attribution 2.5 Generic license",
+    "license_url": "https://creativecommons.org/licenses/by/2.5/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/netpath.py"
   },
   "neuronchat": {
     "display_name": "NeuronChat",
@@ -488,6 +1512,24 @@
     },
     "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/nichenet.py"
   },
+  "nrf2ome": {
+    "display_name": "NRF2ome",
+    "description": "Curated inhibiting and undirected interactions of the NRF2 pathway proteins, with PubMed references.",
+    "tags": [
+      "signaling",
+      "causal_regulation",
+      "physical_interactions",
+      "literature_curated"
+    ],
+    "website": "https://nrf2ome.org/",
+    "license": "Creative Commons Attribution-ShareAlike 3.0 Unported license",
+    "license_url": "https://creativecommons.org/licenses/by-sa/3.0/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/nrf2ome.py"
+  },
   "omnipath_ontology": {
     "display_name": "OmniPath Ontology",
     "description": "Archived OmniPath controlled vocabulary concepts for interpreting historical data.",
@@ -502,6 +1544,116 @@
       "commercial": "allowed"
     },
     "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/omnipath_ontology.py"
+  },
+  "oreganno": {
+    "display_name": "ORegAnno",
+    "description": "Transcription factor binding sites annotated to a target gene, from the literature and curated data collections, for many species.",
+    "tags": [
+      "gene_regulation",
+      "physical_interactions",
+      "literature_curated",
+      "experimental"
+    ],
+    "website": "http://www.oreganno.org/",
+    "license": "GNU Lesser General Public License v3.0",
+    "license_url": "https://www.gnu.org/licenses/lgpl-3.0.html",
+    "license_use": {
+      "academic": "unknown",
+      "commercial": "unknown"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/oreganno.py"
+  },
+  "pathwaycommons": {
+    "display_name": "PathwayCommons",
+    "description": "Binary relations between human genes, gene products and small molecules that Pathway Commons derives from the pathway and interaction databases it integrates, with their data sources and publications.",
+    "tags": [
+      "signaling",
+      "gene_regulation",
+      "pharmacology",
+      "physical_interactions",
+      "causal_regulation",
+      "compound_target_interactions",
+      "literature_curated",
+      "experimental",
+      "computationally_predicted"
+    ],
+    "website": "https://www.pathwaycommons.org/",
+    "license": "Composite - the constituent databases carry their own licenses",
+    "license_url": null,
+    "license_use": {
+      "academic": "unknown",
+      "commercial": "unknown"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/pathwaycommons.py"
+  },
+  "pazar": {
+    "display_name": "PAZAR",
+    "description": "Transcription factors and the genes whose regulatory sequences they were assayed on, from PAZAR projects, with the assay, the publication and the project of each line; binding records are interactions, reporter and expression assays are regulation.",
+    "tags": [
+      "gene_regulation",
+      "causal_regulation",
+      "literature_curated",
+      "experimental",
+      "computationally_predicted"
+    ],
+    "website": "http://www.pazar.info/",
+    "license": "GNU Lesser General Public License v3.0",
+    "license_url": "https://www.gnu.org/licenses/lgpl-3.0.html",
+    "license_use": {
+      "academic": "unknown",
+      "commercial": "unknown"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/pazar.py"
+  },
+  "pdb": {
+    "display_name": "PDB",
+    "description": "Sets of UniProt proteins found together in one experimental PDB structure (derived groupings, not necessarily physiological complexes).",
+    "tags": [
+      "protein_complexes",
+      "experimental"
+    ],
+    "website": "https://www.wwpdb.org/",
+    "license": "Creative Commons Zero 1.0 Universal - public domain dedication",
+    "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/pdb.py"
+  },
+  "pdzbase": {
+    "display_name": "PDZBase",
+    "description": "Protein-protein interactions mediated by a PDZ domain, with their publications.",
+    "tags": [
+      "signaling",
+      "physical_interactions",
+      "literature_curated"
+    ],
+    "website": "http://abc.med.cornell.edu/pdzbase",
+    "license": "License not specified or unclear",
+    "license_url": null,
+    "license_use": {
+      "academic": "unknown",
+      "commercial": "unknown"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/pdzbase.py"
+  },
+  "pepcyber": {
+    "display_name": "PepCyber",
+    "description": "Interactions of phosphoprotein-binding domain proteins (SH2, 14-3-3, PTB, WW...) with phosphorylated substrates, with the phosphosite.",
+    "tags": [
+      "signaling",
+      "physical_interactions",
+      "literature_curated"
+    ],
+    "website": "http://www.pepcyber.org/PPEP/",
+    "license": "Non-commercial use only",
+    "license_url": null,
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "not_allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/pepcyber.py"
   },
   "pfocr": {
     "display_name": "PFOCR",
@@ -536,6 +1688,94 @@
     },
     "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/phenol_explorer.py"
   },
+  "phosphoelm": {
+    "display_name": "Phospho.ELM",
+    "description": "Kinase-substrate phosphorylation sites with their publications and low- or high-throughput origin, April 2015 dump.",
+    "tags": [
+      "signaling",
+      "enzyme_ptm_relationships",
+      "literature_curated"
+    ],
+    "website": "http://phospho.elm.eu.org/",
+    "license": "Non-commercial use only",
+    "license_url": null,
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "not_allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/phosphoelm.py"
+  },
+  "phosphonetworks": {
+    "display_name": "PhosphoNetworks",
+    "description": "Human kinase-substrate phosphorylation sites of the PhosphoNetworks high-resolution network, with the sequence window and a motif score.",
+    "tags": [
+      "signaling",
+      "enzyme_ptm_relationships",
+      "experimental",
+      "computationally_predicted"
+    ],
+    "website": "https://phosphonetworks.org/",
+    "license": "Free for academic use, restrictions may apply for commercial use",
+    "license_url": null,
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "unknown"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/phosphonetworks.py"
+  },
+  "phosphopoint": {
+    "display_name": "PhosphoPOINT",
+    "description": "Human kinases with their substrates and their interacting proteins, with the category of each link.",
+    "tags": [
+      "signaling",
+      "enzyme_ptm_relationships",
+      "physical_interactions",
+      "literature_curated"
+    ],
+    "website": "https://doi.org/10.1093/bioinformatics/btn297",
+    "license": "Creative Commons Attribution-ShareAlike 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by-sa/4.0/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/phosphopoint.py"
+  },
+  "phosphosite": {
+    "display_name": "PhosphoSite",
+    "description": "Kinase-substrate phosphorylation sites with their sequence context, in vivo or in vitro evidence, and the publications and PSI-MI methods of the BioPAX file, May 2022 release.",
+    "tags": [
+      "signaling",
+      "enzyme_ptm_relationships",
+      "literature_curated"
+    ],
+    "website": "https://www.phosphosite.org/",
+    "license": "Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported license",
+    "license_url": "https://creativecommons.org/licenses/by-nc-sa/3.0/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "not_allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/phosphosite.py"
+  },
+  "protmapper": {
+    "display_name": "ProtMapper",
+    "description": "Regulators of human phosphorylation sites from curated databases and text mining, with the source and publication of each evidence.",
+    "tags": [
+      "signaling",
+      "enzyme_ptm_relationships",
+      "literature_curated",
+      "text_mined"
+    ],
+    "website": "https://www.biorxiv.org/content/10.1101/822668",
+    "license": "Creative Commons Attribution 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/protmapper.py"
+  },
   "psi_mi": {
     "display_name": "PSI-MI",
     "description": "PSI-MI controlled vocabulary for describing molecular interaction experiments.",
@@ -568,6 +1808,23 @@
       "commercial": "unknown"
     },
     "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/ptfi.py"
+  },
+  "ramilowski2015": {
+    "display_name": "Ramilowski2015",
+    "description": "Literature-supported human ligand–receptor pairs with their source databases and publications.",
+    "tags": [
+      "cell_cell_communication",
+      "ligand_receptor_interactions",
+      "literature_curated"
+    ],
+    "website": "https://doi.org/10.1038/ncomms8866",
+    "license": "Creative Commons Attribution 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/ramilowski2015.py"
   },
   "rampdb": {
     "display_name": "RaMP-DB",
@@ -657,6 +1914,23 @@
     },
     "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/rhea.py"
   },
+  "scconnect": {
+    "display_name": "scConnect",
+    "description": "Peptide and neurotransmitter ligands with their receptors and the action of the ligand, from the Guide to Pharmacology tables of scConnect.",
+    "tags": [
+      "cell_cell_communication",
+      "ligand_receptor_interactions",
+      "literature_curated"
+    ],
+    "website": "https://github.com/JonETJakobsson/scConnect",
+    "license": "Creative Commons Attribution-ShareAlike 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by-sa/4.0/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/scconnect.py"
+  },
   "signor": {
     "display_name": "SIGNOR",
     "description": "Causal signaling interactions, mechanisms and protein modification relationships.",
@@ -691,6 +1965,27 @@
     },
     "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/slctables.py"
   },
+  "spike": {
+    "display_name": "SPIKE",
+    "description": "Signed regulations with their mechanisms, physical interactions, complexes and protein families of human signaling pathways.",
+    "tags": [
+      "signaling",
+      "causal_regulation",
+      "physical_interactions",
+      "protein_complexes",
+      "enzyme_ptm_relationships",
+      "literature_curated",
+      "experimental"
+    ],
+    "website": "https://www.cs.tau.ac.il/~spike/",
+    "license": "Free for academic use, restrictions may apply for commercial use",
+    "license_url": null,
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "unknown"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/spike.py"
+  },
   "stitch": {
     "display_name": "STITCH",
     "description": "Chemical–protein interactions with action annotations and confidence evidence.",
@@ -710,6 +2005,26 @@
     },
     "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/stitch.py"
   },
+  "string": {
+    "display_name": "STRING",
+    "description": "High-confidence human protein links of the STRING functional, physical and regulatory networks, with the combined score and the score of each evidence channel.",
+    "tags": [
+      "physical_interactions",
+      "causal_regulation",
+      "literature_curated",
+      "experimental",
+      "computationally_predicted",
+      "text_mined"
+    ],
+    "website": "https://string-db.org/",
+    "license": "Creative Commons Attribution 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/string.py"
+  },
   "swisslipids": {
     "display_name": "SwissLipids",
     "description": "Lipid identities, classifications and molecular annotations.",
@@ -727,6 +2042,40 @@
     },
     "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/swisslipids.py"
   },
+  "switches_elm": {
+    "display_name": "switches.ELM",
+    "description": "Motif-mediated interactions between two proteins that a modification, an effector or alternative splicing switches on or off, with the binding sites, the modified residues and publications.",
+    "tags": [
+      "signaling",
+      "physical_interactions",
+      "literature_curated"
+    ],
+    "website": "http://switches.elm.eu.org/",
+    "license": "Non-commercial use only",
+    "license_url": null,
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "not_allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/switches_elm.py"
+  },
+  "talklr": {
+    "display_name": "talklr",
+    "description": "Human ligand–receptor pairs from the talklr package, literature supported and putative.",
+    "tags": [
+      "cell_cell_communication",
+      "ligand_receptor_interactions",
+      "literature_curated"
+    ],
+    "website": "https://github.com/yuliangwang/talklr",
+    "license": "GNU General Public License v2.0",
+    "license_url": "https://www.gnu.org/licenses/old-licenses/gpl-2.0.en.html",
+    "license_use": {
+      "academic": "unknown",
+      "commercial": "unknown"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/talklr.py"
+  },
   "tcdb": {
     "display_name": "TCDB",
     "description": "Transporter protein classifications and transporter–substrate relationships.",
@@ -743,6 +2092,89 @@
     },
     "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/tcdb.py"
   },
+  "threedid": {
+    "display_name": "3did",
+    "description": "Pfam domain pairs, and Pfam domains with linear motifs, in contact in PDB structures, with the structures.",
+    "tags": [
+      "physical_interactions",
+      "experimental"
+    ],
+    "website": "https://3did.irbbarcelona.org/",
+    "license": "License not specified or unclear",
+    "license_url": null,
+    "license_use": {
+      "academic": "unknown",
+      "commercial": "unknown"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/threedid.py"
+  },
+  "transmir": {
+    "display_name": "TransmiR",
+    "description": "Literature curated transcription factor - microRNA regulations with the action type, the publication and the species.",
+    "tags": [
+      "gene_regulation",
+      "causal_regulation",
+      "literature_curated"
+    ],
+    "website": "http://www.cuilab.cn/transmir",
+    "license": "Free for academic use, restrictions may apply for commercial use",
+    "license_url": null,
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "unknown"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/transmir.py"
+  },
+  "trip": {
+    "display_name": "TRIP",
+    "description": "Literature-curated interactions of mammalian TRP channels with other proteins, one record per method and publication.",
+    "tags": [
+      "signaling",
+      "physical_interactions",
+      "causal_regulation",
+      "literature_curated"
+    ],
+    "website": "http://www.trpchannel.org/",
+    "license": "Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported license",
+    "license_url": "https://creativecommons.org/licenses/by-nc-sa/3.0/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "not_allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/trip.py"
+  },
+  "trrust": {
+    "display_name": "TRRUST",
+    "description": "Human and mouse transcription factor–target gene regulation with literature references and the mode of regulation where the articles state it.",
+    "tags": [
+      "gene_regulation",
+      "causal_regulation",
+      "literature_curated"
+    ],
+    "website": "https://www.grnpedia.org/trrust/",
+    "license": "Creative Commons Attribution-ShareAlike 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by-sa/4.0/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/trrust.py"
+  },
+  "uberon": {
+    "display_name": "Uberon",
+    "description": "Uberon: an integrated cross-species anatomy ontology of animal structures.",
+    "tags": [
+      "ontologies"
+    ],
+    "website": "https://obophenotype.github.io/uberon/",
+    "license": "Creative Commons Attribution 3.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by/3.0/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/uberon.py"
+  },
   "uniprot": {
     "display_name": "UniProt",
     "description": "Protein identities, functional annotations and reference identifier translations.",
@@ -758,6 +2190,24 @@
       "commercial": "allowed"
     },
     "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/uniprot.py"
+  },
+  "wang": {
+    "display_name": "Wang",
+    "description": "Activating, inhibiting and physical links between human signaling proteins.",
+    "tags": [
+      "signaling",
+      "causal_regulation",
+      "physical_interactions",
+      "literature_curated"
+    ],
+    "website": "http://www.cancer-systemsbiology.org/",
+    "license": "Creative Commons Attribution-NonCommercial 3.0 Unported license",
+    "license_url": "https://creativecommons.org/licenses/by-nc/3.0/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "not_allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/wang.py"
   },
   "wikipathways": {
     "display_name": "WikiPathways",
@@ -776,5 +2226,22 @@
       "commercial": "allowed"
     },
     "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/wikipathways.py"
+  },
+  "wojtowicz2020": {
+    "display_name": "Wojtowicz2020",
+    "description": "Binding pairs of human cell-surface and secreted proteins from an extracellular interaction screen.",
+    "tags": [
+      "cell_cell_communication",
+      "physical_interactions",
+      "experimental"
+    ],
+    "website": "https://doi.org/10.1016/j.cell.2020.07.025",
+    "license": "Creative Commons Attribution 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "license_use": {
+      "academic": "allowed",
+      "commercial": "allowed"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/wojtowicz2020.py"
   }
 }
