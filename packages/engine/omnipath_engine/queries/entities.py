@@ -466,8 +466,33 @@ class EntitiesQueries:
                 len(keys) >= count
                 and (found[-1]["match_rank"], found[-1]["term_length"]) > best[keys[count - 1]][:2]
             ):
-                return [row for key in keys[:count] for row in matched[key]]
+                page = keys[:count]
+                return self._with_other_copies(page, matched, where, params, resources)
             limit *= 4
+
+    def _with_other_copies(self, keys, matched, where, params, resources):
+        """The rows of ``keys`` in key order: the matched rows and every other resource's
+        row of the same entity that passes the filters.
+
+        An entity's rows whose own terms rank beyond the hits read would otherwise be
+        left out of some pages, so its relation count and label would depend on the page
+        size. The other rows are located by key reading few columns (files are sorted
+        by key), then read whole by id.
+        """
+        rows = {key: list(matched[key]) for key in keys}
+        if not keys:
+            return []
+        known = {(r["resource"], r["entity_id"]) for found in rows.values() for r in found}
+        condition, values = self._in("entity_key", keys)
+        located = self._fetch_dicts(
+            f"SELECT resource, entity_id FROM {self._table('entity', resources)} "
+            f"WHERE {condition} AND ({where})",
+            [*values, *params],
+        )
+        others = [pair for r in located if (pair := (r["resource"], r["entity_id"])) not in known]
+        for row in self._lookup("entity", "entity_id", others):
+            rows[row["entity_key"]].append(row)
+        return [row for key in keys for row in sorted(rows[key], key=lambda r: r["resource"])]
 
     def search_entities_api(
         self,
