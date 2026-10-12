@@ -134,9 +134,10 @@ current product implementations.
 | [build](packages/build/README.md) | Reference preparation and resource publication |
 | [postgres](packages/postgres/README.md) | Parquet projection, relational layout, indexes and shared derivations |
 | [subsets](packages/subsets/README.md) | MetSigDB, network views, COSMOS and durable product publication |
-| [api](packages/api/README.md) | Parquet queries, inspection and exports |
+| [engine](packages/engine/README.md) | Parquet queries and exports, embedded by the API and the client |
+| [api](packages/api/README.md) | REST API, inspection and administration over the engine |
 | [web](packages/web/README.md) | Explorer and API proxy |
-| [client](packages/client/README.md) | Python queries over local or remote Parquet |
+| [client](packages/client/README.md) | Installs resources and queries them locally with the engine, DuckDB and SQL |
 
 The root Makefile delegates to package commands; implementation stays inside
 packages. `make check`, `make test`, `make check-web` and `make test-api` cover

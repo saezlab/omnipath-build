@@ -12,7 +12,7 @@ from __future__ import annotations
 import argparse
 import time
 
-from omnipath_api.engine import ParquetServingEngine
+from omnipath_engine.engine import ParquetServingEngine
 
 
 def main() -> None:

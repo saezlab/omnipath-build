@@ -1,7 +1,7 @@
 from fastapi.testclient import TestClient
-from omnipath_api.engine import ParquetServingEngine
+from omnipath_engine.engine import ParquetServingEngine
 from omnipath_api.server import create_app
-from omnipath_api.store.inventory import ReleaseStore
+from omnipath_engine.store.inventory import ReleaseStore
 from omnipath_core.fixtures import nested_rows, rewrite_resource, write_resource
 
 
@@ -157,7 +157,7 @@ def test_relationships_and_counts_span_resources(tmp_path):
 
 
 def test_descriptions_lead_the_first_attribute_page():
-    from omnipath_api.entity_details import page_details
+    from omnipath_engine.entity_details import page_details
 
     entity = dict(
         entityAttributes=[dict(term="in_taxon", value=str(i)) for i in range(30)]
@@ -169,7 +169,7 @@ def test_descriptions_lead_the_first_attribute_page():
 
 
 def test_one_collection_pages_on_its_own():
-    from omnipath_api.entity_details import page_details
+    from omnipath_engine.entity_details import page_details
 
     entity = dict(
         entityPk="a",
@@ -185,7 +185,7 @@ def test_one_collection_pages_on_its_own():
 
 
 def test_attributes_beyond_descriptions_are_grouped_by_term():
-    from omnipath_api.entity_details import page_details
+    from omnipath_engine.entity_details import page_details
 
     terms = ["in_taxon", "has_role", "in_taxon", "description", "has_role"]
     entity = dict(entityAttributes=[dict(term=t, value=str(i)) for i, t in enumerate(terms)])

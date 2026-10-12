@@ -3,7 +3,7 @@
 import json
 from typing import Literal
 
-from omnipath_api.molecular import matching_evidence
+from omnipath_engine.molecular import matching_evidence
 
 _ISOFORM = "molecular_form.isoform_identifier.ns || ':' || molecular_form.isoform_identifier.id = ?"
 

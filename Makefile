@@ -70,7 +70,7 @@ test-postgres:
 test-subsets:
 	OMNIPATH_TEST_POSTGRES=1 uv run --frozen pytest packages/postgres/tests packages/subsets/tests -q -n $(PYTEST_PG_WORKERS) $(PYTEST_ARGS)
 test-api:
-	uv run --frozen pytest packages/api/tests -q -n $(PYTEST_WORKERS) $(PYTEST_ARGS)
+	uv run --frozen pytest packages/engine/tests packages/api/tests -q -n $(PYTEST_WORKERS) $(PYTEST_ARGS)
 check:
 	uv run --frozen ruff check packages scripts conftest.py
 	uv run --frozen ruff format --check packages scripts conftest.py

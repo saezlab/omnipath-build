@@ -1,8 +1,8 @@
 import json
 
-from omnipath_api.engine import ParquetServingEngine
+from omnipath_engine.engine import ParquetServingEngine
 from omnipath_api.models import ResourcesResponse
-from test_engine import _write_resource
+from omnipath_core.fixtures import write_resource_version as _write_resource
 
 
 def test_resource_details_preserve_stats_and_snapshot(tmp_path):

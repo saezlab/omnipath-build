@@ -2,7 +2,7 @@ import json
 import io
 import pyarrow.parquet as pq
 import pytest
-from omnipath_api.engine import ParquetServingEngine
+from omnipath_engine.engine import ParquetServingEngine
 from omnipath_core.fixtures import nested_rows, rewrite_resource, write_resource
 
 

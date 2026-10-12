@@ -17,6 +17,7 @@ from omnipath_core.schema import (
     SERVING_TABLES,
 )
 from omnipath_core.molecular_forms import MOLECULAR_FORM_STRUCT, normalize_molecular_form
+from omnipath_core.serving_tables import write_serving_tables
 
 from omnipath_core.biolink import (
     annotation_term,
@@ -920,46 +921,7 @@ class ParquetWriter:
             )
         db.execute("SET preserve_insertion_order=false")
         db.execute(f"SET threads={int(threads)}")
-        relations = _read_parquet_sql([self.paths["relation"]])
-        entities = _read_parquet_sql([self.paths["entity"]])
-        identifiers = _read_parquet_sql([self.paths["entity_identifier"]])
-        endpoints = " UNION ALL ".join(
-            f"SELECT {key} AS key, '{kind}' AS key_kind, '{side}' AS side, relation_id, predicate, category FROM {relations}"
-            for side in ("subject", "object")
-            for kind, key in (
-                ("entity", f"{side}_entity_key"),
-                ("reference", f"{side}_reference_entity_key"),
-            )
-        )
-        _sorted_copy(
-            db,
-            f"SELECT * FROM ({endpoints}) WHERE key IS NOT NULL",
-            "key, relation_id",
-            self.paths["relation_endpoint"],
-            self._work,
-        )
-        _sorted_copy(
-            db,
-            f"""SELECT * FROM (
-                SELECT reference_entity_key AS group_key, 'reference' AS kind, entity_id FROM {entities}
-                UNION ALL SELECT unnest(gene_reference_keys), 'gene', entity_id FROM {entities}
-                UNION ALL SELECT group_connectivity, 'connectivity', entity_id FROM {entities}
-            ) WHERE group_key IS NOT NULL""",
-            "group_key, entity_id",
-            self.paths["entity_group"],
-            self._work,
-        )
-        _sorted_copy(
-            db,
-            f"""SELECT DISTINCT term, kind, entity_id FROM (
-                SELECT lower(label) AS term, 'label' AS kind, entity_id FROM {entities}
-                UNION ALL SELECT lower(identifier), 'identifier', entity_id FROM {entities}
-                UNION ALL SELECT lower(id), 'identifier', entity_id FROM {identifiers}
-            ) WHERE term IS NOT NULL AND term <> ''""",
-            "term, entity_id",
-            self.paths["entity_term"],
-            self._work,
-        )
+        write_serving_tables(db, self.output_dir, self._work)
 
 
 _TABLES = {**PUBLISHED_TABLES, **SERVING_TABLES}
@@ -1089,48 +1051,6 @@ def _bucket_queries():
             item.object_molecular_form AS object_molecular_form
         FROM items i JOIN b_relation_ids b USING (relation_key) ORDER BY b.relation_id, ordinal""",
     )
-
-
-def _sorted_copy(db, query, order, target, work, max_rows=2_000_000):
-    """Write ``query`` sorted by ``order``, in key ranges of at most ``max_rows`` rows
-    (boundaries from a sample) appended in order: one global sort of tens of millions
-    of rows with long string keys does not fit a build's memory limit."""
-    unsorted = work / f"{Path(target).stem}.unsorted.parquet"
-    db.execute(f"COPY ({query}) TO '{_sql_path(unsorted)}' (FORMAT PARQUET)")
-    key = order.split(",")[0].strip()
-    source = _read_parquet_sql([unsorted])
-    total = pq.read_metadata(unsorted).num_rows
-    parts = -(-total // max_rows)
-    if parts <= 1:
-        db.execute(
-            f"COPY (SELECT * FROM {source} ORDER BY {order}) TO '{_sql_path(target)}' {_COPY_OPTIONS}"
-        )
-    else:
-        sample = sorted(
-            row[0]
-            for row in db.execute(
-                f"SELECT {key} FROM (SELECT {key} FROM {source}) USING SAMPLE 200000 ROWS"
-            ).fetchall()
-        )
-        bounds = sorted({sample[len(sample) * i // parts] for i in range(1, parts)})
-        writer = None
-        try:
-            for low, high in zip([None, *bounds], [*bounds, None]):
-                where = " AND ".join(
-                    [f"{key} >= ?"] * (low is not None) + [f"{key} < ?"] * (high is not None)
-                )
-                batches = db.execute(
-                    f"SELECT * FROM {source} WHERE {where} ORDER BY {order}",
-                    [v for v in (low, high) if v is not None],
-                ).fetch_record_batch(ROW_GROUP_SIZE)
-                for batch in batches:
-                    if writer is None:
-                        writer = pq.ParquetWriter(target, batch.schema, compression="zstd")
-                    writer.write_batch(batch, row_group_size=ROW_GROUP_SIZE)
-        finally:
-            if writer is not None:
-                writer.close()
-    unsorted.unlink()
 
 
 def _check_schema(path, expected):

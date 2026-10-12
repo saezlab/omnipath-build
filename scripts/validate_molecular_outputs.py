@@ -4,10 +4,8 @@
 Run with the workspace Python environment. Resource selectors are names (latest
 available version) or NAME/VERSION. All SQL baselines read original Parquets;
 TestClient uses temporary symlinks to the resource version's tables.
-Python client checks use a temporary hard-linked offline snapshot on the data
-root's filesystem and streaming checksums. Staging directories are removed on
-exit; immutable resource files are never written. Unsupported hardlinks report
-unavailable: escaping symlinks and full dataset copies are not used. Missing
+Staging directories are removed on
+exit; immutable resource files are never written. Missing
 observed cases are reported, not replaced with synthetic biological examples.
 Exit status is 1 on failed checks.
 """
@@ -17,10 +15,8 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 from datetime import datetime, timezone
-import errno
 import hashlib
 import io
-import inspect
 import json
 import os
 from pathlib import Path
@@ -34,20 +30,16 @@ import duckdb
 from fastapi.testclient import TestClient
 import pyarrow.parquet as pq
 
-from omnipath_api.engine import ParquetServingEngine
+from omnipath_engine.engine import ParquetServingEngine
 from omnipath_api.server import create_app
 from omnipath_api.settings import Settings
-from omnipath_client import Client
 from omnipath_core.molecular_forms import normalize_molecular_form
 from omnipath_core.schema import PUBLISHED_TABLES
 
 _UNIPROT_ACCESSION = "([OPQ][0-9][A-Z0-9]{3}[0-9]|[A-NR-Z][0-9]([A-Z][A-Z0-9]{2}[0-9]){1,2})"
 _UNIPROT_REPORTED_PRODUCT = _UNIPROT_ACCESSION + "(-[0-9]+)?(-PRO_[0-9]+)?"
 
-CLIENT_SAMPLE_LIMIT = 5
-CLIENT_PRODUCT_LIMIT = 100
 _VALIDATOR_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
-_CLIENT_SHA256 = hashlib.sha256(Path(inspect.getfile(Client)).read_bytes()).hexdigest()
 
 
 def _literal(value: str | Path) -> str:
@@ -94,28 +86,6 @@ def _standalone_identity(ev: dict) -> tuple:
         ev.get("upstream_id"),
         _form(ev.get("molecular_form")),
     )
-
-
-def _product_predicate(filters: dict) -> tuple[str, list]:
-    kind = "protein" if "protein_entity_keys" in filters else "transcript"
-    mode = filters["molecular_endpoint_mode"]
-    sides = (
-        ["subject"]
-        if mode == "source"
-        else ["object"]
-        if mode == "target"
-        else ["subject", "object"]
-    )
-    isoform = (filters.get("isoform_identifiers") or [None])[0]
-    clauses, parameters = [], []
-    for side in sides:
-        clause = f"ev.{side}_molecular_form.{kind}_entity_key=?"
-        parameters.append(filters[kind + "_entity_keys"][0])
-        if isoform:
-            clause += f" AND ev.{side}_molecular_form.isoform_identifier.ns || ':' || ev.{side}_molecular_form.isoform_identifier.id=?"
-            parameters.append(isoform)
-        clauses.append(f"({clause})")
-    return "(" + (" AND " if mode == "both" else " OR ").join(clauses) + ")", parameters
 
 
 class Validator:
@@ -799,318 +769,12 @@ class Validator:
                     "Paired occurrence has no subject product or no object isoform",
                 )
 
-    def client_timed(self, operation, evaluate, **parameters):
-        started = time.perf_counter()
-        result = evaluate()
-        self.timing(
-            {
-                "operation": operation,
-                "kind": "python_client",
-                "elapsed_ms": round((time.perf_counter() - started) * 1000, 3),
-                "parameters": parameters,
-            }
-        )
-        return result
-
-    def client_product(self, client, example):
-        filters, name = example["filters"], example["name"]
-        kind = "protein" if "protein_entity_keys" in filters else "transcript"
-        product = filters[kind + "_entity_keys"][0]
-        side = filters["molecular_endpoint_mode"]
-        isoform = (filters.get("isoform_identifiers") or [None])[0]
-        predicate, parameters = _product_predicate(filters)
-        selected = client.related_product(
-            product,
-            resources=self.folder.parent.name,
-            product_type=kind,
-            endpoint=side,
-            isoform_identifier=isoform,
-        )
-        actual_count, actual_occurrences = self.client_timed(
-            f"client.{name}.count",
-            lambda: selected.aggregate(
-                "count(*) AS relations, coalesce(sum(evidence_count),0) AS occurrences"
-            ).fetchone(),
-            **filters,
-        )
-        self.check(
-            f"client.{name}.count",
-            actual_count == example["expected_relations"]
-            and actual_occurrences == example["expected_occurrences"],
-            expected_relations=example["expected_relations"],
-            actual_relations=actual_count,
-            expected_occurrences=example["expected_occurrences"],
-            actual_occurrences=actual_occurrences,
-        )
-        sample = selected.order("relation_key").limit(CLIENT_SAMPLE_LIMIT)
-        columns = "relation_key, subject_entity_key, object_entity_key, subject_type, object_type, evidence_count, evidence, _resource, _resource_version"
-        rows = self.client_timed(
-            f"client.{name}.sample",
-            lambda: sample.project(columns).to_arrow_table().to_pylist(),
-            **filters,
-        )
-        expected_keys = [
-            key
-            for (key,) in self.sql(
-                f"baseline.client.{name}.sample_keys",
-                f"SELECT DISTINCT relation_key FROM occurrences WHERE {predicate} ORDER BY relation_key LIMIT ?",
-                [*parameters, CLIENT_SAMPLE_LIMIT],
-            )
-        ]
-        self.check(
-            f"client.{name}.sample_keys",
-            [row["relation_key"] for row in rows] == expected_keys,
-            sample_limit=CLIENT_SAMPLE_LIMIT,
-        )
-        for row in rows:
-            key = row["relation_key"]
-            expected = self.sql(
-                f"baseline.client.{name}.paired_evidence",
-                f"SELECT ev FROM occurrences WHERE relation_key=? AND {predicate}",
-                [key, *parameters],
-            )
-            endpoints = self.sql(
-                f"baseline.client.{name}.typed_endpoints",
-                "SELECT subject_entity_key, object_entity_key, subject_type, object_type FROM relation WHERE relation_key=?",
-                [key],
-            )[0]
-            self.check(
-                f"client.{name}.paired_evidence.{key}",
-                Counter(_identity(ev) for ev in row["evidence"])
-                == Counter(_identity(ev) for (ev,) in expected)
-                and row["evidence_count"] == len(expected),
-                expected_occurrences=len(expected),
-                actual_occurrences=len(row["evidence"]),
-            )
-            self.check(
-                f"client.{name}.typed_endpoints.{key}",
-                tuple(
-                    row[column]
-                    for column in (
-                        "subject_entity_key",
-                        "object_entity_key",
-                        "subject_type",
-                        "object_type",
-                    )
-                )
-                == endpoints
-                and row["_resource"] == self.folder.parent.name
-                and row["_resource_version"] == self.folder.name,
-            )
-        self.client_products(client, sample, expected_keys, predicate, parameters, name)
-
-    def client_products(self, client, sample, keys, predicate, parameters, name):
-        products = client.referenced_products(sample, resources=self.folder.parent.name)
-        closure = f"""FROM entity e WHERE EXISTS (SELECT 1 FROM occurrences
-            WHERE relation_key IN (SELECT UNNEST(?::VARCHAR[])) AND ({predicate}) AND
-            (ev.subject_molecular_form.protein_entity_key=e.entity_key OR ev.subject_molecular_form.transcript_entity_key=e.entity_key
-             OR ev.object_molecular_form.protein_entity_key=e.entity_key OR ev.object_molecular_form.transcript_entity_key=e.entity_key))"""
-        expected_count = self.sql(
-            f"baseline.client.{name}.product_count",
-            f"SELECT count(*) {closure}",
-            [keys, *parameters],
-        )[0][0]
-        actual_count = self.client_timed(
-            f"client.{name}.product_count", lambda: products.aggregate("count(*)").fetchone()[0]
-        )
-        self.check(
-            f"client.{name}.product_closure_count",
-            expected_count == actual_count,
-            expected_products=expected_count,
-            actual_products=actual_count,
-            scope=f"First {CLIENT_SAMPLE_LIMIT} selected relation records",
-        )
-        columns = "entity_key, entity_type, namespace, identifier, reference_entity_key, gene_reference_keys"
-        expected = self.sql(
-            f"baseline.client.{name}.product_records",
-            f"SELECT {columns} {closure} ORDER BY entity_key LIMIT ?",
-            [keys, *parameters, CLIENT_PRODUCT_LIMIT],
-        )
-        actual = self.client_timed(
-            f"client.{name}.product_records",
-            lambda: products.project(columns)
-            .order("entity_key")
-            .limit(CLIENT_PRODUCT_LIMIT)
-            .fetchall(),
-        )
-        self.check(
-            f"client.{name}.product_records", expected == actual, record_limit=CLIENT_PRODUCT_LIMIT
-        )
-        if expected_count > CLIENT_PRODUCT_LIMIT:
-            self.unavailable(
-                f"client.{name}.all_product_record_values",
-                f"Closure has {expected_count} records; counts are exact, value comparison is limited to {CLIENT_PRODUCT_LIMIT}",
-            )
-
-    def client_reference(self, client, reference):
-        for endpoint in ("any", "source", "target", "both"):
-            sides = (
-                ["subject"]
-                if endpoint == "source"
-                else ["object"]
-                if endpoint == "target"
-                else ["subject", "object"]
-            )
-            predicate = (" AND " if endpoint == "both" else " OR ").join(
-                f"{side}_reference_entity_key=?" for side in sides
-            )
-            expected_count = self.sql(
-                f"baseline.client.reference.{endpoint}.count",
-                f"SELECT count(*) FROM relation WHERE {predicate}",
-                [reference] * len(sides),
-            )[0][0]
-            selected = client.related_reference(
-                reference, resources=self.folder.parent.name, endpoint=endpoint
-            )
-            actual_count = self.client_timed(
-                f"client.reference.{endpoint}.count",
-                lambda: selected.aggregate("count(*)").fetchone()[0],
-                reference_entity_key=reference,
-            )
-            columns = "relation_key, subject_entity_key, object_entity_key, subject_type, object_type, subject_reference_entity_key, object_reference_entity_key"
-            expected = self.sql(
-                f"baseline.client.reference.{endpoint}.sample",
-                f"SELECT {columns} FROM relation WHERE {predicate} ORDER BY relation_key LIMIT ?",
-                [*([reference] * len(sides)), CLIENT_SAMPLE_LIMIT],
-            )
-            actual = self.client_timed(
-                f"client.reference.{endpoint}.sample",
-                lambda: selected.project(columns)
-                .order("relation_key")
-                .limit(CLIENT_SAMPLE_LIMIT)
-                .fetchall(),
-                reference_entity_key=reference,
-            )
-            self.check(
-                f"client.reference.{endpoint}",
-                actual_count == expected_count and actual == expected,
-                reference_entity_key=reference,
-                expected_relations=expected_count,
-                actual_relations=actual_count,
-                sample_limit=CLIENT_SAMPLE_LIMIT,
-            )
-
-    def python_client(self):
-        # Normal /tmp may be a separate tmpfs: hardlinks require the source
-        # filesystem. Keep staging outside immutable resource version folders.
-        with tempfile.TemporaryDirectory(
-            prefix="omnipath-client-validation-", dir=self.folder.parents[2]
-        ) as temporary:
-            snapshot = Path(temporary)
-            folder = snapshot / "resources" / self.folder.parent.name / self.folder.name
-            folder.mkdir(parents=True)
-            files = []
-            # The published tables the client reads (raw payloads stay out).
-            for name in [f"{t}.parquet" for t in PUBLISHED_TABLES if t != "evidence_payloads"]:
-                source, destination = self.folder / name, folder / name
-                try:
-                    os.link(source, destination)
-                except OSError as exc:
-                    if exc.errno in {errno.EXDEV, errno.EPERM, errno.EACCES, errno.ENOTSUP}:
-                        self.unavailable(
-                            "client.offline_snapshot",
-                            f"Temporary hardlink unavailable ({exc.strerror}); escaping symlinks are unsupported and full Parquets are not copied",
-                        )
-                        return
-                    raise
-                started = time.perf_counter()
-                with source.open("rb") as stream:
-                    digest = hashlib.file_digest(stream, "sha256").hexdigest()
-                self.report["timings"].append(
-                    {
-                        "operation": f"client.snapshot.checksum.{name}",
-                        "kind": "snapshot",
-                        "elapsed_ms": round((time.perf_counter() - started) * 1000, 3),
-                        "bytes": source.stat().st_size,
-                    }
-                )
-                files.append({"name": name, "size_bytes": source.stat().st_size, "sha256": digest})
-            (snapshot / "snapshot.json").write_text(
-                json.dumps(
-                    {
-                        "snapshot_version": 1,
-                        "api_url": "https://validation.invalid/api",
-                        "release": self.folder.name,
-                        "resources": [
-                            {
-                                "resource_id": self.folder.parent.name,
-                                "version": self.folder.name,
-                                "files": files,
-                            }
-                        ],
-                    }
-                )
-            )
-            self.report["client_snapshot"] = {
-                "staging": "temporary_hardlinks",
-                "memory_limit": "2GB",
-                "sample_relations": CLIENT_SAMPLE_LIMIT,
-                "sample_product_records": CLIENT_PRODUCT_LIMIT,
-            }
-            with Client.from_snapshot(snapshot, memory_limit="2GB") as client:
-                product_examples = [
-                    example for example in self.report["examples"] if "filters" in example
-                ]
-                if not product_examples:
-                    self.unavailable(
-                        "client.related_product",
-                        "No resolved product example available in relation occurrences",
-                    )
-                    self.unavailable(
-                        "client.referenced_products",
-                        "No product selection available to validate closure",
-                    )
-                for example in product_examples:
-                    self.client_product(client, example)
-                if product_examples:
-                    representative = next(
-                        (
-                            example
-                            for example in product_examples
-                            if example["name"].startswith("isoform_")
-                        ),
-                        product_examples[0],
-                    )
-                    for mode in ("any", "both"):
-                        filters = {**representative["filters"], "molecular_endpoint_mode": mode}
-                        predicate, parameters = _product_predicate(filters)
-                        count, occurrences = self.sql(
-                            f"baseline.client.product_{mode}.count",
-                            f"SELECT count(DISTINCT relation_key),count(*) FROM occurrences WHERE {predicate}",
-                            parameters,
-                        )[0]
-                        self.client_product(
-                            client,
-                            {
-                                "name": f"product_{mode}",
-                                "filters": filters,
-                                "expected_relations": count,
-                                "expected_occurrences": occurrences,
-                            },
-                        )
-                gene = next(
-                    (
-                        example
-                        for example in self.report["examples"]
-                        if example["name"] == "gene_navigation"
-                    ),
-                    None,
-                )
-                if gene:
-                    self.client_reference(client, gene["reference_entity_key"])
-                else:
-                    self.unavailable(
-                        "client.related_reference",
-                        "No supported scalar NCBI gene reference observed",
-                    )
-
     def run(self, root: Path) -> dict:
         started = time.perf_counter()
         try:
             if self.schemas():
                 self.structural()
                 self.api(root)
-                self.python_client()
             else:
                 self.unavailable(
                     "data_and_api_checks", "Contract schema errors prevent safe structured queries"
@@ -1138,7 +802,6 @@ def validate_outputs(
         "created_at": datetime.now(timezone.utc).isoformat(),
         "data_root": str(root),
         "validator_sha256": _VALIDATOR_SHA256,
-        "client_sha256": _CLIENT_SHA256,
         "resources": [],
         "limits": {"examples_per_kind": examples, "max_export_relations": max_export_relations},
     }

@@ -5,7 +5,7 @@ import io
 import pyarrow.parquet as pq
 from fastapi.testclient import TestClient
 
-from omnipath_api.engine import ParquetServingEngine
+from omnipath_engine.engine import ParquetServingEngine
 from omnipath_api.server import create_app
 from omnipath_core.fixtures import write_resource
 
@@ -30,7 +30,11 @@ def client(tmp_path):
              category="interaction", sources=["a"], evidence_count=1)
         for i in range(3)
     ]  # fmt: skip
-    write_resource(tmp_path / "resources/a/1", [entity("p1", "TP53", reference="entrez:7157"), entity("p2", "MDM2")], relations)
+    write_resource(
+        tmp_path / "resources/a/1",
+        [entity("p1", "TP53", reference="entrez:7157"), entity("p2", "MDM2")],
+        relations,
+    )
     write_resource(tmp_path / "resources/b/1", [entity("p1", "TP53")])
     return TestClient(create_app(engine=ParquetServingEngine(tmp_path)))
 

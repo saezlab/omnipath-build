@@ -24,7 +24,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from omnipath_api.admin import AdminService, register_admin_routes
 from omnipath_api.settings import Settings
-from omnipath_api.engine import ParquetServingEngine
+from omnipath_engine.engine import ParquetServingEngine
 from omnipath_api.routers.health import router as health_router
 from omnipath_api.routers.common import EngineJSONResponse
 from omnipath_api.models import (

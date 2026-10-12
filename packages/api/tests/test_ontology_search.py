@@ -1,7 +1,7 @@
 import tempfile
 from pathlib import Path
 
-from omnipath_api.engine import ParquetServingEngine
+from omnipath_engine.engine import ParquetServingEngine
 from omnipath_api.server import create_app
 from fastapi.testclient import TestClient
 from omnipath_core.fixtures import write_resource

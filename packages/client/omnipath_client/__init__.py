@@ -1,6 +1,8 @@
-"""Query versioned OmniPath Parquet resources locally with DuckDB."""
+"""Install versioned OmniPath Parquet resources and query them locally with DuckDB."""
 
-from .client import Client, ClientError
+from .client import Client, connect
+from .errors import ClientError
+from .installation import available, data_directory, init
 
-__all__ = ["Client", "ClientError"]
+__all__ = ["Client", "ClientError", "available", "connect", "data_directory", "init"]
 __version__ = "0.1.0"

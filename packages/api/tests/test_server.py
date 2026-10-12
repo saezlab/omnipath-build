@@ -4,12 +4,12 @@ import io
 import unittest
 import tempfile
 import zipfile
-from serving_fixtures import write_dataset
+from omnipath_core.fixtures import write_dataset
 from omnipath_api.settings import Settings
 
 from fastapi.testclient import TestClient
 
-from omnipath_api.engine import ParquetServingEngine
+from omnipath_engine.engine import ParquetServingEngine
 from omnipath_api.server import create_app
 
 

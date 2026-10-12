@@ -8,11 +8,11 @@ import time
 from typing import Any
 
 
-from omnipath_api.store.query_cache import normalized
+from omnipath_engine.store.query_cache import normalized
 
 
-from omnipath_api.queries.constants import RELATION_QUALIFIER_FILTERS
-from omnipath_api.models import normalize_filters
+from omnipath_engine.queries.constants import RELATION_QUALIFIER_FILTERS
+from omnipath_engine.filters import normalize_filters
 
 logger = logging.getLogger(__name__)
 

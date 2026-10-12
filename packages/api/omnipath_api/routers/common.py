@@ -9,7 +9,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from starlette.background import BackgroundTask
 from pydantic import ValidationError
-from omnipath_api.store.query_pool import QueryCapacityError
+from omnipath_engine.store.query_pool import QueryCapacityError
 
 
 class EngineJSONResponse(JSONResponse):

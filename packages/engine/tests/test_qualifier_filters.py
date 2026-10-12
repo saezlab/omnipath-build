@@ -6,7 +6,7 @@ import shutil
 import pyarrow.parquet as pq
 import pytest
 
-from omnipath_api.engine import ParquetServingEngine
+from omnipath_engine.engine import ParquetServingEngine
 from omnipath_core.fixtures import rewrite_resource
 
 
@@ -88,8 +88,7 @@ def test_facets_ignore_own_selection_but_keep_other_filters(engine):
 
 
 def test_export_uses_same_qualifier_filter(engine):
-    data, _ = engine.export_slice(
-        filters={"object_direction_qualifier": ["decreased"]})
+    data, _ = engine.export_slice(filters={"object_direction_qualifier": ["decreased"]})
     assert pq.read_table(io.BytesIO(data))["relation_key"].to_pylist() == ["b"]
 
 
@@ -111,7 +110,7 @@ def test_export_uses_same_qualifier_filter(engine):
     ],
 )
 def test_batched_qualifier_counts_match_independent_scans(engine, payload):
-    from omnipath_api.queries.constants import RELATION_QUALIFIER_FILTERS
+    from omnipath_engine.queries.constants import RELATION_QUALIFIER_FILTERS
 
     # Repeat the same keys in another resource: DISTINCT must span files too.
     source = engine.data_root / "resources/test/1"

@@ -13,13 +13,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 from omnipath_api.admin import AdminService
-from omnipath_api.engine import ParquetServingEngine
+from omnipath_engine.engine import ParquetServingEngine
 from omnipath_api.jobs.runner import Job
 from omnipath_api.jobs.store import JobStore
 from omnipath_api.jobs.worker import run_worker, worker_lock
 from omnipath_api.server import create_app
 from omnipath_api.settings import Settings
-from serving_fixtures import key, write_dataset
+from omnipath_core.fixtures import fixture_key as key, write_dataset
 from omnipath_core.fixtures import write_resource
 
 

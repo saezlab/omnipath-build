@@ -21,28 +21,29 @@ import duckdb
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from omnipath_api.store.inventory import ReleaseStore, InventorySnapshot
-from omnipath_api.store.query_cache import QueryCache
-from omnipath_api.store.query_pool import QueryPool
-from omnipath_api.store.connection import get_connection, sql_literal
+from omnipath_engine.store.inventory import ReleaseStore, InventorySnapshot
+from omnipath_engine.store.query_cache import QueryCache
+from omnipath_engine.store.query_pool import QueryPool
+from omnipath_engine.store.connection import get_connection, sql_literal
 from omnipath_core.measurements import QUANTITY_STRUCT
 from omnipath_core.schema import PUBLISHED_TABLES, RELATION_QUALIFIERS, SERVING_TABLES
 from omnipath_core.versioning import RESOURCE_FILES, SERVING_FILES
 
 
-from omnipath_api.queries.resources import ResourcesQueries
-from omnipath_api.queries.relations import RelationsQueries
-from omnipath_api.queries.entities import EntitiesQueries
-from omnipath_api.queries.facets import FacetsQueries
-from omnipath_api.queries.export import ExportQueries
-from omnipath_api.queries.evidence import EvidenceQueries
-from omnipath_api.queries.selection import SelectionQueries
-from omnipath_api.queries.ontology import OntologyQueries
-from omnipath_api.queries.stats import StatsQueries
+from omnipath_engine.queries.resources import ResourcesQueries
+from omnipath_engine.queries.relations import RelationsQueries
+from omnipath_engine.queries.entities import EntitiesQueries
+from omnipath_engine.queries.facets import FacetsQueries
+from omnipath_engine.queries.export import ExportQueries
+from omnipath_engine.queries.evidence import EvidenceQueries
+from omnipath_engine.queries.selection import SelectionQueries
+from omnipath_engine.queries.ontology import OntologyQueries
+from omnipath_engine.queries.stats import StatsQueries
 
 
 logger = logging.getLogger(__name__)
 
+PAYLOAD_FILE = "evidence_payloads.parquet"
 _QUANTITY = [field.name for field in QUANTITY_STRUCT]
 
 
@@ -75,9 +76,17 @@ class ParquetServingEngine(
     )
 
     def __init__(
-        self, data_root: str | Path = "data", *, public_data_url: str | None = None
+        self,
+        data_root: str | Path = "data",
+        *,
+        public_data_url: str | None = None,
+        memory_limit: str = "1GB",
+        threads: int = 2,
     ) -> None:
+        """``memory_limit`` and ``threads`` apply to each query connection unless the
+        OMNIPATH_DUCKDB_MEMORY_LIMIT and OMNIPATH_DUCKDB_THREADS variables set them."""
         self.data_root = Path(data_root).resolve()
+        self._memory_limit, self._threads = memory_limit, threads
         self.public_data_url = (
             public_data_url
             if public_data_url is not None
@@ -139,8 +148,13 @@ class ParquetServingEngine(
 
     @classmethod
     def _version_is_ready(cls, ver_dir: Path) -> bool:
-        """A published version has every resource and serving table."""
-        return all((ver_dir / name).is_file() for name in RESOURCE_FILES + SERVING_FILES)
+        """A published version has every resource and serving table; raw source
+        payloads are optional (a client downloads them only on request)."""
+        return all(
+            (ver_dir / name).is_file()
+            for name in RESOURCE_FILES + SERVING_FILES
+            if name != PAYLOAD_FILE
+        )
 
     def _scan_inventory_fingerprint(self) -> tuple[tuple[Any, ...], ...]:
         """Cheap disk snapshot of complete resource versions (path, mtime, size)."""
@@ -176,7 +190,7 @@ class ParquetServingEngine(
         return tuple(sorted(items))
 
     def _open_query_connection(self) -> duckdb.DuckDBPyConnection:
-        return get_connection(memory_limit="1GB", threads=2)
+        return get_connection(memory_limit=self._memory_limit, threads=self._threads)
 
     @contextmanager
     def query_scope(self):
@@ -265,6 +279,7 @@ class ParquetServingEngine(
                     tables = {
                         name: ver_dir / f"{name}.parquet"
                         for name in (*PUBLISHED_TABLES, *SERVING_TABLES)
+                        if f"{name}.parquet" != PAYLOAD_FILE or (ver_dir / PAYLOAD_FILE).is_file()
                     }
                     ent_file, rel_file = tables["entity"], tables["relation"]
                     key = f"{res_name}/{ver_dir.name}"
@@ -419,10 +434,12 @@ class ParquetServingEngine(
         return infos
 
     def _table_paths(self, table: str, selected_resources: list[str] | None = None) -> dict:
-        """{resource key (source/version): path} of one table for the selected resources."""
+        """{resource key (source/version): path} of one table for the selected resources
+        that have it."""
         return {
             info["key"]: str(info["tables"][table])
             for info in self._selected_resource_infos(selected_resources)
+            if table in info["tables"]
         }
 
     def _table(self, table: str, selected_resources: list[str] | None = None) -> str:
@@ -593,4 +610,4 @@ class ParquetServingEngine(
     # Downloads are the published tables; serving tables are lookup indexes. Raw source
     # payloads are downloaded on request.
     RESOURCE_PARQUET_FILES = RESOURCE_FILES
-    PUBLIC_DOWNLOAD_FILES = tuple(f for f in RESOURCE_FILES if f != "evidence_payloads.parquet")
+    PUBLIC_DOWNLOAD_FILES = tuple(f for f in RESOURCE_FILES if f != PAYLOAD_FILE)

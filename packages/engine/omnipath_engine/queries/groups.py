@@ -13,8 +13,8 @@ from functools import lru_cache
 import json
 import time
 
-from omnipath_api.models import normalize_filters
-from omnipath_api.shape.display_name import display_name, preferred_name
+from omnipath_engine.filters import normalize_filters
+from omnipath_engine.shape.display_name import display_name, preferred_name
 from omnipath_core.display_names import name_rank
 
 
@@ -85,7 +85,7 @@ def chemical_types():
 
 def search_groups(engine, *, strategy="chemical_connectivity", **kwargs):
     """Cached per release and inventory: the explorer's first page is the same for everyone."""
-    from omnipath_api.entity_details import cache_key, page_details
+    from omnipath_engine.entity_details import cache_key, page_details
 
     start = time.perf_counter()
     detail_limit = kwargs.pop("detail_limit", 20)

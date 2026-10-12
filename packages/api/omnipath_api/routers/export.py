@@ -33,4 +33,3 @@ def export_slice(request: Request, payload: ExportRequest) -> Response:
         limit=body["limit"],
     )
     return _attachment(data, content_type, "omnipath_relations")
-

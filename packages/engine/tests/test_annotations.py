@@ -1,7 +1,7 @@
 """Unit tests for presentation annotation and CURIE transformations."""
 
 import unittest
-from omnipath_api.annotations import (
+from omnipath_engine.annotations import (
     normalize_identifier_type,
     split_compiled_annotations,
     unwrap_attribute_value,

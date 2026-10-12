@@ -1,4 +1,4 @@
-"""Malformed metadata fails before querying or publishing a snapshot."""
+"""Malformed metadata fails before anything is installed or queried."""
 
 from copy import deepcopy
 import json
@@ -6,8 +6,8 @@ import json
 import httpx
 import pytest
 
-from omnipath_client import Client, ClientError
-from omnipath_client.contracts import validate_catalog, validate_snapshot
+from omnipath_client import ClientError, available, connect, init
+from omnipath_client.contracts import validate_catalog, validate_installation
 
 
 def resource():
@@ -16,8 +16,7 @@ def resource():
         "version": "1.0",
         "description": "Additive metadata",
         "files": [
-            {"name": f"{table}.parquet", "size_bytes": 100, "sha256": "a" * 64}
-            for table in ("entity", "relation")
+            {"name": f"{table}.parquet", "size_bytes": 100} for table in ("entity", "relation")
         ],
     }
 
@@ -33,13 +32,13 @@ def resource():
         ("files", [None]),
     ],
 )
-def test_invalid_catalog_rejected_by_public_client(field, value, tmp_path):
+def test_invalid_catalog_rejected_by_init(field, value, tmp_path):
     record = resource()
     record[field] = value
     transport = httpx.MockTransport(lambda _: httpx.Response(200, json={"resources": [record]}))
-    with httpx.Client(transport=transport) as http, Client(http_client=http) as client:
+    with httpx.Client(transport=transport) as http:
         with pytest.raises(ClientError):
-            client.download(tmp_path / "invalid")
+            init(data_dir=tmp_path / "invalid", http_client=http)
     assert not (tmp_path / "invalid").exists()
 
 
@@ -51,7 +50,6 @@ def test_invalid_catalog_rejected_by_public_client(field, value, tmp_path):
         ("size_bytes", "100"),
         ("rows", False),
         ("rows", -1),
-        ("sha256", "invalid"),
         ("url", 123),
         ("url", "file:///tmp/test"),
         ("name", "../entity.parquet"),
@@ -77,21 +75,26 @@ def test_required_artifacts_and_duplicates():
         validate_catalog([resource(), resource()])
 
 
-def test_snapshot_checksums_are_required_before_open(tmp_path):
-    record = resource()
-    del record["files"][0]["sha256"]
+def test_installation_manifest_is_validated_before_open(tmp_path):
     manifest = {
-        "snapshot_version": 1,
+        "format": 1,
         "api_url": "https://api.example/api",
         "release": "1.0",
-        "resources": [record],
+        "resources": [resource()],
     }
-    (tmp_path / "snapshot.json").write_text(json.dumps(manifest))
-    with pytest.raises(ClientError, match="checksum"):
-        Client.from_snapshot(tmp_path)
-    manifest["snapshot_version"] = True
-    with pytest.raises(ClientError, match="snapshot version"):
-        validate_snapshot(manifest)
+    assert validate_installation(manifest)["release"] == "1.0"
+    (tmp_path / "installed.json").write_text(json.dumps({**manifest, "release": ""}))
+    with pytest.raises(ClientError, match="release"):
+        connect(tmp_path)
+    (tmp_path / "installed.json").write_text("{")
+    with pytest.raises(ClientError, match="Invalid installed.json"):
+        connect(tmp_path)
+    assert validate_installation(manifest)["materialize"] is False
+    with pytest.raises(ClientError, match="materialize"):
+        validate_installation({**manifest, "materialize": "yes"})
+    manifest["format"] = True
+    with pytest.raises(ClientError, match="installation format"):
+        validate_installation(manifest)
 
 
 def test_additive_metadata_is_preserved_without_aliasing():
@@ -107,5 +110,5 @@ def test_invalid_catalog_envelopes(payload):
     with httpx.Client(
         transport=httpx.MockTransport(lambda _: httpx.Response(200, json=payload))
     ) as http:
-        with Client(http_client=http) as client, pytest.raises(ClientError):
-            client.resources()
+        with pytest.raises(ClientError):
+            available(http_client=http)

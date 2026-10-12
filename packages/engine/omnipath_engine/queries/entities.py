@@ -13,8 +13,8 @@ from typing import Any
 
 from omnipath_core.biolink import entity_type as biolink_entity_type
 
-from omnipath_api.models import normalize_filters, EntitySearchCursor
-from omnipath_api.shape import shape_entity_summary, shape_relation_summary
+from omnipath_engine.filters import normalize_filters, EntitySearchCursor
+from omnipath_engine.shape import shape_entity_summary, shape_relation_summary
 
 
 logger = logging.getLogger(__name__)
@@ -40,6 +40,7 @@ def _curie(query):
 
 # Group keys of the grouped explorer: a gene's reference, a structure, or one entity.
 _GROUP_PREFIXES = ("gene:", "connectivity:", "entity:")
+
 
 class EntitiesQueries:
     """Entities queries over the engine storage and shaping contract."""
@@ -376,7 +377,7 @@ class EntitiesQueries:
         return clauses, params
 
     def search_entity_groups(self, *, strategy="chemical_connectivity", **kwargs):
-        from omnipath_api.queries.groups import search_groups
+        from omnipath_engine.queries.groups import search_groups
 
         if strategy not in {"auto", "chemical_connectivity", "gene_reference"}:
             raise ValueError(f"Unknown grouping strategy: {strategy}")
@@ -386,12 +387,12 @@ class EntitiesQueries:
         return self.search_entity_groups(strategy="chemical_connectivity", **kwargs)
 
     def get_molecular_context(self, entity_id, resources=None, **kwargs):
-        from omnipath_api.queries.molecular_context import context
+        from omnipath_engine.queries.molecular_context import context
 
         return context(self, entity_id, resources, **kwargs)
 
     def get_entity_examples(self):
-        from omnipath_api.examples import get_examples
+        from omnipath_engine.examples import get_examples
 
         return get_examples(self)
 
@@ -557,17 +558,17 @@ class EntitiesQueries:
         return self.get_entities_by_pks(public_ids, resources)
 
     def get_entity_core(self, public_id, resources=None):
-        from omnipath_api.entity_details import core
+        from omnipath_engine.entity_details import core
 
         return core(self, public_id, resources)
 
     def get_entity_evidence(self, public_id, resources=None, limit=20, offset=0):
-        from omnipath_api.entity_details import evidence
+        from omnipath_engine.entity_details import evidence
 
         return evidence(self, public_id, resources, limit, offset)
 
     def get_entity_relationships(self, public_id, resources=None, limit=50, offset=0):
-        from omnipath_api.entity_details import relationships
+        from omnipath_engine.entity_details import relationships
 
         return relationships(self, public_id, resources, limit, offset)
 
@@ -576,7 +577,7 @@ class EntitiesQueries:
     ) -> dict[str, Any] | None:
         # Details are addressed solely by the exact entity key. Identifier and
         # alias discovery belongs to search, never to single-entity hydration.
-        from omnipath_api.entity_details import details
+        from omnipath_engine.entity_details import details
 
         return details(self, public_id, resources)
 

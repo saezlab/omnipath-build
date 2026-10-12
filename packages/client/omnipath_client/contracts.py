@@ -1,4 +1,4 @@
-"""Validate transport records once while preserving additive server metadata."""
+"""Validate catalog and installation records once while preserving additive server metadata."""
 
 from __future__ import annotations
 
@@ -7,27 +7,21 @@ import re
 from typing import Any, NotRequired, TypedDict, cast
 from urllib.parse import urlsplit
 
+from omnipath_core.schema import PUBLISHED_TABLES, SERVING_TABLES
+
 from .errors import ClientError
 
-# The published tables of a resource version; entity_* and relation_* rows refer to
-# their entity or relation by ``entity_id`` / ``relation_id``.
-TABLES = (
-    "entity",
-    "entity_identifier",
-    "entity_annotation",
-    "entity_evidence",
-    "relation",
-    "relation_annotation",
-    "relation_evidence",
-    "evidence_payloads",
-)
+# The published tables of a resource version (entity_* and relation_* rows refer to
+# their entity or relation by ``entity_id`` / ``relation_id``) and the lookup tables
+# derived from them at installation.
+TABLES = tuple(PUBLISHED_TABLES)
+SERVING = tuple(SERVING_TABLES)
 
 
 class Artifact(TypedDict):
     name: str
     size_bytes: int
     url: NotRequired[str | None]
-    sha256: NotRequired[str]
     rows: NotRequired[int | None]
 
 
@@ -37,10 +31,12 @@ class ResourceRecord(TypedDict):
     files: list[Artifact]
 
 
-class Snapshot(TypedDict):
-    snapshot_version: int
+class Installation(TypedDict):
+    format: int
     api_url: str
     release: str
+    # Whether the database holds native tables (True) or views over the files.
+    materialize: bool
     resources: list[ResourceRecord]
 
 
@@ -58,7 +54,7 @@ def validate_url(value: Any) -> str:
     return value
 
 
-def validate_resource(value: Any, *, snapshot: bool = False) -> ResourceRecord:
+def validate_resource(value: Any) -> ResourceRecord:
     if not isinstance(value, dict):
         raise ClientError("Expected a resource object")
     source, version = value.get("resource_id"), value.get("version")
@@ -85,10 +81,6 @@ def validate_resource(value: Any, *, snapshot: bool = False) -> ResourceRecord:
             raise ClientError("Invalid artifact size in catalog")
         if artifact.get("url") is not None:
             validate_url(artifact["url"])
-        digest = artifact.get("sha256")
-        if snapshot or digest is not None:
-            if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
-                raise ClientError("Invalid or missing artifact checksum")
         rows = artifact.get("rows")
         if rows is not None and (type(rows) is not int or rows < 0):
             raise ClientError("Invalid artifact row count")
@@ -98,12 +90,12 @@ def validate_resource(value: Any, *, snapshot: bool = False) -> ResourceRecord:
     return cast(ResourceRecord, deepcopy(value))
 
 
-def validate_catalog(value: Any, *, snapshot: bool = False) -> dict[str, ResourceRecord]:
+def validate_catalog(value: Any) -> dict[str, ResourceRecord]:
     if not isinstance(value, list):
         raise ClientError("Resources must be a list")
     catalog: dict[str, ResourceRecord] = {}
     for raw in value:
-        record = validate_resource(raw, snapshot=snapshot)
+        record = validate_resource(raw)
         source = record["resource_id"]
         if source in catalog:
             raise ClientError(f"Duplicate resource in catalog: {source}")
@@ -111,18 +103,23 @@ def validate_catalog(value: Any, *, snapshot: bool = False) -> dict[str, Resourc
     return catalog
 
 
-def validate_snapshot(value: Any) -> Snapshot:
+def validate_installation(value: Any) -> Installation:
     if not isinstance(value, dict):
-        raise ClientError("Expected a snapshot object")
-    if type(value.get("snapshot_version")) is not int or value["snapshot_version"] != 1:
-        raise ClientError("Unsupported snapshot version")
+        raise ClientError("Expected an installation object")
+    if type(value.get("format")) is not int or value["format"] != 1:
+        raise ClientError("Unsupported installation format")
     api_url = validate_url(value.get("api_url"))
     release = value.get("release")
     if not isinstance(release, str) or not release.strip():
-        raise ClientError("Snapshot release must be a non-empty string")
-    catalog = validate_catalog(value.get("resources"), snapshot=True)
-    if not catalog:
-        raise ClientError("Snapshot must contain at least one resource")
-    return Snapshot(
-        snapshot_version=1, api_url=api_url, release=release, resources=list(catalog.values())
+        raise ClientError("Installation release must be a non-empty string")
+    materialize = value.get("materialize", False)
+    if type(materialize) is not bool:
+        raise ClientError("Installation materialize must be true or false")
+    catalog = validate_catalog(value.get("resources"))
+    return Installation(
+        format=1,
+        api_url=api_url,
+        release=release,
+        materialize=materialize,
+        resources=list(catalog.values()),
     )

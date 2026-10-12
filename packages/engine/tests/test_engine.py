@@ -5,27 +5,10 @@ import time
 import unittest
 from pathlib import Path
 
-from omnipath_api.engine import ParquetServingEngine
+from omnipath_engine.engine import ParquetServingEngine
 
-from serving_fixtures import key, write_dataset
-from omnipath_core.fixtures import write_resource
-
-
-def _write_resource(root: Path, resource: str, version: str, *, n_relations: int = 1) -> Path:
-    target = root / "resources" / resource / version
-    entity = dict(entity_key=key("P1"), identifier="P1", label="Prot", namespace="uniprot")
-    relations = [
-        dict(
-            relation_key=key(f"r{i}"),
-            subject_entity_key=entity["entity_key"],
-            object_entity_key=entity["entity_key"],
-            predicate="associated_with",
-        )
-        for i in range(n_relations)
-    ]
-    write_resource(target, [entity], relations)
-    (target / "resolution_stats.json").write_text("{}\n", encoding="utf-8")
-    return target
+from omnipath_core.fixtures import write_dataset
+from omnipath_core.fixtures import write_resource_version as _write_resource
 
 
 class TestParquetServingEngine(unittest.TestCase):

@@ -1,6 +1,6 @@
-from omnipath_api.shape.display_name import preferred_name
-from omnipath_api.shape.entity import shape_entity_summary
-from omnipath_api.entity_details import page_details
+from omnipath_engine.shape.display_name import preferred_name
+from omnipath_engine.shape.entity import shape_entity_summary
+from omnipath_engine.entity_details import page_details
 
 
 def test_resolver_label_is_the_display_name_on_every_page():

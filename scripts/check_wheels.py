@@ -12,15 +12,16 @@ import tempfile
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
-PACKAGES = ("core", "resolver", "build", "subsets", "postgres", "api", "client")
+PACKAGES = ("core", "resolver", "build", "subsets", "postgres", "engine", "api", "client")
 DEPENDENCIES = {
     "core": (),
     "resolver": ("core",),
     "build": ("core", "resolver"),
     "subsets": ("core",),
     "postgres": ("core", "subsets"),
-    "api": ("core",),
-    "client": (),
+    "engine": ("core",),
+    "api": ("core", "engine"),
+    "client": ("core", "engine"),
 }
 
 
@@ -145,12 +146,13 @@ def check(directory, packages, *, offline=False):
                 "omnipath_subsets.compatibility",
             ),
             "postgres": ("omnipath_build", "omnipath_resolver", "psycopg"),
+            "engine": ("omnipath_build", "omnipath_resolver", "pypath", "omnipath_api", "fastapi"),
             "api": ("omnipath_build", "omnipath_resolver", "pypath"),
-            "client": ("omnipath_build", "omnipath_resolver", "pypath", "omnipath_core"),
+            "client": ("omnipath_build", "omnipath_resolver", "pypath", "omnipath_api", "fastapi"),
         }.get(package, ())
         for name in forbidden:
             code += f"assert importlib.util.find_spec({name!r}) is None, {name!r}\n"
-        if package in {"build", "subsets", "postgres", "api"}:
+        if package in {"build", "subsets", "postgres", "api", "client"}:
             code += f"from omnipath_{package}.cli import main\n"
             run(
                 str(python),

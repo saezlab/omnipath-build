@@ -11,7 +11,7 @@ import pyarrow.parquet as pq
 import pytest
 from omnipath_core import SERVING_SCHEMA_VERSION
 
-from omnipath_api.engine import ParquetServingEngine
+from omnipath_engine.engine import ParquetServingEngine
 from omnipath_api.releases import ReleaseStore
 from omnipath_api.server import create_app
 from omnipath_api.settings import Settings

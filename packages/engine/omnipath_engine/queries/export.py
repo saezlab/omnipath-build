@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 
-from omnipath_api.store.connection import sql_literal
+from omnipath_engine.store.connection import sql_literal
 
 
 logger = logging.getLogger(__name__)
@@ -34,8 +34,8 @@ class ExportQueries:
         limit: int = RELATION_EXPORT_LIMIT,
     ) -> tuple[bytes, str]:
         """A filtered relation slice as Parquet, with its annotations and evidence."""
-        from omnipath_api.molecular import form_match_sql, has_form_filters
-        from omnipath_api.models import normalize_filters
+        from omnipath_engine.molecular import form_match_sql, has_form_filters
+        from omnipath_engine.filters import normalize_filters
         from omnipath_core.measurements import QUANTITY_STRUCT
 
         filters = normalize_filters(filters)
@@ -99,7 +99,9 @@ class ExportQueries:
         ) SELECT rows.* EXCLUDE (resource, relation_id),
             coalesce(products.referenced_product_records, []) AS referenced_product_records
         FROM rows LEFT JOIN products USING (resource, relation_id)"""
-        return self._write_parquet(sql, [*relation_params, *annotation_params, *evidence_params]), PARQUET
+        return self._write_parquet(
+            sql, [*relation_params, *annotation_params, *evidence_params]
+        ), PARQUET
 
     def _write_parquet(self, sql: str, params: list[Any]) -> bytes:
         import tempfile

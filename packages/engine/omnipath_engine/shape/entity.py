@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 from omnipath_core.naming import normalize_namespace
-from omnipath_api.shape.display_name import display_name
+from omnipath_engine.shape.display_name import display_name
 
 
 def shape_entity_identifier(

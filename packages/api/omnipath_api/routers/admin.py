@@ -13,8 +13,8 @@ from fastapi.responses import StreamingResponse
 from omnipath_api.admin import AdminService
 from omnipath_api.jobs.build_ops import BuildUnavailable
 from omnipath_api.models import AdminJobRequest, AdminJobResponse, AdminJobsResponse
-from omnipath_api.store.inventory import ReleaseStore
-from omnipath_api.store.query_pool import QueryCapacityError
+from omnipath_engine.store.inventory import ReleaseStore
+from omnipath_engine.store.query_pool import QueryCapacityError
 
 
 def require_admin(request: Request) -> None:

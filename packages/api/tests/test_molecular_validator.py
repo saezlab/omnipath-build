@@ -1,7 +1,6 @@
 """Exercise the real-output validator with valid and deliberately damaged Parquets."""
 
 import copy
-import errno
 import hashlib
 import io
 import json
@@ -13,7 +12,6 @@ import pyarrow.parquet as pq
 import pytest
 
 from omnipath_core.keys import entity_key
-from omnipath_client import Client
 from scripts.validate_molecular_outputs import Validator, validate_outputs
 from omnipath_core.fixtures import nested_rows, rewrite_resource, write_resource
 
@@ -193,29 +191,6 @@ def test_validator_paired_forms_gene_navigation_export_and_unavailable_cases(out
     assert any(c["name"] == "api.gene_type_filter.gene" for c in resource["checks"])
     assert any(t["kind"] == "api" for t in resource["timings"])
     assert resource["tables"]["entity"]["bytes"] > 0
-    assert resource["client_snapshot"]["staging"] == "temporary_hardlinks"
-    assert any(t["kind"] == "python_client" for t in resource["timings"])
-    for endpoint in ("any", "source", "target", "both"):
-        assert any(
-            c["name"] == f"client.reference.{endpoint}" and c["status"] == "passed"
-            for c in resource["checks"]
-        )
-    closure = next(
-        c for c in resource["checks"] if c["name"] == "client.isoform_1.product_closure_count"
-    )
-    assert closure["expected_products"] == closure["actual_products"] == 2
-    assert any(
-        c["name"] == "client.product_any.count" and c["actual_relations"] == 1
-        for c in resource["checks"]
-    )
-    assert any(
-        c["name"] == "client.product_both.count" and c["actual_relations"] == 0
-        for c in resource["checks"]
-    )
-    assert any(
-        c["name"] == "client.opposite_endpoint_constraints_1.count" and c["actual_relations"] == 0
-        for c in resource["checks"]
-    )
 
 
 def test_validator_detects_dangling_product_reference(outputs):
@@ -264,28 +239,6 @@ def test_validator_checks_physical_arrow_type(outputs):
         "reference_entity_key: actual int64; expected string" in message
         for message in error["errors"]
     )
-
-
-def test_client_audit_detects_lost_exact_evidence_trimming(outputs, monkeypatch):
-    root, _ = outputs
-    original = Client.related_product
-
-    def untrimmed(self, product, **kwargs):
-        # The selected relations, but with all of their evidence.
-        selected = original(self, product, **kwargs)
-        evidence = self._table_sql("relation_evidence", kwargs["resources"])
-        return self._db().sql(f"""SELECT s.* EXCLUDE (evidence, evidence_count), m.evidence,
-            len(m.evidence) AS evidence_count FROM ({selected.sql_query()}) s JOIN (
-                SELECT _resource, relation_id, list(struct_pack(source, dataset, row_id,
-                    upstream_id, annotations, subject_molecular_form, object_molecular_form)
-                    ORDER BY ordinal) AS evidence
-                FROM ({evidence}) GROUP BY _resource, relation_id
-            ) m USING (_resource, relation_id)""")
-
-    monkeypatch.setattr(Client, "related_product", untrimmed)
-    report = validate_outputs(root, ["signor"], examples=1)
-    assert any(c["name"].startswith("client.isoform_1.paired_evidence.") for c in failures(report))
-    assert not any(c["name"].startswith("api.") for c in failures(report))
 
 
 def add_matching_relation(outputs):
@@ -353,7 +306,7 @@ def test_api_audit_requires_populated_unique_search_pages(outputs, monkeypatch, 
         for c in failures(report)
     )
     assert not any(c["name"].endswith(".count") for c in failures(report))
-    assert not any(c["name"].startswith(("export.", "client.")) for c in failures(report))
+    assert not any(c["name"].startswith("export.") for c in failures(report))
 
 
 @pytest.mark.parametrize("damage", ["empty_page", "duplicate_page", "untrimmed", "opposite_form"])
@@ -391,7 +344,7 @@ def test_product_context_audit_checks_page_and_paired_occurrences(outputs, monke
     report = validate_outputs(outputs[0], ["signor"], examples=1)
     assert any(".product_context." in c["name"] for c in failures(report))
     assert not any(c["name"].endswith(".product_context") for c in failures(report))
-    assert not any(c["name"].startswith(("export.", "client.")) for c in failures(report))
+    assert not any(c["name"].startswith("export.") for c in failures(report))
 
 
 def test_standalone_context_audit_rejects_repeated_observation_with_same_form(outputs, monkeypatch):
@@ -419,7 +372,7 @@ def test_standalone_context_audit_rejects_repeated_observation_with_same_form(ou
     monkeypatch.setattr(Validator, "request", corrupted)
     report = validate_outputs(outputs[0], ["signor"], examples=1)
     assert any(c["name"].endswith(".standalone_forms") for c in failures(report))
-    assert not any(c["name"].startswith(("export.", "client.")) for c in failures(report))
+    assert not any(c["name"].startswith("export.") for c in failures(report))
 
 
 def test_api_page_proof_allows_valid_sort_ties(outputs, monkeypatch):
@@ -437,88 +390,6 @@ def test_api_page_proof_allows_valid_sort_ties(outputs, monkeypatch):
     monkeypatch.setattr(Validator, "request", reordered)
     report = validate_outputs(outputs[0], ["signor"], examples=1)
     assert not failures(report), failures(report)
-
-
-def test_client_audit_detects_missing_counterpart_product(outputs, monkeypatch):
-    root, _ = outputs
-    original = Client.referenced_products
-
-    def missing_counterpart(self, selected, **kwargs):
-        return original(self, selected, **kwargs).filter("identifier='P04637'")
-
-    monkeypatch.setattr(Client, "referenced_products", missing_counterpart)
-    report = validate_outputs(root, ["signor"], examples=1)
-    closure = next(
-        c for c in failures(report) if c["name"] == "client.isoform_1.product_closure_count"
-    )
-    assert closure["expected_products"] == 2
-    assert closure["actual_products"] == 1
-
-
-def test_client_snapshot_cross_filesystem_is_unavailable_without_source_writes(
-    outputs, monkeypatch
-):
-    root, folder = outputs
-    before = {
-        path.name: (path.stat().st_size, path.stat().st_mtime_ns, path.stat().st_nlink)
-        for path in folder.glob("*.parquet")
-    }
-
-    def different_filesystem(*args, **kwargs):
-        raise OSError(errno.EXDEV, "Cross-device link")
-
-    monkeypatch.setattr("scripts.validate_molecular_outputs.os.link", different_filesystem)
-    report = validate_outputs(root, ["signor"], examples=1)
-    assert not failures(report)
-    unavailable = next(
-        c for c in report["resources"][0]["checks"] if c["name"] == "client.offline_snapshot"
-    )
-    assert unavailable["status"] == "unavailable"
-    assert "full Parquets are not copied" in unavailable["reason"]
-    assert before == {
-        path.name: (path.stat().st_size, path.stat().st_mtime_ns, path.stat().st_nlink)
-        for path in folder.glob("*.parquet")
-    }
-    assert not (root / "snapshot.json").exists()
-
-
-def test_client_snapshot_staging_uses_source_filesystem_and_is_cleaned(outputs, monkeypatch):
-    from scripts import validate_molecular_outputs as validator_module
-
-    root, folder = outputs
-    original_temporary_directory = validator_module.tempfile.TemporaryDirectory
-    original_link = validator_module.os.link
-    staged = []
-    before = {
-        path.name: (path.stat().st_size, path.stat().st_mtime_ns, path.stat().st_nlink)
-        for path in folder.glob("*.parquet")
-    }
-
-    def temporary_directory(*args, **kwargs):
-        directory = original_temporary_directory(*args, **kwargs)
-        if kwargs.get("prefix") == "omnipath-client-validation-":
-            assert Path(kwargs["dir"]) == root
-            staged.append(Path(directory.name))
-        return directory
-
-    def same_filesystem_link(source, destination):
-        # Simulate the production /tmp tmpfs boundary: a snapshot outside the
-        # source data root cannot be hardlinked, even on this test machine.
-        if not Path(destination).is_relative_to(root):
-            raise OSError(errno.EXDEV, "Cross-device link")
-        assert Path(source).stat().st_dev == Path(destination).parent.stat().st_dev
-        original_link(source, destination)
-
-    monkeypatch.setattr(validator_module.tempfile, "TemporaryDirectory", temporary_directory)
-    monkeypatch.setattr(validator_module.os, "link", same_filesystem_link)
-    report = validate_outputs(root, ["signor"], examples=1)
-    assert not failures(report)
-    assert report["resources"][0]["client_snapshot"]["staging"] == "temporary_hardlinks"
-    assert len(staged) == 1 and not staged[0].exists()
-    assert before == {
-        path.name: (path.stat().st_size, path.stat().st_mtime_ns, path.stat().st_nlink)
-        for path in folder.glob("*.parquet")
-    }
 
 
 def plan_nodes(plan):

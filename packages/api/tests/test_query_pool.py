@@ -5,8 +5,8 @@ from threading import Event
 
 import pytest
 
-from omnipath_api.engine import ParquetServingEngine
-from omnipath_api.store.query_pool import QueryCapacityError, QueryPool
+from omnipath_engine.engine import ParquetServingEngine
+from omnipath_engine.store.query_pool import QueryCapacityError, QueryPool
 
 
 class Connection:
@@ -109,7 +109,7 @@ def test_http_capacity_returns_retryable_status(tmp_path, monkeypatch):
 
 
 def test_concurrent_search_facets_and_export_match_sequential(tmp_path):
-    from serving_fixtures import write_dataset
+    from omnipath_core.fixtures import write_dataset
 
     engine = ParquetServingEngine(write_dataset(tmp_path))
     calls = (
@@ -133,7 +133,7 @@ def test_concurrent_search_facets_and_export_match_sequential(tmp_path):
 
 
 def test_reload_uses_same_pool_and_never_allocates_direct_connections(tmp_path, monkeypatch):
-    from serving_fixtures import write_dataset
+    from omnipath_core.fixtures import write_dataset
 
     monkeypatch.setenv("OMNIPATH_QUERY_CONCURRENCY", "1")
     monkeypatch.setenv("OMNIPATH_QUERY_WAIT_SECONDS", "0")
@@ -156,7 +156,7 @@ def test_busy_admin_delete_does_not_mutate_then_fail_refresh(tmp_path, monkeypat
     from fastapi.testclient import TestClient
     from omnipath_api.server import create_app
     from omnipath_api.settings import Settings
-    from serving_fixtures import write_dataset
+    from omnipath_core.fixtures import write_dataset
 
     monkeypatch.setenv("OMNIPATH_QUERY_CONCURRENCY", "1")
     monkeypatch.setenv("OMNIPATH_QUERY_WAIT_SECONDS", "0")

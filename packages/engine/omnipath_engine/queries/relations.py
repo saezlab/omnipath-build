@@ -13,11 +13,11 @@ from omnipath_core.biolink import (
     annotation_value,
 )
 
-from omnipath_api.molecular import form_match_sql, has_form_filters, matching_evidence
-from omnipath_api.models import normalize_filters
+from omnipath_engine.molecular import form_match_sql, has_form_filters, matching_evidence
+from omnipath_engine.filters import normalize_filters
 
 
-from omnipath_api.queries.constants import RELATION_QUALIFIER_FILTERS
+from omnipath_engine.queries.constants import RELATION_QUALIFIER_FILTERS
 
 logger = logging.getLogger(__name__)
 

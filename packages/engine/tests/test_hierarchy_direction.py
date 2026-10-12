@@ -1,6 +1,6 @@
 """Ontology projection uses declared statement context, not resource/type lists."""
 
-from omnipath_api.engine import ParquetServingEngine
+from omnipath_engine.engine import ParquetServingEngine
 from omnipath_core.fixtures import write_resource
 
 

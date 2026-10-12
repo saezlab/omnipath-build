@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 from typing import Any
-from omnipath_api.store.connection import sql_literal
+from omnipath_engine.store.connection import sql_literal
 
 
 logger = logging.getLogger(__name__)

@@ -7,7 +7,7 @@ import json
 from typing import Any
 
 
-from omnipath_api.annotations import (
+from omnipath_engine.annotations import (
     split_compiled_annotations,
 )
 
@@ -19,8 +19,8 @@ class EvidenceQueries:
     """Evidence queries over the engine storage and shaping contract."""
 
     def get_relation_evidence(self, relation_pk, resources=None, filters=None):
-        from omnipath_api.molecular import matching_evidence, has_form_filters
-        from omnipath_api.models import normalize_filters
+        from omnipath_engine.molecular import matching_evidence, has_form_filters
+        from omnipath_engine.filters import normalize_filters
         import hashlib
 
         rows = self._fetch_dicts(

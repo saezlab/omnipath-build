@@ -73,7 +73,7 @@ def _group_key(row, chemical_types):
 
 def get_examples(engine):
     """Landing-page examples, as entities and as the groups the grouped view shows."""
-    from omnipath_api.queries.groups import chemical_types, search_groups
+    from omnipath_engine.queries.groups import chemical_types, search_groups
 
     infos = engine._selected_resource_infos()
     identity = [

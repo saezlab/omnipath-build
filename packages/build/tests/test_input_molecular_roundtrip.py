@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 
 from library_fixture import build_fixture_library
-from omnipath_api.engine import ParquetServingEngine
+from omnipath_engine.engine import ParquetServingEngine
 from omnipath_build.silver import SilverExtractor
 from omnipath_build.writer import ParquetWriter
 from tables_fixture import read_tables
