@@ -139,6 +139,10 @@ class Namespace(StrEnum):
     MACDB_TRAIT = "macdb_trait"
     HPO = "hpo"
     MONDO = "mondo"
+    BTO = "bto"
+    CL = "cl"
+    UBERON = "uberon"
+    APO = "apo"
     OM = "om"
 
     # Generic & Entity Metadata

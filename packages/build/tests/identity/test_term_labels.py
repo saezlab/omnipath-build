@@ -28,6 +28,48 @@ CHEMONT = """[Term]
 id: CHEMONTID:0000002
 name: Organoheterocyclic compounds
 """
+BTO = """[Term]
+id: BTO:0000007
+name: HEK-293 cell
+
+[Term]
+id: BTO:0001416
+name: umbilical vein endothelium
+alt_id: BTO:0001414
+"""
+# a merged edition carries the terms of the ontologies it imports: they are not CL's
+CL = """[Term]
+id: CL:0002518
+name: kidney epithelial cell
+
+[Term]
+id: UBERON:0002113
+name: kidney (as CL imports it)
+
+[Term]
+id: CL:0000002
+name: obsolete immortal cell line cell
+is_obsolete: true
+"""
+# APO names its former ids (YPO:) as alt_ids; the file holds no foreign terms but the test pins the own-prefix rule
+APO = """[Term]
+id: APO:0000063
+name: colony size
+alt_id: YPO:0000063
+
+[Term]
+id: GO:0008150
+name: biological_process
+
+[Term]
+id: APO:0000064
+name: liquid culture appearance
+is_obsolete: true
+"""
+UBERON = """[Term]
+id: UBERON:0002113
+name: kidney
+"""
 
 
 def test_term_labels_from_the_ontology_hub(tmp_path):
@@ -35,7 +77,20 @@ def test_term_labels_from_the_ontology_hub(tmp_path):
     hubs.mkdir()
     writer = HubParquetWriter(hubs / "ontology.parquet")
     # streamed lines keep their line ends
-    emit(writer, {"go": GO.splitlines(keepends=True), "chemont": CHEMONT.splitlines(keepends=True), "hpo": [], "mondo": [], "psi_mi": []})
+    emit(
+        writer,
+        {
+            "go": GO.splitlines(keepends=True),
+            "chemont": CHEMONT.splitlines(keepends=True),
+            "hpo": [],
+            "mondo": [],
+            "psi_mi": [],
+            "bto": BTO.splitlines(keepends=True),
+            "cl": CL.splitlines(keepends=True),
+            "uberon": UBERON.splitlines(keepends=True),
+            "apo": APO.splitlines(keepends=True),
+        },
+    )
     writer.close()
     build_hub_index("ontology", hubs, tmp_path / "index", memory="1GB", threads=1, min_free_gib=0)
     index = find_term_index(tmp_path / "index")
@@ -47,6 +102,14 @@ def test_term_labels_from_the_ontology_hub(tmp_path):
         "GO:0001675": "acrosome assembly",
         "GO:0000001": "mitochondrion inheritance",
         "CHEMONTID:0000002": "Organoheterocyclic compounds",
+        "BTO:0000007": "HEK-293 cell",
+        "BTO:0001416": "umbilical vein endothelium",
+        "BTO:0001414": "umbilical vein endothelium",
+        "CL:0002518": "kidney epithelial cell",
+        # only Uberon names Uberon terms, not the CL file that imports them
+        "UBERON:0002113": "kidney",
+        "APO:0000063": "colony size",
+        "YPO:0000063": "colony size",
     }
 
 
