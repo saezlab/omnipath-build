@@ -278,6 +278,39 @@ def test_scoped_symbol_rows_are_read_in_rounds(runtime, monkeypatch):
     assert runtime.lookup_many(keys) == whole
 
 
+def test_scoped_symbol_rows_are_read_once(runtime, monkeypatch):
+    # The rows of a symbol for a taxon are kept: the second call reads no record again,
+    # and answers as the first; a full memo is emptied and filled again.
+    keys = [
+        key(2, 1, ns, taxon, symbol)
+        for ns in ("genesymbol", "genesymbol-syn")
+        for taxon in (HUMAN, MOUSE)
+        for symbol in ("TP53", "CALM1", "Trp53", "ABC1", "NOREC", "P53", "XYZ", "NONE")
+    ]
+    runtime._scoped_rows.clear()
+    first = runtime.lookup_many(keys)
+    assert runtime._scoped_rows
+    reads = []
+    rows = type(runtime)._rows
+    monkeypatch.setattr(
+        type(runtime), "_rows", staticmethod(lambda *a: reads.append(a[2]) or rows(*a))
+    )
+    assert runtime.lookup_many(keys) == first
+    assert reads == []
+    # A memo that holds three entries, read one pair at a time: it is emptied as it fills.
+    monkeypatch.setattr(type(runtime), "_SCOPED_MEMO", 3)
+    monkeypatch.setattr(type(runtime), "_SCOPED_PAIRS", 1)
+    runtime._scoped_rows.clear()
+    assert runtime.lookup_many(keys) == first
+    # At most the limit and what one round adds (one pair under two taxa).
+    assert reads and len(runtime._scoped_rows) <= 3 + 2
+    # A key of another kind in the same call is not affected by the memo.
+    mixed = keys + [key(2, 1, "ensg", HUMAN, "ENSG00000141510")]
+    assert ids(runtime.lookup_many(mixed)[mixed[-1]]) == ids(
+        look(runtime, 2, 1, "ensg", "ENSG00000141510", HUMAN)
+    )
+
+
 def test_gene_flag(runtime):
     expect = {
         (1, "ensg", "ENSG00000141510"): True,

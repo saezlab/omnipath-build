@@ -330,6 +330,8 @@ class IdentityRuntime:
         # ``memory_limit`` and ``threads`` are accepted for compatibility: LMDB needs neither.
         self._lipids = None
         self._term_labels = None
+        # (hub, (source ns, identifier), taxon) -> the by_id rows of that taxon (``_by_id``).
+        self._scoped_rows = {}
         self.decisions = DecisionsKv(self.path, self.fingerprint)
         try:
             self.hub_kv = {hub: HubKv(hub, directory) for hub, directory in self.hub_dirs.items()}
@@ -511,6 +513,10 @@ class IdentityRuntime:
 
     # Pairs read per round when rows are filtered by taxon (see ``_by_id``).
     _SCOPED_PAIRS = 256
+    # Entries of the memo of taxon-filtered rows; it is emptied when it is full. A symbol
+    # has four entries (exact and synonym, in the gene and in the protein hub), most of
+    # them empty: 85,000 keys of real builds made 157,000 entries.
+    _SCOPED_MEMO = 500_000
 
     def _by_id(self, hubs, pairs, scopes=None):
         """by_id rows for ``(source ns, identifier)`` pairs: (pair index, hub, row fields...).
@@ -523,34 +529,77 @@ class IdentityRuntime:
         millions of records and several gigabytes. A record without a taxon is kept. The
         pairs are read a few at a time for the same reason: the rows of all of them at once
         would be held before any is dropped.
+
+        The taxon of a row is in its record, so every record of the symbol is still read
+        once to learn it. The rows that remain for a taxon are kept (``_scoped_rows``): a
+        resource names the same genes in batch after batch, and reading a thousand records
+        of other species from disk for each of them again was most of the time of a build.
         """
         index = defaultdict(list)
         for i, pair in enumerate(pairs):
             index[pair].append(i)
         distinct = list(index)
-        step = self._SCOPED_PAIRS if scopes else max(len(distinct), 1)
         out = []
+        if not scopes:
+            for hub in hubs:
+                kv = self.hub_kv.get(hub)
+                if kv is None:
+                    continue
+                for pair, rows in self._rows(hub, kv, distinct).items():
+                    for local_id, tag, anchor, count, _ in rows:
+                        out.extend((i, hub, local_id, tag, anchor, count) for i in index[pair])
+            return out
+        memo = self._scoped_rows
         for hub in hubs:
             kv = self.hub_kv.get(hub)
             if kv is None:
                 continue
-            for start in range(0, len(distinct), step):
-                found = kv.ids(distinct[start : start + step])
-                if not found:
+            unread = []
+            for pair in distinct:
+                wanted = {scopes[i] for i in index[pair]}
+                if None in wanted or any((hub, pair, scope) not in memo for scope in wanted):
+                    unread.append(pair)
                     continue
-                heads = kv.heads({local_id for rows in found.values() for local_id, _ in rows})
-                for pair, rows in found.items():
-                    for local_id, tag in rows:
-                        head = heads.get(local_id)
-                        if head is None:
-                            raise ValueError(f"Hub {hub} by_id row without a record: {local_id}")
-                        anchor, count = head[1], int(head[2] or 0)
-                        owners = index[pair]
-                        if scopes:
-                            taxon = _taxon(head[0])
-                            if taxon is not None:
-                                owners = [i for i in owners if scopes[i] in (None, taxon)]
-                        out.extend((i, hub, local_id, tag, anchor, count) for i in owners)
+                for i in index[pair]:
+                    out.extend(
+                        (i, hub, local_id, tag, anchor, count)
+                        for local_id, tag, anchor, count in memo[hub, pair, scopes[i]]
+                    )
+            for start in range(0, len(unread), self._SCOPED_PAIRS):
+                chunk = unread[start : start + self._SCOPED_PAIRS]
+                found = self._rows(hub, kv, chunk)
+                if len(memo) + len(chunk) > self._SCOPED_MEMO:
+                    memo.clear()
+                for pair in chunk:
+                    rows = found.get(pair, ())
+                    for scope in {scopes[i] for i in index[pair]} - {None}:
+                        memo[hub, pair, scope] = tuple(
+                            row[:4] for row in rows if row[4] in (None, scope)
+                        )
+                    for i in index[pair]:
+                        scope = scopes[i]
+                        out.extend(
+                            (i, hub, local_id, tag, anchor, count)
+                            for local_id, tag, anchor, count, taxon in rows
+                            if scope is None or taxon in (None, scope)
+                        )
+        return out
+
+    @staticmethod
+    def _rows(hub, kv, pairs):
+        """pair -> [(local_id, tag, anchor, anchor count, taxon)] of the pairs a hub has."""
+        found = kv.ids(pairs)
+        if not found:
+            return {}
+        heads = kv.heads({local_id for rows in found.values() for local_id, _ in rows})
+        out = {}
+        for pair, rows in found.items():
+            out[pair] = full = []
+            for local_id, tag in rows:
+                head = heads.get(local_id)
+                if head is None:
+                    raise ValueError(f"Hub {hub} by_id row without a record: {local_id}")
+                full.append((local_id, tag, head[1], int(head[2] or 0), _taxon(head[0])))
         return out
 
     def _entity(self, hub, local_id, anchor, anchor_count, exceptions):
