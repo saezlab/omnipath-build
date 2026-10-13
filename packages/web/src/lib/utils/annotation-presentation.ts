@@ -216,7 +216,7 @@ export function annotationLabel(term: string): string {
 }
 /** identifiers.org link for an annotation value that is an ontology term CURIE. */
 export function ontologyTermHref(value: string): string | null {
-  const match = /^(CHEBI|GO|SBO|HP|MONDO|BTO|UBERON|CL|PATO|ECO|MI|SO|ENVO|NCIT):(\d+)$/i.exec(
+  const match = /^(CHEBI|GO|SBO|HP|MONDO|BTO|UBERON|CL|PATO|DOID|MP|ECO|MI|SO|ENVO|NCIT):(\d+)$/i.exec(
     value.trim(),
   );
   return match ? `https://identifiers.org/${match[1].toUpperCase()}:${match[2]}` : null;

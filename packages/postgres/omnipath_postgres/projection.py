@@ -64,8 +64,14 @@ ONTOLOGY_SCOPES = (
     ("mondo", "mondo", "mondo"),
     ("bto", "bto", "bto"),
     ("apo", "apo", "apo"),
+    ("doid", "doid", "doid"),
+    ("pato", "pato", "pato"),
+    ("eco", "eco", "eco"),
+    ("mp", "mp", "mp"),
+    ("wbphenotype", "wbphenotype", "wbphenotype"),
     ("cl", "cl", "cl"),
     ("uberon", "uberon", "uberon"),
+    ("oncotree", "oncotree", "oncotree"),
     ("chebi", "chebi", "chebi"),
     ("chemont", "chemont", "chemont"),
     ("psi_mi", "mi", "psi-mi"),
@@ -351,7 +357,8 @@ def _ontology_cv_eligible(alias: str) -> str:
     # that lookup gate; identifiers and canonical identities stay unchanged.
     return f"""(
         ({alias}.entity_type='ontology_class' AND lower({alias}.resource) IN
-            ('go','hpo','mondo','chemont','psi_mi','omnipath_ontology','brenda','bto','cl','uberon','apo'))
+            ('go','hpo','mondo','chemont','psi_mi','omnipath_ontology','brenda','bto','cl','uberon','apo',
+             'doid','pato','eco','mp','wbphenotype','oncotree'))
         OR ({alias}.entity_type='pathway' AND lower({alias}.resource)='kegg'
             AND {alias}.namespace IN ('kegg_pathway','kegg_pathway_category'))
         OR ({alias}.entity_type='ontology_class' AND lower({alias}.resource)='uniprot'

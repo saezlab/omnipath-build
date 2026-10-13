@@ -70,6 +70,61 @@ UBERON = """[Term]
 id: UBERON:0002113
 name: kidney
 """
+DOID = """[Term]
+id: DOID:3702
+name: cervical adenocarcinoma
+
+[Term]
+id: DOID:8552
+name: chronic myeloid leukemia
+alt_id: DOID:8551
+"""
+# pato-base.obo carries an unnamed stub of a Cell Ontology term; pato.obo does not. The rule is the same
+PATO = """[Term]
+id: PATO:0000169
+name: viability
+
+[Term]
+id: CL:0000000
+relationship: BFO:0000051 GO:0005634
+"""
+# eco.obo holds ECO's own terms only; the foreign stanza is the one a merged edition would add
+ECO = """[Term]
+id: ECO:0000178
+name: in vivo assay evidence
+
+[Term]
+id: ECO:0000181
+name: in vitro assay evidence
+alt_id: ECO:0005013
+
+[Term]
+id: ECO:0000039
+name: obsolete protein assay evidence
+is_obsolete: true
+
+[Term]
+id: OBI:0000623
+name: a term of another ontology
+"""
+MP = """[Term]
+id: MP:0001262
+name: decreased body weight
+
+[Term]
+id: MP:0000012
+name: obsolete loss of subcutaneous adipose tissue
+is_obsolete: true
+"""
+# the prefix is mixed case; a term of another case is not WBPhenotype's
+WBPHENOTYPE = """[Term]
+id: WBPhenotype:0000050
+name: embryonic lethal
+
+[Term]
+id: WBPHENOTYPE:0000001
+name: not a WBPhenotype term
+"""
 
 
 def test_term_labels_from_the_ontology_hub(tmp_path):
@@ -89,6 +144,11 @@ def test_term_labels_from_the_ontology_hub(tmp_path):
             "cl": CL.splitlines(keepends=True),
             "uberon": UBERON.splitlines(keepends=True),
             "apo": APO.splitlines(keepends=True),
+            "doid": DOID.splitlines(keepends=True),
+            "pato": PATO.splitlines(keepends=True),
+            "eco": ECO.splitlines(keepends=True),
+            "mp": MP.splitlines(keepends=True),
+            "wbphenotype": WBPHENOTYPE.splitlines(keepends=True),
         },
     )
     writer.close()
@@ -110,6 +170,15 @@ def test_term_labels_from_the_ontology_hub(tmp_path):
         "UBERON:0002113": "kidney",
         "APO:0000063": "colony size",
         "YPO:0000063": "colony size",
+        "DOID:3702": "cervical adenocarcinoma",
+        "DOID:8552": "chronic myeloid leukemia",
+        "DOID:8551": "chronic myeloid leukemia",
+        "PATO:0000169": "viability",
+        "ECO:0000178": "in vivo assay evidence",
+        "ECO:0000181": "in vitro assay evidence",
+        "ECO:0005013": "in vitro assay evidence",
+        "MP:0001262": "decreased body weight",
+        "WBPhenotype:0000050": "embryonic lethal",
     }
 
 

@@ -24,12 +24,27 @@ SOURCES = {
     "psi_mi": "https://raw.githubusercontent.com/HUPO-PSI/psi-mi-CV/master/psi-mi.obo",
     "bto": "https://purl.obolibrary.org/obo/bto.obo",
     "apo": "https://purl.obolibrary.org/obo/apo.obo",
+    "doid": "https://purl.obolibrary.org/obo/doid.obo",
+    "pato": "https://purl.obolibrary.org/obo/pato.obo",
+    "eco": "https://purl.obolibrary.org/obo/eco.obo",
+    "mp": "https://purl.obolibrary.org/obo/mp.obo",
+    "wbphenotype": "https://purl.obolibrary.org/obo/wbphenotype.obo",
     # The basic editions hold only the ontology's own terms, none merged in from its imports.
     "cl": "https://purl.obolibrary.org/obo/cl/cl-basic.obo",
     "uberon": "https://purl.obolibrary.org/obo/uberon/uberon-basic.obo",
 }
 # Id prefix of the ontologies whose files may carry the terms of others (a merged edition).
-OWN_PREFIX = {"bto": "BTO:", "apo": "APO:", "cl": "CL:", "uberon": "UBERON:"}
+OWN_PREFIX = {
+    "bto": "BTO:",
+    "apo": "APO:",
+    "cl": "CL:",
+    "uberon": "UBERON:",
+    "doid": "DOID:",
+    "pato": "PATO:",
+    "eco": "ECO:",
+    "mp": "MP:",
+    "wbphenotype": "WBPhenotype:",
+}
 
 
 def _terms(lines: Iterable[str], prefix: str = ""):

@@ -848,7 +848,8 @@ def _populate_entity_ontology_terms(
                 BOOL_OR(
                   (
                     (et.name = 'ontology_class' AND lower(ds.name) IN
-                      ('go','hpo','mondo','chemont','psi_mi','omnipath_ontology','brenda','bto','cl','uberon','apo'))
+                      ('go','hpo','mondo','chemont','psi_mi','omnipath_ontology','brenda','bto','cl','uberon','apo',
+                       'doid','pato','eco','mp','wbphenotype','oncotree'))
                     OR (et.name = 'pathway' AND lower(ds.name) = 'kegg'
                       AND cit.name IN ('kegg_pathway','kegg_pathway_category'))
                     OR (et.name = 'ontology_class' AND lower(ds.name) = 'uniprot'

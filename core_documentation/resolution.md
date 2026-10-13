@@ -49,7 +49,7 @@ Every row says *this record of the hub carries this identifier*:
 | Chemical | ChEBI, PubChem, ChEMBL, HMDB, LIPID MAPS, SwissLipids, BiGG, MetaNetX, RefMet, RaMP |
 | Gene and protein | UniProt, NCBI Gene, RaMP genes, plus Ensembl gene mappings and UniProt's RefSeq and EMBL-CDS sequence mappings |
 | Reaction | Rhea (master reactions, directions, Rhea's own cross-references), MetaNetX reactions |
-| Ontology terms | GO, ChemOnt, HPO, MONDO, PSI-MI, BTO, CL, Uberon, APO: term names only, never matched |
+| Ontology terms | GO, ChemOnt, HPO, MONDO, PSI-MI, BTO, CL, Uberon, APO, DOID, PATO, ECO, MP, WBPhenotype: term names only, never matched |
 
 The miRBase hub is exported but not used for resolution yet.
 
