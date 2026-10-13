@@ -34,6 +34,21 @@
     "dimension": "topic",
     "description": "Food composition and dietary compounds."
   },
+  "subcellular_localization": {
+    "label": "Subcellular localization",
+    "dimension": "topic",
+    "description": "Where molecules are in the cell: compartments, membranes, the cell surface and vesicles."
+  },
+  "cell_types": {
+    "label": "Cell types",
+    "dimension": "topic",
+    "description": "Cell types and the genes or proteins that mark them."
+  },
+  "molecular_classification": {
+    "label": "Molecular classification",
+    "dimension": "topic",
+    "description": "Families, domains and sets that group genes or proteins."
+  },
   "physical_interactions": {
     "label": "Physical interactions",
     "dimension": "content",
