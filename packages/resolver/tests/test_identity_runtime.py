@@ -246,6 +246,38 @@ def test_symbols_exist_only_scoped(runtime):
     assert look(runtime, 2, 1, "genesymbol", "TP53", "7227")["candidates"] == []
 
 
+def test_a_scoped_symbol_reads_only_the_records_of_its_taxon(runtime, monkeypatch):
+    # TP53 is the symbol of the human gene 7157 and a synonym of the mouse gene 22059. The
+    # records of the other taxon are left out when the rows are read, not after their
+    # entities were looked up: a symbol is shared by hundreds of species in the real hubs.
+    seen = []
+    meta = runtime._meta
+    monkeypatch.setattr(runtime, "_meta", lambda ids: seen.extend(ids) or meta(ids))
+    assert ids(look(runtime, 2, 1, "genesymbol", "TP53", HUMAN)) == ["entrez:7157"]
+    assert "entrez:7157" in seen and "entrez:22059" not in seen
+    seen.clear()
+    assert ids(look(runtime, 2, 1, "genesymbol-syn", "TP53", MOUSE)) == ["entrez:22059"]
+    assert "entrez:22059" in seen and "entrez:7157" not in seen
+    # The same symbol under two taxa in one call: each key gets the records of its own.
+    human = key(2, 1, "genesymbol-syn", HUMAN, "TP53")
+    mouse = key(2, 1, "genesymbol-syn", MOUSE, "TP53")
+    both = runtime.lookup_many([human, mouse])
+    assert ids(both[human]) == ids(look(runtime, 2, 1, "genesymbol-syn", "TP53", HUMAN))
+    assert ids(both[mouse]) == ["entrez:22059"]
+
+
+def test_scoped_symbol_rows_are_read_in_rounds(runtime, monkeypatch):
+    # The answer does not depend on how many pairs a round reads.
+    keys = [
+        key(2, 1, ns, HUMAN, symbol)
+        for ns in ("genesymbol", "genesymbol-syn")
+        for symbol in ("TP53", "CALM1", "CALM2", "CALM3", "ABC1", "NOREC", "P53", "XYZ")
+    ]
+    whole = runtime.lookup_many(keys)
+    monkeypatch.setattr(type(runtime), "_SCOPED_PAIRS", 1)
+    assert runtime.lookup_many(keys) == whole
+
+
 def test_gene_flag(runtime):
     expect = {
         (1, "ensg", "ENSG00000141510"): True,

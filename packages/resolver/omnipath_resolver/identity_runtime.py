@@ -509,27 +509,48 @@ class IdentityRuntime:
             return "product", sources, ["uniprot"]
         return None
 
-    def _by_id(self, hubs, pairs):
-        """by_id rows for ``(source ns, identifier)`` pairs: (pair index, hub, row fields...)."""
+    # Pairs read per round when rows are filtered by taxon (see ``_by_id``).
+    _SCOPED_PAIRS = 256
+
+    def _by_id(self, hubs, pairs, scopes=None):
+        """by_id rows for ``(source ns, identifier)`` pairs: (pair index, hub, row fields...).
+
+        ``scopes``, where given, has for each pair the taxon its rows are wanted for, or
+        None. A row whose record has another taxon is left out here. A gene symbol is the
+        same word in hundreds of species (``TP53``: about 350 gene and 400 protein records,
+        of which 115 are human), and the scope filter of ``lookup_many`` would drop those
+        rows only after their entities had been looked up: 5,000 symbols of one batch were
+        millions of records and several gigabytes. A record without a taxon is kept. The
+        pairs are read a few at a time for the same reason: the rows of all of them at once
+        would be held before any is dropped.
+        """
         index = defaultdict(list)
         for i, pair in enumerate(pairs):
             index[pair].append(i)
+        distinct = list(index)
+        step = self._SCOPED_PAIRS if scopes else max(len(distinct), 1)
         out = []
         for hub in hubs:
             kv = self.hub_kv.get(hub)
             if kv is None:
                 continue
-            found = kv.ids(index)
-            if not found:
-                continue
-            heads = kv.heads({local_id for rows in found.values() for local_id, _ in rows})
-            for pair, rows in found.items():
-                for local_id, tag in rows:
-                    head = heads.get(local_id)
-                    if head is None:
-                        raise ValueError(f"Hub {hub} by_id row without a record: {local_id}")
-                    anchor, count = head[1], int(head[2] or 0)
-                    out.extend((i, hub, local_id, tag, anchor, count) for i in index[pair])
+            for start in range(0, len(distinct), step):
+                found = kv.ids(distinct[start : start + step])
+                if not found:
+                    continue
+                heads = kv.heads({local_id for rows in found.values() for local_id, _ in rows})
+                for pair, rows in found.items():
+                    for local_id, tag in rows:
+                        head = heads.get(local_id)
+                        if head is None:
+                            raise ValueError(f"Hub {hub} by_id row without a record: {local_id}")
+                        anchor, count = head[1], int(head[2] or 0)
+                        owners = index[pair]
+                        if scopes:
+                            taxon = _taxon(head[0])
+                            if taxon is not None:
+                                owners = [i for i in owners if scopes[i] in (None, taxon)]
+                        out.extend((i, hub, local_id, tag, anchor, count) for i in owners)
         return out
 
     def _entity(self, hub, local_id, anchor, anchor_count, exceptions):
@@ -564,7 +585,15 @@ class IdentityRuntime:
         for hubs, group in groups.items():
             pairs = [(src, decoded[key][4]) for key in group for src in plans[key][1]]
             owners = [key for key in group for _ in plans[key][1]]
-            for i, hub, local_id, tag, anchor, count in self._by_id(hubs, pairs):
+            # A symbol key is taxon-scoped (an unscoped one was left out above): only the
+            # records of its taxon can pass the scope filter of step 6.
+            scopes = [
+                decoded[key][3] if decoded[key][2] in SYMBOL_NAMESPACES else None
+                for key in owners
+            ]
+            if not any(scopes):
+                scopes = None
+            for i, hub, local_id, tag, anchor, count in self._by_id(hubs, pairs, scopes):
                 key, (src, identifier) = owners[i], pairs[i]
                 cls, _, _ = plans[key]
                 out = _admit(cls, decoded[key][2], hub, src, tag, identifier, anchor, count)
