@@ -98,6 +98,73 @@ def test_complex_composition_preserves_species_but_merges_sources(tmp_path):
     ) == next(g["entity_key"] for g in groups if g["taxon"] == "9606")
 
 
+def _cellchat_row(ligand, genes, annotation="Non-protein Signaling"):
+    return {
+        "taxon_id": "9606",
+        "annotation": annotation,
+        "interaction_name": f"{ligand}_HTR1A",
+        "ligand_name": ligand,
+        "ligand_genes": genes,
+        "receptor_name": "HTR1A",
+        "receptor_genes": ["HTR1A"],
+    }
+
+
+def test_cellchat_metabolite_ligand_is_the_metabolite_not_its_genes(tmp_path):
+    relation = cellchat.map_cellchat_interaction(
+        _cellchat_row("5-HT-TPH1_SLC18A1", ["TPH1", "SLC18A1"])
+    )
+    assert format_term(relation.subject.type) == "chemical_entity"
+    assert (Namespace.CHEBI, "CHEBI:28790") in {
+        (i.type, i.value) for i in relation.subject.identifiers
+    }
+    assert not relation.subject.membership
+    # An abbreviation that does not tell the metabolite keeps it as a name.
+    ambiguous = cellchat.map_cellchat_interaction(_cellchat_row("Cort-CYP11B1", ["CYP11B1"]))
+    assert [(i.type, i.value) for i in ambiguous.subject.identifiers] == [(Namespace.NAME, "Cort")]
+    entities = final([relation, ambiguous], tmp_path, "cellchat")["entity"]
+    assert sum(e["entity_type"] == "chemical_entity" for e in entities) == 2
+
+
+def test_cellchat_protein_ligands_stay_proteins():
+    peptide = cellchat.map_cellchat_interaction(_cellchat_row("b-Endorphin-POMC", ["POMC"]))
+    hormone = cellchat.map_cellchat_interaction(_cellchat_row("CGA_TSHB", ["CGA", "TSHB"]))
+    secreted = cellchat.map_cellchat_interaction(
+        _cellchat_row("PGE2-PTGES", ["PTGES"], annotation="Secreted Signaling")
+    )
+    assert format_term(peptide.subject.type) == "protein"
+    assert format_term(hormone.subject.type) == "macromolecular_complex"
+    assert format_term(secreted.subject.type) == "protein"
+
+
+def test_cellchat_metabolite_abbreviation_is_the_longest_prefix():
+    assert cellchat.metabolite("5-HT-DOPA-DDC") == "5-HT-DOPA"
+    assert cellchat.metabolite("5-HT-TPH1_SLC6A4") == "5-HT"
+    assert cellchat.metabolite("DHEAS-SULT1E1") == "DHEAS"
+    assert cellchat.metabolite("DHEA-STS") == "DHEA"
+    assert cellchat.metabolite("RARA") is None
+
+
+def test_cellchat_metabolite_genes_are_no_complex_but_associated_once(monkeypatch):
+    group = {"name": "5-HT-TPH1_SLC18A1", "genes": ["TPH1", "SLC18A1"], "taxon_id": "9606"}
+    assert cellchat.map_cellchat_group({**group, "non_protein_ligand": True}) is None
+    assert cellchat.map_cellchat_group({**group, "non_protein_ligand": False}) is not None
+
+    rows = [
+        _cellchat_row("5-HT-TPH1_SLC18A1", ["TPH1", "SLC18A1"]),
+        _cellchat_row("5-HT-TPH1_SLC18A2", ["TPH1", "SLC18A2"]),
+        _cellchat_row("CGA_TSHB", ["CGA", "TSHB"]),
+    ]
+    monkeypatch.setattr(cellchat, "iter_cellchat_interactions", lambda *a, **k: iter(rows))
+    genes = list(cellchat.iter_metabolite_genes(None, taxon_id="9606"))
+    assert [(g["gene"], g["metabolite"]) for g in genes] == [
+        ("TPH1", "5-HT"), ("SLC18A1", "5-HT"), ("SLC18A2", "5-HT"),
+    ]
+    relation = cellchat.map_metabolite_gene(genes[0])
+    assert format_term(relation.subject.type) == "protein"
+    assert format_term(relation.object.type) == "chemical_entity"
+
+
 def test_cellphonedb_complex_reference_and_definition_join(tmp_path):
     interaction = cellphonedb.interactions_schema({"partner_a": "complex A", "partner_b": "P00533"})
     definition = cellphonedb.complexes_schema({"complex_name": "complex A", "uniprot_1": "P04637"})
