@@ -301,6 +301,17 @@ def test_hmdb_keeps_the_kegg_compound():
     assert kegg.extract({"kegg_id": "c1152"}) == ["C01152"]
 
 
+def test_guidetopharma_peptide_ligand_has_the_gene_symbol_of_the_interaction():
+    from pypath.inputs_v2 import guidetopharma
+
+    ligand = {"Ligand ID": "5081", "Name": "4-1BB ligand", "UniProt ID": "P41273", "Type": "Peptide"}
+    with_symbol = guidetopharma._with_gene_symbol(ligand, "TNFSF9")
+    entity = guidetopharma.ligands_schema.build(with_symbol)
+    assert (Namespace.GENESYMBOL, "TNFSF9") in {(i.type, i.value) for i in entity.identifiers}
+    assert guidetopharma._with_gene_symbol(ligand, "Calca|Calca")["Gene Symbol"] == "Calca"
+    assert "Gene Symbol" not in guidetopharma._with_gene_symbol(ligand, "INHBA|INHBB")
+
+
 def test_chembl_units_are_selected_from_source_and_reach_quantity():
     con = duckdb.connect()
     try:
