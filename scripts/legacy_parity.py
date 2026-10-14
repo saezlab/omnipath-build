@@ -615,6 +615,30 @@ def _cellphonedb():
         yield Rel(ids(rec.id_a), ids(rec.id_b))
 
 
+def _cellphonedb_roles():
+    from pypath.inputs import cellphonedb
+    from pypath.resources.urls import urls
+
+    for table, key in (('proteins', 'uniprot'), ('complexes', 'complex_name')):
+        annotations = cellphonedb._cellphonedb_annotations(
+            url=urls['cellphonedb_git'][table],
+            # The source's own names: no translation to UniProt.
+            name_method=lambda rec, key=key: rec[key],
+        )
+        for name, annotation in annotations.items():
+            for role in ('receptor', 'secreted', 'transmembrane', 'peripheral', 'integrin'):
+                if getattr(annotation, role):
+                    yield (name, role)
+
+
+def _v2_cellphonedb_roles():
+    from pypath.inputs_v2 import cellphonedb
+
+    for dataset, key in (('protein_roles', 'uniprot'), ('complex_roles', 'complex_name')):
+        for row in getattr(cellphonedb.resource, dataset).raw():
+            yield (row[key], row['role'])
+
+
 def _cellchat():
     from pypath.inputs import cellchatdb
     from pypath.inputs_v2.cellchat import metabolite
@@ -709,6 +733,14 @@ spec(
     'cellphonedb', 'relation', _cellphonedb,
     lambda: v2_relations(datasets('cellphonedb', 'interactions')()),
     serve='cellphonedb',
+)
+spec(
+    'cellphonedb_roles', 'annotation', _cellphonedb_roles, _v2_cellphonedb_roles,
+    serve='cellphonedb',
+    note=(
+        'Role flags of the proteins and complexes (a class counts as its role), by '
+        "the source's names; the interactions need legacy's UniProt translation."
+    ),
 )
 spec(
     'cellchat', 'relation', _cellchat,

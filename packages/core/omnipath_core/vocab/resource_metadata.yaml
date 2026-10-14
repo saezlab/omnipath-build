@@ -346,11 +346,12 @@
   },
   "cellphonedb": {
     "display_name": "CellPhoneDB",
-    "description": "Ligand–receptor interactions and multisubunit protein complexes.",
+    "description": "Ligand–receptor interactions, multisubunit protein complexes, and the roles of the proteins and complexes (receptor, secreted, transmembrane).",
     "tags": [
       "cell_cell_communication",
       "ligand_receptor_interactions",
       "protein_complexes",
+      "molecular_annotations",
       "literature_curated"
     ],
     "website": "https://www.cellphonedb.org/",

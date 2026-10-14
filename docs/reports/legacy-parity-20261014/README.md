@@ -1,6 +1,7 @@
 # Legacy parity: first eleven resources
 
-14 October 2026 · pypath `c5b4eb660` (CellChat: with the fix below, uncommitted) · build cache on nicesrv
+14 October 2026 · pypath `c5b4eb660`, CellChat and CellPhoneDB with the fixes below · build cache on nicesrv
+(CellChat and CellPhoneDB compared on the laptop, on copies of the same files; the CellPhoneDB proteins file is a new input, fetched once)
 (`/root/data/pypath-cache`) · harness [`scripts/legacy_parity.py`](../../../scripts/legacy_parity.py)
 
 ## What was compared
@@ -34,7 +35,8 @@ with their checksums.
 | SIGNOR interactions | – | – | – | – | – | not the same file |
 | ComplexPortal | – | – | – | – | – | not the same file |
 | Matrisome | – | – | – | – | – | not the same file |
-| **CellPhoneDB** | – | – | – | – | – | **v2 does not read a file legacy needs** |
+| CellPhoneDB roles | 2,533 (entity, role) | 2,533 | 0 | 0 | – | added (see below); identical |
+| CellPhoneDB interactions | – | – | – | – | – | legacy translates IDs (UniProt tables) |
 
 ### Explained differences
 
@@ -98,13 +100,31 @@ with their checksums.
    "Inhibin A" or "IL23 complex" are used in the zebrafish interactions but not
    defined in its complex table, so they become untyped named things. Not
    fixed; separate from the above.
-4. **CellPhoneDB: protein roles are not imported.** `inputs_v2/cellphonedb.py`
-   defines `download_proteins` (`protein_input.csv`) but no dataset uses it, and
-   the file is not in the build cache. Legacy reads it for the receptor,
-   secreted, transmembrane, peripheral and integrin flags, which give
-   CellPhoneDB interactions their ligand and receptor sides and feed the
-   intercell annotations. The pairs themselves could not be compared for the
-   same reason.
+4. **CellPhoneDB: protein roles were not imported (fixed).**
+   `inputs_v2/cellphonedb.py` defined `download_proteins` (`protein_input.csv`)
+   but no dataset used it, and it ignored the same flags in `complex_input.csv`.
+   Legacy reads them for the receptor, secreted, transmembrane, peripheral and
+   integrin roles, which give CellPhoneDB interactions their ligand and receptor
+   sides and feed the intercell annotations. New datasets: `role_terms` (the
+   five roles and the receptor and secreted classes such as "cytokine" or
+   "tnf_receptor", each below its role, in a namespace per role because one
+   class name is used for both), `protein_roles` and `complex_roles` (each
+   protein and complex associated with its classes, or with the role where it
+   has none). Compared with legacy's own reading of the flags, by the source's
+   names: 2,533 (entity, role) pairs on both sides, none on one side only.
+   The interactions themselves still cannot be compared: legacy translates
+   gene symbols and HLA names to UniProt with its mapping tables.
+5. **CellPhoneDB: metabolite ligands had no ChEBI term (fixed).** CellPhoneDB
+   writes a metabolite ligand as a "system" (`Cholesterol_byLIPA`,
+   `Glutamate_byGLS_and_SLC1A1`); v2 already made it a chemical entity, by name
+   only, so none resolved. `complex_input.csv` gives the ChEBI term of about
+   half of them in `secreted_desc`; each was checked against the name in ChEBI.
+   v2 now takes that term (for interactions through the complex table), and a
+   table of verified terms for the metabolites written without one. Two
+   systems of two metabolites (`AldosteroneCorticosterone`,
+   `SerotoninDopamin`, whose term is serotonin's) and `Progesterone_byHSD3B1`
+   (three terms) keep the name only, as does β-endorphin. 48 of the 52
+   metabolite partners of the interactions now have a ChEBI term.
 
 ### Not comparable on the same file
 

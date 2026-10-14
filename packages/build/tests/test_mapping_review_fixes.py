@@ -172,6 +172,52 @@ def test_cellphonedb_complex_reference_and_definition_join(tmp_path):
     assert len([e for e in entities if e["entity_type"] == "macromolecular_complex"]) == 1
 
 
+def test_cellphonedb_metabolite_systems_carry_their_chebi_term():
+    assert cellphonedb.metabolite_chebi("Cholesterol_byLIPA", "CHEBI:16113") == "CHEBI:16113"
+    # Without a term in the table, the metabolite's name decides.
+    assert cellphonedb.metabolite_chebi("Glutamate_byGLS_and_SLC1A1", "") == "CHEBI:16015"
+    # Several terms, or a system of two metabolites, are no single metabolite.
+    assert cellphonedb.metabolite_chebi(
+        "Progesterone_byHSD3B1", "CHEBI:17026;CHEBI:16422;CHEBI:17252"
+    ) is None
+    assert cellphonedb.metabolite_chebi("SerotoninDopamin_byDDC", "CHEBI:28790") is None
+    assert cellphonedb.metabolite_chebi("P00533", "") is None
+
+    complex_ = cellphonedb.complexes_schema(
+        {"complex_name": "Cholesterol_byLIPA", "secreted_desc": "CHEBI:16113"}
+    )
+    relation = cellphonedb.interactions_schema(
+        {"partner_a": "Cholesterol_byLIPA", "partner_a_chebi": "CHEBI:16113", "partner_b": "P00533"}
+    )
+    for entity in (complex_, relation.subject):
+        assert format_term(entity.type) == "chemical_entity"
+        assert (Namespace.CHEBI, "CHEBI:16113") in {(i.type, i.value) for i in entity.identifiers}
+
+
+def test_cellphonedb_roles_are_classes_below_their_role():
+    protein = {
+        "uniprot": "P01579", "secreted": "TRUE", "secreted_desc": "Growthfactor | Cytokine",
+        "receptor": "FALSE", "transmembrane": "FALSE",
+    }
+    assert list(cellphonedb._roles(protein)) == [("secreted", "growthfactor"), ("secreted", "cytokine")]
+    receptor = {"uniprot": "HLAA", "receptor": "TRUE", "receptor_desc": "", "transmembrane": "TRUE"}
+    assert list(cellphonedb._roles(receptor)) == [("receptor", None), ("transmembrane", None)]
+    relation = cellphonedb.map_protein_role({**receptor, "role": "receptor", "role_class": None})
+    assert (relation.subject.identifiers[0].type, relation.subject.identifiers[0].value) == (
+        Namespace.GENESYMBOL, "HLA-A",
+    )
+    assert relation.object.identifier == "receptor"
+    # A class name can be a receptor class and a secreted class.
+    receptor_class = cellphonedb._role_ref("receptor", "cytokine_receptor_il6_family")
+    secreted_class = cellphonedb._role_ref("secreted", "cytokine_receptor_il6_family")
+    assert receptor_class.identifier_type != secreted_class.identifier_type
+    # The description of a metabolite system is its ChEBI term, not a class.
+    system = {"complex_name": "Cholesterol_byLIPA", "secreted": "TRUE", "secreted_desc": "CHEBI:16113"}
+    assert list(cellphonedb._roles(system)) == [("secreted", None)]
+    assert cellphonedb._role_classes("Cytokine_receptor_add IL6 family") == ["cytokine_receptor_il6_family"]
+    assert cellphonedb._role_classes("nuclear_receptor;needs transporter") == ["nuclear_receptor"]
+
+
 def test_chembl_units_are_selected_from_source_and_reach_quantity():
     con = duckdb.connect()
     try:
