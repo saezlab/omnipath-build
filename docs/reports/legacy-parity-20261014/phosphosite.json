@@ -2,10 +2,11 @@
   "resource": "phosphosite",
   "kind": "relation",
   "note": "Kinase-substrate pairs with both proteins human; legacy states no sign.",
-  "v2_seconds": 17.0,
+  "v2_seconds": 17.4,
   "legacy_seconds": 0.2,
   "legacy_pairs": 7184,
   "legacy_pairs_found_in_v2": 7183,
+  "legacy_pairs_reversed_in_v2": 0,
   "legacy_pairs_missing_in_v2": 1,
   "missing_by_ids_known_to_v2": {
     "both": 0,

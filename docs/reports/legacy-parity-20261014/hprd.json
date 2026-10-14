@@ -2,10 +2,11 @@
   "resource": "hprd",
   "kind": "relation",
   "note": "Enzyme-substrate pairs, legacy with the in vitro ones as inputs_v2; legacy gives no sign.",
-  "v2_seconds": 3.9,
+  "v2_seconds": 3.8,
   "legacy_seconds": 1.0,
   "legacy_pairs": 4264,
   "legacy_pairs_found_in_v2": 4256,
+  "legacy_pairs_reversed_in_v2": 0,
   "legacy_pairs_missing_in_v2": 8,
   "missing_by_ids_known_to_v2": {
     "both": 2,

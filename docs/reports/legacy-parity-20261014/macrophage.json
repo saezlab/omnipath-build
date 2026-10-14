@@ -2,13 +2,14 @@
   "resource": "macrophage",
   "kind": "relation",
   "note": "",
-  "v2_seconds": 0.5,
+  "v2_seconds": 1.1,
   "legacy_seconds": 0.1,
   "legacy_pairs": 1702,
   "legacy_pairs_found_in_v2": 1658,
-  "legacy_pairs_missing_in_v2": 44,
+  "legacy_pairs_reversed_in_v2": 11,
+  "legacy_pairs_missing_in_v2": 33,
   "missing_by_ids_known_to_v2": {
-    "both": 13,
+    "both": 2,
     "one": 27,
     "neither": 4
   },
@@ -86,10 +87,6 @@
         "B2M"
       ],
       [
-        "B2M",
-        "CANX"
-      ],
-      [
         "HLA-A/B/C/D/E/F/G",
         "CALR"
       ],
@@ -114,16 +111,20 @@
         "TAPBP"
       ],
       [
-        "B2M",
-        "TAPBP"
+        "PDIA4",
+        "PDIA3"
       ],
       [
-        "CALR",
-        "TAPBP"
+        "HLA-A/B/C/D/E/F/G",
+        "TAP1"
       ],
       [
-        "PDIA3",
-        "TAPBP"
+        "HLA-A/B/C/D/E/F/G",
+        "TAP2"
+      ],
+      [
+        "PDIA5",
+        "TAP1"
       ]
     ],
     "v2_without_legacy_pair": [
@@ -169,18 +170,18 @@
     {
       "side": "v2",
       "url": "https://static-content.springer.com/esm/art%3A10.1186%2F1752-0509-4-63/MediaObjects/12918_2010_452_MOESM2_ESM.XLS",
-      "path": "/Users/jschaul/Library/Caches/pypath/macrophage/12918_2010_452_MOESM2_ESM.XLS",
+      "path": "/root/data/pypath-cache/macrophage/12918_2010_452_MOESM2_ESM.XLS",
       "size": 1222656,
       "sha256": "3967de9623e49929d0774f4d2f02edb8eac7cc0b48b84f6a5e278410e42f0f58",
-      "mtime": "2026-10-14"
+      "mtime": "2026-10-13"
     },
     {
       "side": "legacy",
       "url": "https://static-content.springer.com/esm/art%3A10.1186%2F1752-0509-4-63/MediaObjects/12918_2010_452_MOESM2_ESM.XLS",
-      "path": "/Users/jschaul/Library/Caches/pypath/macrophage/12918_2010_452_MOESM2_ESM.XLS",
+      "path": "/root/data/pypath-cache/macrophage/12918_2010_452_MOESM2_ESM.XLS",
       "size": 1222656,
       "sha256": "3967de9623e49929d0774f4d2f02edb8eac7cc0b48b84f6a5e278410e42f0f58",
-      "mtime": "2026-10-14"
+      "mtime": "2026-10-13"
     }
   ]
 }

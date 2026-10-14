@@ -2,10 +2,11 @@
   "resource": "celltalkdb",
   "kind": "relation",
   "note": "",
-  "v2_seconds": 0.5,
+  "v2_seconds": 0.6,
   "legacy_seconds": 0.1,
   "legacy_pairs": 3398,
   "legacy_pairs_found_in_v2": 3398,
+  "legacy_pairs_reversed_in_v2": 0,
   "legacy_pairs_missing_in_v2": 0,
   "missing_by_ids_known_to_v2": {
     "both": 0,

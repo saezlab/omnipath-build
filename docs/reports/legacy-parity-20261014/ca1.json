@@ -6,6 +6,7 @@
   "legacy_seconds": 0.0,
   "legacy_pairs": 1259,
   "legacy_pairs_found_in_v2": 1056,
+  "legacy_pairs_reversed_in_v2": 0,
   "legacy_pairs_missing_in_v2": 203,
   "missing_by_ids_known_to_v2": {
     "both": 0,
@@ -131,8 +132,8 @@
     "sign_disagreements": [
       {
         "pair": [
-          "RASGRP3",
-          "P01111"
+          "Q8IV61",
+          "RAS"
         ],
         "legacy": [
           "+"
@@ -145,7 +146,7 @@
       {
         "pair": [
           "Q8IV61",
-          "P01111"
+          "RAS"
         ],
         "legacy": [
           "+"

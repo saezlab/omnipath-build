@@ -17,7 +17,7 @@
     {
       "side": "v2",
       "url": "https://raw.githubusercontent.com/ventolab/cellphonedb-data/master/data/protein_input.csv",
-      "path": "/Users/jschaul/Library/Caches/pypath/cellphonedb/cellphonedb_proteins.csv",
+      "path": "/root/data/pypath-cache/cellphonedb/cellphonedb_proteins.csv",
       "size": 158940,
       "sha256": "322f277963ca2fc879c97660eb1409478603a3d2d7442c6606bce79a45f14ae2",
       "mtime": "2026-10-14"
@@ -25,15 +25,15 @@
     {
       "side": "v2",
       "url": "https://raw.githubusercontent.com/ventolab/cellphonedb-data/master/data/complex_input.csv",
-      "path": "/Users/jschaul/Library/Caches/pypath/cellphonedb/cellphonedb_complexes.csv",
+      "path": "/root/data/pypath-cache/cellphonedb/cellphonedb_complexes.csv",
       "size": 56886,
       "sha256": "c761b75f5438d5b23f9fefa5ddaac84acb127fe5dd72fe931d5c07d8a557b362",
-      "mtime": "2026-10-14"
+      "mtime": "2026-09-05"
     },
     {
       "side": "legacy",
       "url": "https://raw.githubusercontent.com/ventolab/cellphonedb-data/master/data/protein_input.csv",
-      "path": "/Users/jschaul/Library/Caches/pypath/cellphonedb/cellphonedb_proteins.csv",
+      "path": "/root/data/pypath-cache/cellphonedb/cellphonedb_proteins.csv",
       "size": 158940,
       "sha256": "322f277963ca2fc879c97660eb1409478603a3d2d7442c6606bce79a45f14ae2",
       "mtime": "2026-10-14"
@@ -41,10 +41,10 @@
     {
       "side": "legacy",
       "url": "https://raw.githubusercontent.com/ventolab/cellphonedb-data/master/data/complex_input.csv",
-      "path": "/Users/jschaul/Library/Caches/pypath/cellphonedb/cellphonedb_complexes.csv",
+      "path": "/root/data/pypath-cache/cellphonedb/cellphonedb_complexes.csv",
       "size": 56886,
       "sha256": "c761b75f5438d5b23f9fefa5ddaac84acb127fe5dd72fe931d5c07d8a557b362",
-      "mtime": "2026-10-14"
+      "mtime": "2026-09-05"
     }
   ]
 }

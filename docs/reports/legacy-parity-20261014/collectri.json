@@ -2,10 +2,11 @@
   "resource": "collectri",
   "kind": "relation",
   "note": "Legacy collectri_raw with miRNA targets, before translation to UniProt.",
-  "v2_seconds": 4.4,
-  "legacy_seconds": 0.4,
+  "v2_seconds": 4.6,
+  "legacy_seconds": 0.5,
   "legacy_pairs": 43536,
   "legacy_pairs_found_in_v2": 43416,
+  "legacy_pairs_reversed_in_v2": 0,
   "legacy_pairs_missing_in_v2": 120,
   "missing_by_ids_known_to_v2": {
     "both": 0,

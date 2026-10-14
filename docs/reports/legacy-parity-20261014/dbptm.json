@@ -2,10 +2,11 @@
   "resource": "dbptm",
   "kind": "relation",
   "note": "Legacy records with an enzyme; legacy also lists the PTM sites without one.",
-  "v2_seconds": 0.6,
-  "legacy_seconds": 1.6,
+  "v2_seconds": 0.7,
+  "legacy_seconds": 1.8,
   "legacy_pairs": 1107,
   "legacy_pairs_found_in_v2": 1100,
+  "legacy_pairs_reversed_in_v2": 0,
   "legacy_pairs_missing_in_v2": 7,
   "missing_by_ids_known_to_v2": {
     "both": 0,

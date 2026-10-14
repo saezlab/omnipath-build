@@ -6,6 +6,7 @@
   "legacy_seconds": 0.1,
   "legacy_pairs": 8427,
   "legacy_pairs_found_in_v2": 8427,
+  "legacy_pairs_reversed_in_v2": 0,
   "legacy_pairs_missing_in_v2": 0,
   "missing_by_ids_known_to_v2": {
     "both": 0,

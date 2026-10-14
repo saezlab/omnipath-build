@@ -2,10 +2,11 @@
   "resource": "dorothea",
   "kind": "relation",
   "note": "All confidence levels on both sides.",
-  "v2_seconds": 145.7,
-  "legacy_seconds": 12.6,
+  "v2_seconds": 147.0,
+  "legacy_seconds": 17.4,
   "legacy_pairs": 1019144,
   "legacy_pairs_found_in_v2": 1019144,
+  "legacy_pairs_reversed_in_v2": 0,
   "legacy_pairs_missing_in_v2": 0,
   "missing_by_ids_known_to_v2": {
     "both": 0,
