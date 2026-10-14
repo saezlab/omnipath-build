@@ -282,6 +282,9 @@ def test_mirdeathdb_symbol_with_several_products_gives_each_as_legacy_did():
     assert rows[0]["mature_organism_codes"] == ["hsa"]
     single = mirbase_products("hsa-miR-21-5p", "MIMAT0000076")
     assert each_product(single) == [single]
+    # A malformed accession beside a valid one: the valid one, with its name.
+    truncated = each_product(mirbase_products("hsa-miR-181b-5p,hsa-miR-181b-3p", "MIMAT0000257,MIMAT00226921"))
+    assert [(r["mirbase_mature"], r["mirbase_mature_name"]) for r in truncated] == [("MIMAT0000257", "hsa-miR-181b-5p")]
 
 
 def test_chembl_units_are_selected_from_source_and_reach_quantity():

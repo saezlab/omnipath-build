@@ -37,6 +37,7 @@ from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 import hashlib
+import itertools
 import json
 import os
 from pathlib import Path
@@ -226,7 +227,16 @@ def setup(scratch: Path) -> None:
             default_mode=default_mode, encoding=encoding,
         )
 
+    original_download_and_open = downloads.download_and_open
     downloads.download_and_open = legacy_download_and_open
+    # Modules that imported the function by name before this point.
+    for module in list(sys.modules.values()):
+        if (
+            module is not None
+            and module is not v2_base
+            and getattr(module, 'download_and_open', None) is original_download_and_open
+        ):
+            module.download_and_open = legacy_download_and_open
 
     # ... and some call the download manager itself for the file's path.
     class CachedDownloads:
@@ -296,6 +306,10 @@ def tokens(value: Any) -> frozenset[str]:
         out.add(f'HMDB00{value[4:]}')
     if ':' in value:
         out.add(value.split(':', 1)[1].strip().upper())
+    if re.fullmatch(r'\d+(?:_\d+)+', value):
+        # Legacy SPIKE writes a complex as the Entrez IDs of its members.
+        value = value.replace('_', ',')
+        out.add(value)
     if ',' in value:
         # A list of complex members, in any order.
         out.add(','.join(sorted(v.strip().upper() for v in value.split(',') if v.strip())))
@@ -715,10 +729,12 @@ def _cellphonedb():
     from pypath.inputs import cellphonedb
 
     def ids(partner):
-        if hasattr(partner, 'ids'):
-            return id_tokens(i for ids in partner.ids.values() for i in ids)
+        names = (
+            [i for ids in partner.ids.values() for i in ids]
+            if hasattr(partner, 'ids') else [partner]
+        )
         # A metabolite system ("Acetylcholine_byCHAT") is its metabolite in v2.
-        return tokens(partner) | tokens(str(partner).split('_by')[0] if '_by' in str(partner) else None)
+        return id_tokens(names) | id_tokens(str(n).split('_by')[0] for n in names if '_by' in str(n))
 
     for rec in cellphonedb.cellphonedb_interactions():
         yield Rel(ids(rec.id_a), ids(rec.id_b))
@@ -820,6 +836,8 @@ def v2_pairs(records, taxon: str | None = None, transitive: bool = False) -> Ite
         ids = id_tokens(_ref_ids(record))
         for association in record.associations or ():
             yield Rel(ids, tokens(association.object.identifier))
+        for relation in record.ontology_relations or ():
+            yield Rel(ids, tokens(relation.object.identifier))
         yield from members(record, [])
 
 
@@ -847,7 +865,7 @@ def v2_annotation_pairs(records, term: str) -> Iterable[Rel]:
                 yield Rel(ids, tokens(name(annotation.value)))
 
 
-def _legacy_id_pairs(module: str, function: str, key, values: dict, **kwargs):
+def _legacy_id_pairs(module: str, function: str, key, values: dict, limit: int | None = None, **kwargs):
     """Legacy metabolite records as pairs of their ID and each cross-reference
     (``values``: field to a prefix to strip, or None)."""
 
@@ -857,7 +875,8 @@ def _legacy_id_pairs(module: str, function: str, key, values: dict, **kwargs):
     def run():
         import importlib
 
-        for rec in getattr(importlib.import_module(f'pypath.inputs.{module}'), function)(**kwargs):
+        records = getattr(importlib.import_module(f'pypath.inputs.{module}'), function)(**kwargs)
+        for rec in itertools.islice(records, limit):
             subject = tokens(key(rec) if callable(key) else get(rec, key))
             for field in values:
                 found = get(rec, field)
@@ -1137,9 +1156,25 @@ spec('gpcrdb', 'relation', _legacy_annotations('gpcrdb', 'gpcrdb_annotations', '
 spec('havugimana', 'complex',
      lambda: (_complex_tokens(c) for c in __import__('pypath.inputs.havugimana', fromlist=['x']).havugimana_complexes().values()),
      lambda: v2_complexes(datasets('havugimana', 'complexes')()), serve='havugimana')
-spec('hippie', 'relation', _legacy_rel('hippie', 'hippie_interactions', 'id_a', 'id_b', score_threshold=0),
-     lambda: v2_relations(datasets('hippie', 'interactions')()), serve='hippie',
-     note='Legacy without its default score threshold of 0.75, as v2 keeps all with their scores.')
+def _score(relation) -> float:
+    for annotation in relation.annotations or ():
+        if 'confidence_score' in name(annotation.term):
+            value = annotation.value
+            value = getattr(value, 'has_numeric_value', None) or (
+                json.loads(value).get('has_numeric_value') if isinstance(value, str) and value.startswith('{') else value
+            )
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return 0.0
+    return 0.0
+
+
+spec('hippie', 'relation', _legacy_rel('hippie', 'hippie_interactions', 'id_a', 'id_b'),
+     lambda: v2_relations(r for r in datasets('hippie', 'interactions')() if r and _score(r) >= .75),
+     serve='hippie',
+     note=('Legacy keeps the interactions of score 0.75 or more (it fails without the threshold); '
+           'v2 keeps all with their scores and is compared on the same threshold.'))
 spec('hpo', 'relation', _legacy_annotations('hpo', 'hpo_annotations', 'hpo_id'),
      lambda: v2_pairs(datasets('hpo', 'annotations')()), serve='hpo', note='Gene and phenotype term.')
 spec('htri', 'relation',
@@ -1259,10 +1294,53 @@ spec('spike', 'relation',
 spec('spike_complexes', 'complex',
      lambda: (_complex_tokens(c) for c in __import__('pypath.inputs.spike', fromlist=['x']).spike_complexes().values()),
      lambda: v2_complexes(datasets('spike', 'complexes')()), serve='spike')
+spec('psi_mi', 'relation',
+     lambda: (Rel(tokens(r.id), tokens(parent))
+              for r in __import__('pypath.inputs.psimi', fromlist=['x']).psimi_ontology()
+              for parent in r.parent_ids or ()),
+     lambda: v2_pairs(datasets('psi_mi', 'terms')()), serve='psi_mi',
+     aliases={
+         'https://raw.githubusercontent.com/HUPO-PSI/psi-mi-CV/refs/heads/master/psi-mi.obo':
+         'https://raw.githubusercontent.com/HUPO-PSI/psi-mi-CV/master/psi-mi.obo',
+     },
+     note='Terms and their is_a parents.')
+spec('italk', 'relation', _legacy_rel('italk', 'italk_interactions', 'ligand', 'receptor'),
+     lambda: v2_relations(datasets('italk', 'interactions')()), serve='italk',
+     aliases={'https://github.com/Coolgenome/iTALK/blob/master/data/LR_database.rda?raw=true':
+              'https://raw.githubusercontent.com/Coolgenome/iTALK/master/data/LR_database.rda'})
+spec('talklr', 'relation', _legacy_rel('talklr', 'talklr_interactions', 'ligand', 'receptor'),
+     lambda: v2_relations(datasets('talklr', 'interactions', 'putative_interactions')()), serve='talklr',
+     aliases={'https://github.com/yuliangwang/talklr/raw/master/data/receptor_ligand.rda':
+              'https://raw.githubusercontent.com/yuliangwang/talklr/master/data/receptor_ligand.rda'})
+spec('progeny', 'relation', _legacy_annotations('progeny', 'progeny_annotations', 'pathway'),
+     lambda: v2_pairs(datasets('progeny', 'responses')()), serve='progeny',
+     aliases={'https://github.com/saezlab/progeny/raw/master/data/model_human_full.rda':
+              'https://raw.githubusercontent.com/saezlab/progeny/master/data/model_human_full.rda'},
+     note='Gene and pathway.')
+spec('kinasedotcom', 'relation',
+     _legacy_annotations('kinasedotcom', 'kinasedotcom_annotations', lambda a: [a.group, a.family, a.subfamily]),
+     lambda: v2_pairs(datasets('kinasedotcom', 'families')(), transitive=True), serve='kinasedotcom',
+     aliases={'https://rescued.omnipathdb.org/Kincat_Hsap.08.02.xls':
+              'http://kinase.com/static/colt/data/human/kinome/tables/Kincat_Hsap.08.02.xls'},
+     note="Kinase and its group, family and subfamily; legacy reads OmniPath's copy of the file.")
+spec('mir2disease', 'relation', _legacy_rel('mir2disease', 'mir2disease_interactions', 'mirna', 'target_genesymbol'),
+     lambda: v2_relations(datasets('mir2disease', 'mirna_targets')()), serve='mir2disease',
+     aliases={'http://rescued.omnipathdb.org/miR2Disease_miRtar.txt':
+              'http://watson.compbio.iupui.edu:8080/miR2Disease/download/miRtar.txt'},
+     note="Legacy reads OmniPath's copy of the file.")
+spec('cancercellmap', 'relation', _legacy_rel('cancercellmap', 'ccmap_interactions', 'source_uniprot', 'target_uniprot'),
+     lambda: v2_relations(datasets('cancercellmap', 'interactions')()), serve='cancercellmap')
+spec('dip', 'relation', _legacy_rel('dip', 'dip_interactions', lambda r: r[0], lambda r: r[1]),
+     lambda: v2_relations(datasets('dip', 'interactions')()), serve='dip',
+     aliases={'https://rescued.omnipathdb.org/dip/Hsapi20170205CR.txt.gz':
+              'https://rescued.omnipathdb.org/dip/Hsapi20170205.txt.gz'},
+     note='Legacy reads the core subset of the release by default; here it reads the full file as v2.')
 spec('hmdb', 'relation',
-     _legacy_id_pairs('hmdb.metabolites', 'raw', 'accession', ('chebi_id', 'inchikey', 'kegg_id', 'pubchem_compound_id')),
+     _legacy_id_pairs('hmdb.metabolites', 'raw', 'accession', ('chebi_id', 'inchikey', 'kegg_id', 'pubchem_compound_id'),
+                      limit=20000),
      lambda: v2_id_pairs(datasets('hmdb', 'metabolites')(), 'hmdb', ('chebi', 'inchikey', 'kegg', 'pubchem')),
-     serve='hmdb', note='HMDB accession and its cross-references.')
+     serve='hmdb', v2_subset=20000,
+     note='HMDB accession and its cross-references, of the first 20,000 metabolites of the file on both sides.')
 
 
 # Driver --------------------------------------------------------------------
