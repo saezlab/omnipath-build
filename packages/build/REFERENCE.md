@@ -28,6 +28,12 @@ omnipath-build build-identity --hub-index-root data/reference/hub-index --output
 ```
 
 The ontology hub only supplies term labels, so it gets an index but no kv store.
+The hub kv format is `omnipath-hub-kv-v3`: the rows of the gene-symbol namespaces
+(`genesymbol`, `genesymbol-syn`) are keyed by `(ns, identifier, taxon)` instead of
+`(ns, identifier)`, so a taxon-scoped symbol lookup reads only the records of its
+taxon. The kv is built from the `by_id` Parquet files, which already carry the
+record's taxon, so an index is not rebuilt for it; `build-hub-kv` replaces a v2
+store only when the v3 one is complete. The runtime reads both formats.
 `build-identity` also writes the identity kv store; `build-identity-kv --force`
 rebuilds it for an existing `data/reference/identity/<fingerprint>`.
 

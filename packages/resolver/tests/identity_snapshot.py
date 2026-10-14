@@ -12,11 +12,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from collections import defaultdict
 from pathlib import Path
 
+import lmdb
 import pyarrow as pa
 import pyarrow.parquet as pq
+
+from omnipath_resolver import identity_kv
 
 WATER = "XLYOFNOQVPJJNP-UHFFFAOYSA-N"
 ASPIRIN = "BSYNRYMUTXBXSQ-UHFFFAOYSA-N"
@@ -117,6 +121,7 @@ def hub_records():
     gene(22059, "10090", [("genesymbol", "Trp53"), ("genesymbol-syn", "TP53")])
     gene(555, None, [("ensg", "ENSG00000999999")])  # no taxon: visible only unscoped
     gene(901, "9606", [("genesymbol", "ABC1")])
+    gene(4001, "9606", [("genesymbol", "LINKED")])
     gene(902, "9606", [("genesymbol-syn", "ABC1"), ("genesymbol-syn", "XYZ")])
     for n in range(12):  # one ENSG id shared by twelve genes: no cap, so no resolution
         gene(3000 + n, "9606", [("ensg", "ENSG00000000001")])
@@ -142,6 +147,8 @@ def hub_records():
     ], True)  # fmt: skip
     protein("P02340", "10090", [("genesymbol", "Trp53"), ("entrez", "22059")], True)
     protein("Q77777", "9606", [("entrez", "999"), ("genesymbol", "NOREC")])  # gene without record
+    # a protein record without a taxon: its symbol rows belong to every scope
+    protein("Q55555", None, [("genesymbol", "LINKED"), ("entrez", "4001")])
     rec("ramp_gene", "RAMP_G_1", [("ramp_gene", "RAMP_G_1")])
     rec("ramp_gene", "RAMP_G_2", [("ramp_gene", "RAMP_G_2")], "9606")
     return h
@@ -254,10 +261,40 @@ def write_hub_index(directory: Path, hub: str, records) -> None:
     )
 
 
-def build_snapshot(root: Path, *, fingerprint: str = FINGERPRINT, shards: int = 1) -> Path:
+def downgrade_to_v2(directory: Path) -> None:
+    """Rewrite the id store of a built hub kv in format v2: no taxon in the symbol keys."""
+    kv = Path(directory) / identity_kv.KV_DIR
+    manifest = json.loads((kv / identity_kv.MANIFEST).read_text())
+    rows = defaultdict(set)
+    if (Path(directory) / "by_id").is_dir():  # a hub without records has none
+        for row in pq.read_table(Path(directory) / "by_id").to_pylist():
+            rows[row["ns"], row["identifier"]].add((row["local_id"], row["tag"]))
+    shards = defaultdict(dict)
+    for (ns, identifier), items in rows.items():
+        key = identity_kv.id_key(ns, identifier)
+        if key is not None:
+            value = identity_kv.ROW.join(identity_kv.FIELD.join(i) for i in sorted(items))
+            shards[identity_kv.shard_of(identifier, manifest["id_shards"])][key] = value.encode()
+    for shard in range(manifest["id_shards"]):
+        shutil.rmtree(kv / f"id.{shard}")
+        env = lmdb.open(str(kv / f"id.{shard}"), map_size=1 << 30, max_dbs=2)
+        db = env.open_db(b"id")
+        with env.begin(write=True, db=db) as txn:
+            for key, value in sorted(shards[shard].items()):
+                txn.put(key, value, db=db)
+        env.close()
+    manifest["format"] = "omnipath-hub-kv-v2"
+    del manifest["taxon_keyed_namespaces"]
+    (kv / identity_kv.MANIFEST).write_text(json.dumps(manifest))
+
+
+def build_snapshot(
+    root: Path, *, fingerprint: str = FINGERPRINT, shards: int = 1, v2_hubs=()
+) -> Path:
     """Write hub indexes under ``root/hubindex`` and the identity directory; return the latter.
 
-    ``shards`` (1 or 16) is the id/rec shard count of every hub kv store.
+    ``shards`` (1 or 16) is the id/rec shard count of every hub kv store. The kv stores of
+    ``v2_hubs`` ("all" for every hub) are written in the older format v2.
     """
     from omnipath_build.identity import build_hub_kv_dir, build_identity_kv
 
@@ -270,6 +307,8 @@ def build_snapshot(root: Path, *, fingerprint: str = FINGERPRINT, shards: int = 
         directory = root / "hubindex" / hub / "0123456789ab"
         write_hub_index(directory, hub, records)
         build_hub_kv_dir(directory, id_shards=shards, rec_shards=shards, memory="256MB", threads=1, min_free_gib=0.01)
+        if v2_hubs == "all" or hub in v2_hubs:
+            downgrade_to_v2(directory)
         # relative to the identity directory, except uniprot (absolute): both must resolve
         indexes[hub] = (
             str(directory) if hub == "uniprot" else str(Path("../..") / directory.relative_to(root))

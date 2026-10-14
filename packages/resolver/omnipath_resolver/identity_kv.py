@@ -4,6 +4,7 @@ Hub index ``<hub dir>/kv/`` (written by ``omnipath-build build-hub-kv``)::
 
     manifest.json   format, hub, source index sha, shard counts, per-env statistics
     id.<s>/         db ``id``:  part + ns + b"\\0" + identifier -> "local_id<F>tag<R>local_id<F>tag..."
+                    (symbol namespaces, format v3: part + ns + b"\\0" + identifier + b"\\0" + taxon)
     rec.<s>/        db ``rec``: part + local_id -> "taxon<F>anchor<F>count<F>reviewed[<R>type<F>value...]"
 
 ``part`` is the hub index partition (two hex digits of md5 of the identifier, or of
@@ -11,6 +12,12 @@ Hub index ``<hub dir>/kv/`` (written by ``omnipath-build build-hub-kv``)::
 prefix makes every partition's keys a contiguous ascending block, so the writer appends partition
 files as they are, with no global sort. <F> is ``FIELD`` (0x1f) and <R> is ``ROW`` (0x1e); values
 are UTF-8 and parsed with ``str.split``. Empty taxon/anchor mean none; reviewed is 1 or 0.
+
+A gene symbol is the same word in hundreds of species, and a symbol key is always taxon-scoped.
+From format v3 the ``id`` keys of the symbol namespaces end with the taxon of the record
+(empty for a record without one), so a scoped lookup reads the rows of its taxon and those of
+the records without a taxon, and never the head of another species' record. Format v2 keys have
+no taxon suffix; the runtime reads both.
 
 Identity directory ``<identity dir>/kv/`` (written by ``omnipath-build build-identity-kv``), one
 environment with the dbs ``exc`` (record_id -> [entity_id, decision, quarantined]),
@@ -34,13 +41,16 @@ import zstandard
 
 KV_DIR = "kv"
 MANIFEST = "manifest.json"
-HUB_KV_FORMAT = "omnipath-hub-kv-v2"
+HUB_KV_FORMAT = "omnipath-hub-kv-v3"
+HUB_KV_FORMATS = ("omnipath-hub-kv-v2", HUB_KV_FORMAT)  # the formats HubKv can read
 FIELD, ROW = "\x1f", "\x1e"
 DECISIONS_KV_FORMAT = "omnipath-identity-kv-v1"
 MAX_KEY = 511  # LMDB's default key size limit
 COMPRESS_OVER = 256
 RAW, ZSTD = b"\x00", b"\x01"
 SHARD_COUNTS = (1, 16)
+# Namespaces whose lookup rows are keyed by the taxon of their record (format v3).
+SYMBOL_NAMESPACES = frozenset({"genesymbol", "genesymbol-syn"})
 DECISION_DBS = ("exc", "exc_members", "extra", "gp_protein", "gp_gene", "lipid", "cand")
 
 
@@ -97,9 +107,14 @@ def shard_of(value: str, shards: int) -> int:
     return int(partition(value)[0], 16)
 
 
-def id_key(ns: str, identifier: str) -> bytes | None:
-    """Key of the ``id`` db, or None when it cannot be stored (longer than LMDB's key limit)."""
+def id_key(ns: str, identifier: str, taxon: str | None = None) -> bytes | None:
+    """Key of the ``id`` db, or None when it cannot be stored (longer than LMDB's key limit).
+
+    ``taxon`` is for the symbol namespaces of format v3 ('' is the records without a taxon).
+    """
     key = partition(identifier).encode() + ns.encode() + b"\0" + identifier.encode()
+    if taxon is not None:
+        key += b"\0" + taxon.encode()
     return key if len(key) <= MAX_KEY else None
 
 
@@ -174,13 +189,16 @@ class Env:
             env.close()
 
 
-def _read_manifest(directory: Path, fmt: str, what: str, build_hint: str) -> dict:
+def _read_manifest(directory: Path, formats, what: str, build_hint: str) -> dict:
     path = directory / MANIFEST
     if not path.is_file():
         raise KvMissing(f"{what}: no key/value store at {directory} ({build_hint})")
     manifest = json.loads(path.read_text())
-    if manifest.get("format") != fmt:
-        raise KvMissing(f"{what}: {path} has format {manifest.get('format')!r}, expected {fmt!r}")
+    formats = (formats,) if isinstance(formats, str) else tuple(formats)
+    if manifest.get("format") not in formats:
+        raise KvMissing(
+            f"{what}: {path} has format {manifest.get('format')!r}, expected {' or '.join(formats)!r}"
+        )
     return manifest
 
 
@@ -192,7 +210,9 @@ class HubKv:
         self.index_dir = Path(index_dir)
         directory = self.index_dir / KV_DIR
         hint = f"run: omnipath-build build-hub-kv --hub {hub} --hub-index-root <root>"
-        self.manifest = _read_manifest(directory, HUB_KV_FORMAT, f"hub index {hub}", hint)
+        self.manifest = _read_manifest(directory, HUB_KV_FORMATS, f"hub index {hub}", hint)
+        # Format v3: the rows of the symbol namespaces are keyed by taxon (``taxon_ids``).
+        self.by_taxon = self.manifest["format"] == HUB_KV_FORMAT
         source = self.index_dir / "manifest.json"
         if source.is_file() and self.manifest.get("source_sha256") != sha256_file(source):
             raise KvMissing(f"hub index {hub}: kv at {directory} was built from a different index")
@@ -217,9 +237,15 @@ class HubKv:
         return set(self._envs)
 
     def ids(self, pairs) -> dict[tuple[str, str], list[tuple[str, str]]]:
-        """(ns, identifier) -> [(local_id, tag)] for the pairs present."""
+        """(ns, identifier) -> [(local_id, tag)] for the pairs present.
+
+        A symbol namespace is answered for every taxon by format v2 only; format v3 reads
+        it with ``taxon_ids``.
+        """
         by_shard: dict[int, dict[bytes, tuple[str, str]]] = {}
         for ns, identifier in pairs:
+            if self.by_taxon and ns in SYMBOL_NAMESPACES:
+                raise ValueError(f"Namespace {ns} is keyed by taxon in kv format v3")
             key = id_key(ns, identifier)
             if key is not None:
                 by_shard.setdefault(shard_of(identifier, self.id_shards), {})[key] = (ns, identifier)
@@ -228,6 +254,35 @@ class HubKv:
             for shard, keys in by_shard.items():
                 for key, raw in self._env("id", shard).get_many("id", keys).items():
                     found[keys[key]] = decode_ids(raw)
+        return found
+
+    def taxon_ids(self, wanted) -> dict[tuple[str, str, str], list[tuple[str, str]]]:
+        """(ns, identifier, taxon) -> [(local_id, tag)] of the symbol rows (format v3 only).
+
+        The rows of the records of that taxon and those of the records without a taxon, which
+        belong to every scope; the others are not read.
+        """
+        if not self.by_taxon:
+            raise ValueError(
+                f"hub index {self.hub}: kv format {self.manifest['format']} has no taxon keys"
+            )
+        # A key without a taxon is shared by every wanted taxon of its symbol.
+        by_shard: dict[int, dict[bytes, list[tuple[str, str, str]]]] = {}
+        for ns, identifier, taxon in set(wanted):
+            if ns not in SYMBOL_NAMESPACES:
+                raise ValueError(f"Namespace {ns} is not keyed by taxon")
+            for suffix in {taxon, ""}:
+                key = id_key(ns, identifier, suffix)
+                if key is not None:
+                    shard = shard_of(identifier, self.id_shards)
+                    keys = by_shard.setdefault(shard, {})
+                    keys.setdefault(key, []).append((ns, identifier, taxon))
+        found: dict[tuple[str, str, str], list[tuple[str, str]]] = {}
+        with self._lock:
+            for shard, keys in by_shard.items():
+                for key, raw in self._env("id", shard).get_many("id", keys).items():
+                    for item in keys[key]:
+                        found.setdefault(item, []).extend(decode_ids(raw))
         return found
 
     def _rec(self, local_ids, decode) -> dict:

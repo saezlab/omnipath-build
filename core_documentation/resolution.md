@@ -69,7 +69,7 @@ re-indexed only when its export changes
 | `by_id/` | Lookup rows: identifier → record, tagged `native`, `claim`, `secondary` (UniProt secondary accession), `symbol_synonym` or `version_stripped` |
 | `by_record/` | Every normalized row of a record, including names and structures that feed labels |
 | `xrefs.parquet` | The cross-references between records, the only input the identity decisions read |
-| `kv/` | LMDB point-lookup stores of `by_id` and `by_record`, read by matching |
+| `kv/` | LMDB point-lookup stores of `by_id` and `by_record`, read by matching. The rows of gene symbols are keyed by the taxon of their record, so a symbol lookup reads only its own taxon (kv format v3; matching reads v2 stores too) |
 
 - **Anchors** are identifiers that define identity on their own: a valid full
   InChIKey (the empty-structure InChIKeys are ignored), the UniProt record's own
@@ -83,6 +83,14 @@ re-indexed only when its export changes
 omnipath-build build-hub-index --hub chebi --hubs-dir data/reference/hubs --output-root data/reference/hub-index
 omnipath-build build-hub-kv --hub chebi --hub-index-root data/reference/hub-index
 ```
+
+A gene symbol is the same word in hundreds of species, and a symbol key always
+names one taxon. The kv keys of the `genesymbol` and `genesymbol-syn` rows end
+with the taxon of their record (empty for a record without one), so a lookup
+reads the rows of its taxon and of the records without a taxon, and no record of
+another species. `build-hub-kv` rewrites an older store from the existing
+`by_id` Parquet files (no hub re-index) and replaces the old store only when the
+new one is complete.
 
 ## 3. Identity decisions
 

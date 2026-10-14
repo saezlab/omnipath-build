@@ -112,6 +112,12 @@ by_record/part=XX/ every normalized hub row incl. names, XX = md5(record_id)[:2]
   repeated under ns `genesymbol`), `version_stripped` (refseq/genbank without version). These
   are the data-level expansions of brief §2.3; which rows become candidates is decided at runtime.
 - Names, synonyms, smiles, inchi, formula are only in `by_record`, never in `by_id`.
+- kv store (`kv/`, `omnipath-hub-kv-v3`): key `part + ns + 0x00 + identifier`; for ns `genesymbol`
+  and `genesymbol-syn` (symbols exist only taxon-scoped) `part + ns + 0x00 + identifier + 0x00 +
+  taxon`, taxon empty for a record without one (`0`, `None` and blanks count as none). A scoped
+  lookup reads the keys of its taxon and the empty one, never the head of another species'
+  record. Format v2 has no taxon in the key; the runtime reads both (v2: every species, then
+  the record taxon filter).
 - Chemical hubs also get `goslin` rows (ns `goslin`, identifier `<level>:<name>`, the record's
   most specific parsed name at species level or finer) in both `by_id` and `by_record`, parsed
   with the persistent Goslin cache.

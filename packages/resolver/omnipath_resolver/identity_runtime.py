@@ -22,7 +22,7 @@ import sqlite3
 import threading
 import time
 
-from .identity_kv import DecisionsKv, HubKv
+from .identity_kv import SYMBOL_NAMESPACES, DecisionsKv, HubKv
 from .observations import CODES
 
 FORMAT = "omnipath-identity-v2"
@@ -40,7 +40,6 @@ MNX_XREF_NAMESPACES = frozenset({"bigg_reaction", "vmh_reaction", "seed_reaction
 # A source's secondary one must not veto its specific identifiers (see ``_fallbacks``).
 COARSE_CHEMICAL_NAMESPACES = frozenset({"kegg", "bigg", "metanetx"})
 GENE_NAMESPACES = frozenset({"hgnc", "ensg", "enst", "refseq", "genesymbol", "genesymbol-syn"})
-SYMBOL_NAMESPACES = frozenset({"genesymbol", "genesymbol-syn"})
 # Tags carried by access rows (spec section 3).
 NATIVE, FALLBACK, SECONDARY, SYMBOL_SYNONYM = "native", "fallback", "secondary", "symbol_synonym"
 
@@ -330,7 +329,8 @@ class IdentityRuntime:
         # ``memory_limit`` and ``threads`` are accepted for compatibility: LMDB needs neither.
         self._lipids = None
         self._term_labels = None
-        # (hub, (source ns, identifier), taxon) -> the by_id rows of that taxon (``_by_id``).
+        # (hub, (source ns, identifier), taxon) -> the by_id rows of that taxon, for hub kv
+        # stores not keyed by taxon (``_rows_filtered``).
         self._scoped_rows = {}
         self.decisions = DecisionsKv(self.path, self.fingerprint)
         try:
@@ -511,78 +511,100 @@ class IdentityRuntime:
             return "product", sources, ["uniprot"]
         return None
 
-    # Pairs read per round when rows are filtered by taxon (see ``_by_id``).
+    # Pairs read per round when rows are filtered by the taxon of their record (format v2).
     _SCOPED_PAIRS = 256
-    # Entries of the memo of taxon-filtered rows; it is emptied when it is full. A symbol
-    # has four entries (exact and synonym, in the gene and in the protein hub), most of
-    # them empty: 85,000 keys of real builds made 157,000 entries.
+    # Entries of the memo of taxon-filtered rows (format v2); it is emptied when it is full. A
+    # symbol has four entries (exact and synonym, in the gene and in the protein hub), most
+    # of them empty: 85,000 keys of real builds made 157,000 entries.
     _SCOPED_MEMO = 500_000
 
     def _by_id(self, hubs, pairs, scopes=None):
         """by_id rows for ``(source ns, identifier)`` pairs: (pair index, hub, row fields...).
 
         ``scopes``, where given, has for each pair the taxon its rows are wanted for, or
-        None. A row whose record has another taxon is left out here. A gene symbol is the
-        same word in hundreds of species (``TP53``: about 350 gene and 400 protein records,
-        of which 115 are human), and the scope filter of ``lookup_many`` would drop those
-        rows only after their entities had been looked up: 5,000 symbols of one batch were
-        millions of records and several gigabytes. A record without a taxon is kept. The
-        pairs are read a few at a time for the same reason: the rows of all of them at once
-        would be held before any is dropped.
-
-        The taxon of a row is in its record, so every record of the symbol is still read
-        once to learn it. The rows that remain for a taxon are kept (``_scoped_rows``): a
-        resource names the same genes in batch after batch, and reading a thousand records
-        of other species from disk for each of them again was most of the time of a build.
+        None. A row whose record has another taxon is left out here; a record without a
+        taxon is kept. A gene symbol is the same word in hundreds of species (``TP53``:
+        about 350 gene and 400 protein records, of which 115 are human), and the scope
+        filter of ``lookup_many`` would drop those rows only after their entities had been
+        looked up: 5,000 symbols of one batch were millions of records and several gigabytes.
         """
         index = defaultdict(list)
         for i, pair in enumerate(pairs):
             index[pair].append(i)
-        distinct = list(index)
         out = []
-        if not scopes:
-            for hub in hubs:
-                kv = self.hub_kv.get(hub)
-                if kv is None:
-                    continue
-                for pair, rows in self._rows(hub, kv, distinct).items():
-                    for local_id, tag, anchor, count, _ in rows:
-                        out.extend((i, hub, local_id, tag, anchor, count) for i in index[pair])
-            return out
-        memo = self._scoped_rows
         for hub in hubs:
             kv = self.hub_kv.get(hub)
             if kv is None:
                 continue
-            unread = []
-            for pair in distinct:
-                wanted = {scopes[i] for i in index[pair]}
-                if None in wanted or any((hub, pair, scope) not in memo for scope in wanted):
-                    unread.append(pair)
-                    continue
+            plain, scoped = [], []
+            for pair, owners in index.items():
+                if scopes and None not in {scopes[i] for i in owners}:
+                    scoped.append(pair)
+                else:
+                    plain.append(pair)
+            if plain:
+                for pair, rows in self._rows(hub, kv, plain).items():
+                    for local_id, tag, anchor, count, _ in rows:
+                        out.extend((i, hub, local_id, tag, anchor, count) for i in index[pair])
+            if scoped and kv.by_taxon:
+                out.extend(self._rows_of_taxon(hub, kv, scoped, index, scopes))
+            elif scoped:
+                out.extend(self._rows_filtered(hub, kv, scoped, index, scopes))
+        return out
+
+    @staticmethod
+    def _rows_of_taxon(hub, kv, scoped, index, scopes):
+        """Rows of symbol pairs from a kv keyed by taxon: only their taxon's records are read."""
+        found = kv.taxon_ids((*pair, scopes[i]) for pair in scoped for i in index[pair])
+        heads = kv.heads({local_id for rows in found.values() for local_id, _ in rows})
+        out = []
+        for pair in scoped:
+            for i in index[pair]:
+                for local_id, tag in found.get((*pair, scopes[i]), ()):
+                    head = heads.get(local_id)
+                    if head is None:
+                        raise ValueError(f"Hub {hub} by_id row without a record: {local_id}")
+                    out.append((i, hub, local_id, tag, head[1], int(head[2] or 0)))
+        return out
+
+    def _rows_filtered(self, hub, kv, scoped, index, scopes):
+        """Rows of symbol pairs from a kv not keyed by taxon (format v2).
+
+        The rows of the symbol hold every species, and the taxon of a row is in its record,
+        so every record of the symbol is read once to learn it. The rows that remain for a
+        taxon are kept (``_scoped_rows``): a resource names the same genes in batch after
+        batch, and reading a thousand records of other species from disk for each of them
+        again was most of the time of a build. The pairs are read a few at a time so that
+        the rows of all of them are never held together.
+        """
+        memo, out, unread = self._scoped_rows, [], []
+        for pair in scoped:
+            wanted = {scopes[i] for i in index[pair]}
+            if any((hub, pair, scope) not in memo for scope in wanted):
+                unread.append(pair)
+                continue
+            for i in index[pair]:
+                out.extend(
+                    (i, hub, local_id, tag, anchor, count)
+                    for local_id, tag, anchor, count in memo[hub, pair, scopes[i]]
+                )
+        for start in range(0, len(unread), self._SCOPED_PAIRS):
+            chunk = unread[start : start + self._SCOPED_PAIRS]
+            found = self._rows(hub, kv, chunk)
+            if len(memo) + len(chunk) > self._SCOPED_MEMO:
+                memo.clear()
+            for pair in chunk:
+                rows = found.get(pair, ())
+                for scope in {scopes[i] for i in index[pair]}:
+                    memo[hub, pair, scope] = tuple(
+                        row[:4] for row in rows if row[4] in (None, scope)
+                    )
                 for i in index[pair]:
                     out.extend(
                         (i, hub, local_id, tag, anchor, count)
-                        for local_id, tag, anchor, count in memo[hub, pair, scopes[i]]
+                        for local_id, tag, anchor, count, taxon in rows
+                        if taxon in (None, scopes[i])
                     )
-            for start in range(0, len(unread), self._SCOPED_PAIRS):
-                chunk = unread[start : start + self._SCOPED_PAIRS]
-                found = self._rows(hub, kv, chunk)
-                if len(memo) + len(chunk) > self._SCOPED_MEMO:
-                    memo.clear()
-                for pair in chunk:
-                    rows = found.get(pair, ())
-                    for scope in {scopes[i] for i in index[pair]} - {None}:
-                        memo[hub, pair, scope] = tuple(
-                            row[:4] for row in rows if row[4] in (None, scope)
-                        )
-                    for i in index[pair]:
-                        scope = scopes[i]
-                        out.extend(
-                            (i, hub, local_id, tag, anchor, count)
-                            for local_id, tag, anchor, count, taxon in rows
-                            if scope is None or taxon in (None, scope)
-                        )
         return out
 
     @staticmethod

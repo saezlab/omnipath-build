@@ -10,7 +10,7 @@ import pyarrow.parquet as pq
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[3] / "resolver" / "tests"))
-from identity_snapshot import write_hub_index  # noqa: E402
+from identity_snapshot import downgrade_to_v2, write_hub_index  # noqa: E402
 
 from omnipath_build.identity import build_hub_kv_dir, build_identity_kv  # noqa: E402
 from omnipath_resolver import identity_kv  # noqa: E402
@@ -117,6 +117,126 @@ def test_hub_kv_holds_every_parquet_row(tmp_path, shards, workers):
             kv = HubKv("chebi", directory)
             kv.ids([("chebi", "CHEBI:1")])
             assert {s for _, s in kv.opened()} == {identity_kv.shard_of("CHEBI:1", 16)}
+    finally:
+        kv.close()
+
+
+SYMBOLS = ["TP53", "TP53-AS1", "TP5", "TP530", "Tp53", "é", "A", "A1", "A-1", "a b", "x" * 495]
+TAXA = ["9606", "10090", None, "0", " 9606 ", "None", ""]  # the last four are no taxon or 9606
+
+
+def symbol_records():
+    """Every symbol in each namespace under records of every kind of taxon."""
+    records = {}
+    for s, symbol in enumerate(SYMBOLS):
+        for t, taxon in enumerate(TAXA):
+            rows = [("genesymbol", symbol), ("genesymbol-syn", symbol), ("entrez", f"{s}-{t}")]
+            if t % 2 and s:
+                rows.append(("genesymbol-syn", SYMBOLS[0]))
+            records[f"{s}-{t}"] = (taxon, False, rows)
+    return records
+
+
+def symbol_hub(tmp_path, shards=1):
+    directory = tmp_path / "entrez" / "0123456789ab"
+    write_hub_index(directory, "entrez", symbol_records())
+    build_hub_kv_dir(
+        directory, id_shards=shards, rec_shards=shards, memory="256MB", threads=1, min_free_gib=0.01
+    )
+    return directory
+
+
+def clean(taxon):
+    """The taxon of a record as the runtime reads it."""
+    text = (taxon or "").strip()
+    return "" if text in ("", "0", "None") else text
+
+
+@pytest.mark.parametrize("shards", [1, 16])
+def test_symbol_rows_are_keyed_by_the_taxon_of_their_record(tmp_path, shards):
+    directory = symbol_hub(tmp_path, shards)
+    manifest = identity_kv.json.loads((directory / "kv" / "manifest.json").read_text())
+    assert manifest["format"] == identity_kv.HUB_KV_FORMAT
+    assert manifest["taxon_keyed_namespaces"] == ["genesymbol", "genesymbol-syn"]
+    by_id = pq.read_table(directory / "by_id").to_pylist()
+    expected = {}
+    for row in by_id:
+        if row["ns"] in identity_kv.SYMBOL_NAMESPACES:
+            key = (row["ns"], row["identifier"], clean(row["taxon"]))
+            expected.setdefault(key, set()).add((row["local_id"], row["tag"]))
+    kv = HubKv("entrez", directory)
+    try:
+        assert kv.by_taxon
+        taxa = {"9606", "10090", "7227"}
+        found = kv.taxon_ids((ns, i, t) for ns, i, _ in expected for t in taxa)
+        for (ns, identifier, _), _rows in expected.items():
+            for taxon in taxa:
+                if identity_kv.id_key(ns, identifier, taxon) is None:
+                    continue  # too long for an LMDB key: not stored
+                # the rows of that taxon and those of the records without one, nothing else
+                want = expected.get((ns, identifier, taxon), set()) | expected.get(
+                    (ns, identifier, ""), set()
+                )
+                got = found.get((ns, identifier, taxon), [])
+                assert sorted(got) == sorted(want) and len(got) == len(set(got)), (ns, identifier)
+        # the odd taxa ("0", "None", blanks) are no taxon, and " 9606 " is 9606
+        tp53 = lambda taxon: {local for local, _ in found[("genesymbol", "TP53", taxon)]}  # noqa: E731
+        assert {"0-2", "0-3", "0-5", "0-6"} <= tp53("7227") and "0-0" not in tp53("7227")
+        assert "0-4" in tp53("9606") and "0-4" not in tp53("10090")
+        # other namespaces keep their keys; a symbol is no longer found without a taxon
+        assert kv.ids([("entrez", "0-0")]) == {("entrez", "0-0"): [("0-0", "native")]}
+        with pytest.raises(ValueError, match="keyed by taxon"):
+            kv.ids([("genesymbol", "TP53")])
+        with pytest.raises(ValueError, match="not keyed by taxon"):
+            kv.taxon_ids([("entrez", "0-0", "9606")])
+        long = "x" * 495  # fits a key of format v2, not one with the taxon: skipped, counted
+        assert identity_kv.id_key("genesymbol", long) is not None
+        assert identity_kv.id_key("genesymbol", long, "10090") is None
+        assert manifest["totals"]["id"]["skipped_long_keys"] > 0
+    finally:
+        kv.close()
+
+
+def test_a_symbol_lookup_reads_two_keys_per_taxon(tmp_path):
+    directory = symbol_hub(tmp_path)
+    kv = HubKv("entrez", directory)
+    try:
+        env = kv._env("id", 0)
+        gets = []
+        original = env.get_many
+        env.get_many = lambda name, keys: gets.append(sorted(keys)) or original(name, keys)
+        kv.taxon_ids([("genesymbol", "TP53", "9606")])
+        kv.taxon_ids([("genesymbol", "TP53", "9606"), ("genesymbol", "TP53", "10090")])
+        assert [len(g) for g in gets] == [2, 3]  # the key without a taxon is shared
+        assert gets[0][0].endswith(b"\0TP53\0") or gets[0][1].endswith(b"\0TP53\0")
+    finally:
+        kv.close()
+
+
+def test_format_v2_is_read_and_replaced_only_when_the_new_store_is_complete(tmp_path):
+    directory = symbol_hub(tmp_path)
+    downgrade_to_v2(directory)
+    kv = HubKv("entrez", directory)
+    try:
+        assert not kv.by_taxon and kv.manifest["format"] == "omnipath-hub-kv-v2"
+        symbol = ("genesymbol", "TP53")
+        assert len(kv.ids([symbol])[symbol]) > len(SYMBOLS)  # every taxon
+        with pytest.raises(ValueError, match="no taxon keys"):
+            kv.taxon_ids([("genesymbol", "TP53", "9606")])
+    finally:
+        kv.close()
+    # a partial build of the older format is discarded, and the readable v2 store stays until
+    # the new one is complete
+    building = directory / "kv.building"
+    (building / "format").parent.mkdir()
+    (building / "format").write_text("omnipath-hub-kv-v2")
+    (building / "id.0").mkdir()
+    (building / "id.0" / "stats.json").write_text("{}")
+    build_hub_kv_dir(directory, memory="256MB", threads=1, min_free_gib=0.01)
+    assert not building.exists()
+    kv = HubKv("entrez", directory)
+    try:
+        assert kv.by_taxon and kv.taxon_ids([("genesymbol", "TP53", "10090")])
     finally:
         kv.close()
 

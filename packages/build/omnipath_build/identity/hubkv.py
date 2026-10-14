@@ -4,9 +4,13 @@ The Parquet index answers a batch of point lookups by scanning most of its 256 p
 runtime reads this store instead. The Parquet files stay the build artifact (untouched); the
 layout is described in ``omnipath_resolver.identity_kv``:
 
-    id.<s>/   db ``id``:  part + ns + 0x00 + identifier -> "local_id\x1ftag\x1e..."
+    id.<s>/   db ``id``:  part + ns + 0x00 + identifier [+ 0x00 + taxon] -> "local_id\x1ftag\x1e..."
     rec.<s>/  db ``rec``: part + local_id -> "taxon\x1fanchor\x1fcount\x1freviewed[\x1etype\x1fvalue...]"
     manifest.json
+
+The taxon is part of the key for the symbol namespaces only (format v3): a gene symbol is the same
+word in hundreds of species and is always looked up for one taxon, so its rows are split by the
+taxon of their record (empty when the record has none) and a lookup reads only its own.
 
 ``part`` is the two-hex-digit partition the Parquet index already uses (md5 of the identifier, or
 of ``<hub>:<local_id>``), and each partition is one file already sorted by key. Prefixing ``part``
@@ -41,6 +45,7 @@ from omnipath_resolver.identity_kv import (
     MANIFEST,
     MAX_KEY,
     ROW,
+    SYMBOL_NAMESPACES,
     sha256_file,
 )
 
@@ -243,22 +248,40 @@ def build_rec_shard(directory, building, target, shard, shards, hub, min_free):
     return dict(stats, rows=rows, orphan_row_groups=orphans)
 
 
+def taxon_of(values: pa.Array) -> pa.Array:
+    """Taxon as the runtime reads it (``identity_runtime._taxon``): '' for none, '0' or 'None'."""
+    text = pc.utf8_trim_whitespace(pc.cast(values, pa.string()))
+    return pc.if_else(pc.is_in(text, value_set=pa.array(["0", "None"])), "", pc.fill_null(text, ""))
+
+
 def build_id_shard(directory, building, target, shard, shards, hub, min_free):
-    """Per partition: by_id rows grouped by (ns, identifier), one value per key."""
+    """Per partition: by_id rows grouped by key, one value per key.
+
+    The key is (ns, identifier), and for the symbol namespaces (ns, identifier, taxon).
+    """
     writer = Writer(target, "id", min_free)
     rows = 0
+    symbols = pa.array(sorted(SYMBOL_NAMESPACES))
     for part in _parts(shard, shards):
         files = _files(directory / "by_id", part)
         if not files:
             continue
-        table = _sorted(
-            pq.read_table(files, columns=["ns", "identifier", "local_id", "tag"]),
-            ["ns", "identifier", "local_id", "tag"],
-        )
+        table = pq.read_table(files, columns=["ns", "identifier", "local_id", "tag", "taxon"])
         rows += table.num_rows
-        # ns + 0x00 + identifier sorts exactly like (ns, identifier): 0x00 is the smallest byte.
+        # ns + 0x00 + identifier sorts exactly like (ns, identifier): 0x00 is the smallest byte,
+        # and so does the key with a taxon after another 0x00.
+        ns, identifier = table.column("ns"), table.column("identifier")
+        key = pc.if_else(
+            pc.is_in(ns, value_set=symbols),
+            join(ns, identifier, taxon_of(table.column("taxon")), sep="\x00"),
+            join(ns, identifier, sep="\x00"),
+        )
+        table = _sorted(
+            pa.table(dict(key=key, local_id=table.column("local_id"), tag=table.column("tag"))),
+            ["key", "local_id", "tag"],
+        )
         keys, joined = group(
-            join(table.column("ns"), table.column("identifier"), sep="\x00").combine_chunks(),
+            table.column("key").combine_chunks(),
             join(table.column("local_id"), table.column("tag"), sep=FIELD).combine_chunks(),
         )
         writer.add(join(pa.scalar(part), keys, sep=""), joined)
@@ -329,8 +352,8 @@ def build_hub_kv_dir(
         if existing.get("format") == HUB_KV_FORMAT:
             log("hub_kv_exists", path=str(final))
             return existing
+        # An older store keeps serving until the new one is complete (see below).
         log("hub_kv_outdated", path=str(final), format=existing.get("format"))
-        shutil.rmtree(final)
     index_manifest = json.loads((directory / "manifest.json").read_text())
     hub = index_manifest["hub"]
     id_shards = id_shards or (16 if _row_count(directory, "by_id", 0) > SHARD_ROWS else 1)
@@ -339,10 +362,11 @@ def build_hub_kv_dir(
         raise ValueError("Shard counts must be 1 or 16")
     min_free = int(min_free_gib * 1024**3)
     building = directory / (KV_DIR + ".building")
-    if building.is_dir() and not (building / "format").is_file():
+    marker = building / "format"
+    if building.is_dir() and not (marker.is_file() and marker.read_text() == HUB_KV_FORMAT):
         shutil.rmtree(building)  # a partial build of an older layout
     building.mkdir(parents=True, exist_ok=True)
-    (building / "format").write_text(HUB_KV_FORMAT)
+    marker.write_text(HUB_KV_FORMAT)
     if shutil.disk_usage(building).free < min_free:
         raise RuntimeError("Hub kv build stopped at the free-disk reserve")
     started = time.monotonic()
@@ -378,13 +402,15 @@ def build_hub_kv_dir(
         input=index_manifest.get("input"),
         id_shards=id_shards,
         rec_shards=rec_shards,
+        taxon_keyed_namespaces=sorted(SYMBOL_NAMESPACES),
         totals=totals,
         envs=dict(sorted(envs.items())),
         records_partition_seconds=records_seconds,
         seconds=round(time.monotonic() - started, 2),
     )
     (building / MANIFEST).write_text(json.dumps(manifest, indent=2))
-    (building / "format").unlink()
+    marker.unlink()
+    shutil.rmtree(final, ignore_errors=True)  # the older store, if any
     building.rename(final)
     log("hub_kv_done", hub=hub, path=str(final), seconds=manifest["seconds"], totals=totals)
     return manifest

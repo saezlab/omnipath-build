@@ -29,7 +29,7 @@ from identity_snapshot import (
     part,
 )
 from omnipath_resolver import RawEntityObservation
-from omnipath_resolver import identity_runtime
+from omnipath_resolver import identity_kv, identity_runtime
 from omnipath_resolver.canonical import votes_for
 from omnipath_resolver.canonical.match import LibraryMatcher
 from omnipath_resolver.canonical.policy import CHEMICAL_POLICY
@@ -46,10 +46,32 @@ CODE_NAMES = {code: ns for ns, code in CODES.items()}
 HUMAN, MOUSE = "9606", "10090"
 
 
-@pytest.fixture(scope="module", params=[1, 16], ids=["one-shard", "sixteen-shards"])
+LAYOUTS = {  # id: (shards, hubs with a kv store in the older format v2)
+    "one-shard": (1, ()),
+    "sixteen-shards": (16, ()),
+    "format-v2": (1, "all"),
+    "mixed-formats": (1, ("entrez",)),  # entrez v2, uniprot v3: a library part way to v3
+}
+
+
+@pytest.fixture(scope="module", params=list(LAYOUTS))
 def snapshot(tmp_path_factory, request):
-    """The same layout with one kv environment per store, and with 16 shards per large store."""
-    return build_snapshot(tmp_path_factory.mktemp("identity"), shards=request.param)
+    """The same layout with one kv environment per store, with 16 shards per large store, and
+    with hub kv stores of the older format (symbol rows not keyed by taxon)."""
+    shards, v2_hubs = LAYOUTS[request.param]
+    return build_snapshot(tmp_path_factory.mktemp("identity"), shards=shards, v2_hubs=v2_hubs)
+
+
+@pytest.fixture(scope="module")
+def snapshot_v2(tmp_path_factory):
+    return build_snapshot(tmp_path_factory.mktemp("identity-v2"), v2_hubs="all")
+
+
+@pytest.fixture
+def runtime_v2(snapshot_v2, tmp_path):
+    rt = IdentityRuntime(snapshot_v2, cache_dir=tmp_path / "cache")
+    yield rt
+    rt.close()
 
 
 @pytest.fixture
@@ -266,27 +288,92 @@ def test_a_scoped_symbol_reads_only_the_records_of_its_taxon(runtime, monkeypatc
     assert ids(both[mouse]) == ["entrez:22059"]
 
 
-def test_scoped_symbol_rows_are_read_in_rounds(runtime, monkeypatch):
-    # The answer does not depend on how many pairs a round reads.
-    keys = [
-        key(2, 1, ns, HUMAN, symbol)
-        for ns in ("genesymbol", "genesymbol-syn")
-        for symbol in ("TP53", "CALM1", "CALM2", "CALM3", "ABC1", "NOREC", "P53", "XYZ")
-    ]
-    whole = runtime.lookup_many(keys)
-    monkeypatch.setattr(type(runtime), "_SCOPED_PAIRS", 1)
-    assert runtime.lookup_many(keys) == whole
+SYMBOLS = (
+    "TP53", "P53", "TPX", "Trp53", "CALM1", "CALM2", "CALM3", "ABC1", "XYZ", "NOREC", "LINKED", "NONE",
+)  # fmt: skip
 
 
-def test_scoped_symbol_rows_are_read_once(runtime, monkeypatch):
-    # The rows of a symbol for a taxon are kept: the second call reads no record again,
-    # and answers as the first; a full memo is emptied and filled again.
-    keys = [
+def symbol_keys(taxa=(HUMAN, MOUSE, "7227")):
+    return [
         key(2, 1, ns, taxon, symbol)
         for ns in ("genesymbol", "genesymbol-syn")
-        for taxon in (HUMAN, MOUSE)
-        for symbol in ("TP53", "CALM1", "Trp53", "ABC1", "NOREC", "P53", "XYZ", "NONE")
+        for taxon in taxa
+        for symbol in SYMBOLS
     ]
+
+
+def test_a_scoped_symbol_reads_no_head_of_another_taxon(runtime, monkeypatch):
+    # The kv stores keyed by taxon (format v3) read the rows of the scope and of the records
+    # without a taxon; a store of the older format reads every species, so only the answer
+    # is compared for it.
+    heads = []
+    for hub, kv in runtime.hub_kv.items():
+        read = kv.heads
+        monkeypatch.setattr(
+            kv, "heads", lambda ids, hub=hub, read=read: heads.append((hub, set(ids))) or read(ids)
+        )
+    other = {HUMAN: {"22059", "P02340"}, MOUSE: {"7157", "P04637", "A0A0U1RQF1", "Q77777"}}
+    for taxon, foreign in other.items():
+        for symbol in ("TP53", "Trp53", "P53", "TPX", "NOREC"):
+            for ns in ("genesymbol", "genesymbol-syn"):
+                heads.clear()
+                look(runtime, 2, 1, ns, symbol, taxon)
+                for hub, local_ids in heads:
+                    if runtime.hub_kv[hub].by_taxon:
+                        assert not local_ids & foreign, (hub, taxon, symbol, local_ids & foreign)
+    # A record without a taxon belongs to every scope: its row is read for each of them.
+    for taxon, expected in ((HUMAN, ["entrez:4001"]), (MOUSE, [])):
+        heads.clear()
+        assert ids(look(runtime, 2, 1, "genesymbol", "LINKED", taxon)) == expected
+        assert "Q55555" in {i for hub, local_ids in heads if hub == "uniprot" for i in local_ids}
+
+
+def test_symbol_answers_are_those_of_format_v2(runtime, runtime_v2):
+    keys = symbol_keys() + [
+        key(2, 2, "entrez", HUMAN, "7157"),
+        key(2, 1, "ensg", HUMAN, "ENSG00000141510"),
+        key(2, 1, "uniprot", "", "P04637"),
+        key(2, 1, "uniprot-sec", "", "Q88888"),
+        key(1, 1, "chebi", "", "CHEBI:15377"),
+    ]
+    assert runtime.lookup_many(keys) == runtime_v2.lookup_many(keys)
+    assert any(runtime.lookup_many(keys)[k]["candidates"] for k in symbol_keys())
+
+
+def test_the_runtime_reads_both_kv_formats(snapshot):
+    rt = IdentityRuntime(snapshot, cache_dir=snapshot.parent / "formats")
+    try:
+        formats = {hub: kv.manifest["format"] for hub, kv in rt.hub_kv.items()}
+        assert set(formats.values()) <= set(identity_kv.HUB_KV_FORMATS)
+        assert all(kv.by_taxon == (kv.manifest["format"] == identity_kv.HUB_KV_FORMAT) for kv in rt.hub_kv.values())
+    finally:
+        rt.close()
+
+
+def test_an_unknown_kv_format_is_refused(snapshot, tmp_path):
+    root = tmp_path / "tree"
+    shutil.copytree(snapshot.parent.parent, root)
+    manifest = root / "hubindex" / "chebi" / "0123456789ab" / "kv" / "manifest.json"
+    data = json.loads(manifest.read_text())
+    data["format"] = "omnipath-hub-kv-v9"
+    manifest.write_text(json.dumps(data))
+    with pytest.raises(KvMissing, match="omnipath-hub-kv-v9"):
+        IdentityRuntime(root / "identity" / snapshot.name, cache_dir=tmp_path / "c")
+
+
+def test_scoped_symbol_rows_are_read_in_rounds(runtime_v2, monkeypatch):
+    # In the older format the answer does not depend on how many pairs a round reads.
+    keys = symbol_keys((HUMAN,))
+    whole = runtime_v2.lookup_many(keys)
+    monkeypatch.setattr(type(runtime_v2), "_SCOPED_PAIRS", 1)
+    assert runtime_v2.lookup_many(keys) == whole
+
+
+def test_scoped_symbol_rows_are_read_once_in_format_v2(runtime_v2, monkeypatch):
+    # The rows of a symbol for a taxon are kept: the second call reads no record again,
+    # and answers as the first; a full memo is emptied and filled again.
+    runtime = runtime_v2
+    keys = symbol_keys((HUMAN, MOUSE))
     runtime._scoped_rows.clear()
     first = runtime.lookup_many(keys)
     assert runtime._scoped_rows
@@ -309,6 +396,12 @@ def test_scoped_symbol_rows_are_read_once(runtime, monkeypatch):
     assert ids(runtime.lookup_many(mixed)[mixed[-1]]) == ids(
         look(runtime, 2, 1, "ensg", "ENSG00000141510", HUMAN)
     )
+
+
+def test_format_v3_keeps_no_memo(runtime):
+    runtime.lookup_many(symbol_keys())
+    if all(kv.by_taxon for kv in runtime.hub_kv.values()):
+        assert runtime._scoped_rows == {}
 
 
 def test_gene_flag(runtime):
