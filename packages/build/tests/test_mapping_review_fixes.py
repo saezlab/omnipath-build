@@ -287,6 +287,20 @@ def test_mirdeathdb_symbol_with_several_products_gives_each_as_legacy_did():
     assert [(r["mirbase_mature"], r["mirbase_mature_name"]) for r in truncated] == [("MIMAT0000257", "hsa-miR-181b-5p")]
 
 
+def test_cellphonedb_hla_partner_is_the_protein_of_its_gene():
+    relation = cellphonedb.interactions_schema({"partner_a": "HLAA", "partner_b": "P43629"})
+    assert format_term(relation.subject.type) == "protein"
+    assert [(i.type, i.value) for i in relation.subject.identifiers] == [(Namespace.GENESYMBOL, "HLA-A")]
+
+
+def test_hmdb_keeps_the_kegg_compound():
+    from pypath.inputs_v2 import hmdb
+
+    kegg = hmdb.f("kegg_id", extract="kegg_compound", transform="kegg_compound")
+    assert kegg.extract({"kegg_id": "C01152"}) == ["C01152"]
+    assert kegg.extract({"kegg_id": "c1152"}) == ["C01152"]
+
+
 def test_chembl_units_are_selected_from_source_and_reach_quantity():
     con = duckdb.connect()
     try:
