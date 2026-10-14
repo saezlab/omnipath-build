@@ -1,0 +1,18 @@
+{
+  "resource": "cellphonedb",
+  "kind": "relation",
+  "note": "",
+  "v2_seconds": 0.2,
+  "error": "legacy: NotCached('legacy download with no inputs_v2 file: https://raw.githubusercontent.com/ventolab/cellphonedb-data/master/data/protein_input.csv')",
+  "traceback": "Traceback (most recent call last):\n  File \"/root/data/scratch/parity/legacy_parity.py\", line 746, in run\n    outputs[side] = list(produce())\n                    ~~~~^^^^^^^^^^^\n  File \"/root/data/scratch/parity/legacy_parity.py\", line 614, in _cellphonedb\n    for rec in cellphonedb.cellphonedb_interactions():\n               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^\n  File \"/root/projects/omnipath-migration/omnipath-build/pypath/pypath/inputs/cellphonedb.py\", line 288, in cellphonedb_interactions\n    ligands, receptors = cellphonedb_ligands_receptors()\n                         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^\n  File \"/root/projects/omnipath-migration/omnipath-build/pypath/pypath/inputs/cellphonedb.py\", line 62, in cellphonedb_ligands_receptors\n    proteins = cellphonedb_protein_annotations()\n  File \"/root/projects/omnipath-migration/omnipath-build/pypath/pypath/inputs/cellphonedb.py\", line 162, in cellphonedb_protein_annotations\n    protein_annotations = _cellphonedb_annotations(\n        url = urls.urls['cellphonedb_git']['proteins'],\n        name_method = name_method,\n    )\n  File \"/root/projects/omnipath-migration/omnipath-build/pypath/pypath/inputs/cellphonedb.py\", line 122, in _cellphonedb_annotations\n    c = curl.Curl(url, large = True, silent = False)\n  File \"/root/data/scratch/parity/legacy_parity.py\", line 203, in cached_curl_init\n    raise NotCached(\n        f'legacy download with no inputs_v2 file: {url} {post or \"\"}'.strip()\n    )\nNotCached: legacy download with no inputs_v2 file: https://raw.githubusercontent.com/ventolab/cellphonedb-data/master/data/protein_input.csv\n",
+  "files": [
+    {
+      "side": "v2",
+      "url": "https://raw.githubusercontent.com/ventolab/cellphonedb-data/master/data/interaction_input.csv",
+      "path": "/root/data/pypath-cache/cellphonedb/cellphonedb_interactions.csv",
+      "size": 505620,
+      "sha256": "3cf0ceace45dcb42478f0e6a7be9a50104794eac68d731f7c82d4c13325175ab",
+      "mtime": "2026-09-05"
+    }
+  ]
+}
