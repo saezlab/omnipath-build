@@ -218,6 +218,43 @@ def test_cellphonedb_roles_are_classes_below_their_role():
     assert cellphonedb._role_classes("nuclear_receptor;needs transporter") == ["nuclear_receptor"]
 
 
+def _macrophage_row(cell_1, ids_1, type_1, cell_2, ids_2, type_2, interaction="Binding"):
+    return {
+        "Partner 1 Official Gene Symbol": cell_1, "Partner 1 Gene ID": ids_1,
+        "Partner 1 Interactant Type": type_1,
+        "Partner 2 Official Gene Symbol": cell_2, "Partner 2 Gene ID": ids_2,
+        "Partner 2 Interactant Type": type_2,
+        "Interaction Type": interaction, "Species": None, "NCBI-PubMed ID": "16846590",
+    }
+
+
+def test_macrophage_partners_are_read_as_legacy_pypath_read_them(monkeypatch):
+    rows = [
+        # A complex of four members with five Gene IDs: the members by symbol.
+        _macrophage_row("ATM:CHUK:IKBKB:IKBKG", "472:1147:3551:4214:23085", "Complex",
+                        "NFKBIA", "4792", "Protein", "Phosphorylation"),
+        # A protein cell with a form in brackets and no Gene ID.
+        _macrophage_row("NCOR2(SMRT)", None, "Protein", "NFKB1(p50):RELA(p65)", "N/A", "Complex"),
+        # A homodimer is no pair of a gene with itself.
+        _macrophage_row("ATM:ATM", "472:472", "Complex", "ATM", "472", "Protein"),
+    ]
+    from pypath.inputs_v2 import macrophage
+
+    monkeypatch.setattr(macrophage, "iter_interactions", lambda *a, **k: iter(rows))
+    expanded = list(macrophage.iter_member_interactions(None))
+    pairs = [(r["Partner 1 Official Gene Symbol"], r["Partner 2 Official Gene Symbol"]) for r in expanded]
+    assert pairs == [
+        ("ATM", "NFKBIA"), ("CHUK", "NFKBIA"), ("IKBKB", "NFKBIA"), ("IKBKG", "NFKBIA"),
+        ("NCOR2", "NFKB1"), ("NCOR2", "RELA"),
+    ]
+    assert expanded[0]["Partner 1 Gene ID"] is None  # five IDs for four symbols
+    relation = macrophage.interactions_mapper(expanded[4])
+    assert [(i.type, i.value) for i in relation.subject.identifiers] == [(Namespace.GENESYMBOL, "NCOR2")]
+    assert ("original_object", "NFKB1(p50):RELA(p65)") in {
+        (format_term(a.term).split(":")[-1], a.value) for a in relation.annotations
+    }
+
+
 def test_chembl_units_are_selected_from_source_and_reach_quantity():
     con = duckdb.connect()
     try:

@@ -152,7 +152,7 @@ stopped as well.
 | HPRD (enzyme-substrate) | 4,264 | 4,256 | 8 | 5 | – | nearly identical |
 | dbPTM | 1,107 | 1,100 | 7 | 1 | – | v2 better |
 | CA1 | 1,259 | 1,056 | 203 | 0 | 551 / 553 | intended gap; option |
-| **Macrophage** | 1,702 | 174 | 1,528 | 222 | – | **v2 leaves out complexes; decision** |
+| Macrophage | 1,702 | 1,658 | 44 | 506 | – | fixed: read as legacy (see below) |
 | Guide to Pharmacology | 742 | 120 | 622 | – | 109 / 109 | identifiers spelled differently |
 
 - **HPRD**: legacy keeps the in vivo modifications by default; compared with
@@ -168,19 +168,21 @@ stopped as well.
   Function column says what they are (Messenger, Lipid, Ligand, Ion), so about
   250 links with small molecules could be added with a table of ChEBI terms, as
   for CellChat.
-- **Macrophage**: 1,075 of the 2,024 rows of the sheet have a complex on one
-  side or both. Legacy splits a complex into its genes and pairs each with the
-  other partner; v2 emits no relation for these rows. The rows of two proteins
-  are mapped correctly (591 of 690; the others name no gene, e.g. `MAP3K?`, or
-  state no relation). The complex cells list their members' symbols and Gene IDs
-  (`ATM:CHUK:IKBKB:IKBKG`, `472:1147:3551:4214:23085`): 161 of the 268
-  distinct cells have as many Gene IDs as symbols, 14 have fewer IDs, 93 have
-  none but symbols with the form in brackets (`NFKB1(p50):RELB`). The module
-  leaves them out deliberately: a complex cell sometimes lists all members and
-  sometimes only the member that takes part (a complex `NFKBIA` drawn as
-  `RELA (p65): NFKB1 (p50)`). A decision: keep them out, read the cells with
-  two or more members as complexes (some partial), or pair each member with
-  the partner as legacy does.
+- **Macrophage** (fixed, as legacy): 1,075 of the 2,024 rows of the sheet have
+  a complex on one side or both, and some protein cells have a form and no Gene
+  ID (`NCOR2(SMRT)`, `ProCASP1`). v2 mapped only rows of proteins with Gene IDs
+  (174 of the 1,702 legacy pairs). It now reads every partner cell as legacy
+  did: forms in brackets and words in lower case removed, split at ":", each
+  gene paired with each of the other partner, none with itself; a Gene ID where
+  the cell has one for each symbol; the complex's cell kept as the original
+  subject or object. 1,658 of the 1,702 pairs are found; the 44 others are
+  names legacy keeps and no symbol can be read from (`MAP3K?`, `3, 4, 5`,
+  `HLA-A/B/C/D/E/F/G`). For decision: (1) legacy removed from the first to the
+  last bracket of a cell and the members between (`NFKB1(p50):RELA(p65)` was
+  NFKB1 alone); v2 removes each bracket. (2) v2 keeps the rows with a gene as
+  partner, which legacy left out (most of the 506 v2-only relations); in 38 of
+  them the gene is partner 1 of an activation by a complex (`BCL2` activates
+  `NFKB1(p50):NFKB1(p50)`), which reads reversed, but the sheet states it so.
 - **Guide to Pharmacology**: legacy names a peptide ligand by its gene symbol
   (`TNFSF9`), v2 by its GtoP ligand, UniProt and Ensembl identifiers (P41273):
   the pair is there (checked for TNFSF9 and its receptor Q07011), but the

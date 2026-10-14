@@ -2,23 +2,23 @@
   "resource": "macrophage",
   "kind": "relation",
   "note": "",
-  "v2_seconds": 0.6,
+  "v2_seconds": 0.5,
   "legacy_seconds": 0.1,
   "legacy_pairs": 1702,
-  "legacy_pairs_found_in_v2": 174,
-  "legacy_pairs_missing_in_v2": 1528,
+  "legacy_pairs_found_in_v2": 1658,
+  "legacy_pairs_missing_in_v2": 44,
   "missing_by_ids_known_to_v2": {
-    "both": 197,
-    "one": 185,
-    "neither": 1146
+    "both": 13,
+    "one": 27,
+    "neither": 4
   },
-  "v2_relations": 591,
-  "v2_relations_without_legacy_pair": 222,
-  "v2_relations_reversed_in_legacy": 0,
+  "v2_relations": 4960,
+  "v2_relations_without_legacy_pair": 506,
+  "v2_relations_reversed_in_legacy": 8,
   "v2_signs": {
-    "None": 542,
-    "+": 26,
-    "-": 23
+    "None": 4351,
+    "+": 311,
+    "-": 298
   },
   "signs_compared": 0,
   "signs_agree": 0,
@@ -30,148 +30,157 @@
         "MAP3K?"
       ],
       [
-        "ATM",
-        "NFKBIA"
+        "MAP3K?",
+        "RPS6KA1"
       ],
       [
-        "CHUK",
-        "NFKBIA"
+        "PDPK1",
+        "3, 4, 5"
       ],
       [
-        "IKBKB",
-        "NFKBIA"
+        "ICEBERG",
+        "3"
       ],
       [
-        "IKBKG",
-        "NFKBIA"
+        "COP1",
+        "3"
       ],
       [
-        "ATM",
-        "CHUK"
+        "INCA",
+        "3"
       ],
       [
-        "ATM",
-        "ERC1"
+        "CASP1",
+        "3"
       ],
       [
-        "IKBKG",
-        "ERC1"
+        "NOD2",
+        "4"
       ],
       [
-        "ATM",
-        "IKBKB"
+        "IL-18",
+        "IL18"
       ],
       [
-        "BCL3",
-        "NFKB1"
+        "IL-1B",
+        "IL1B"
       ],
       [
-        "BCL3",
-        "NFKB2"
+        "IL-33",
+        "IL33"
       ],
       [
-        "CDC37",
-        "IKBKB"
+        "-AMP",
+        "UBE1"
       ],
       [
-        "CDC37",
-        "IKBKG"
+        "UBE1",
+        "-AMP"
       ],
       [
-        "CDC37",
-        "CHUK"
+        "HLA-A/B/C/D/E/F/G",
+        "CANX"
       ],
       [
-        "CDC37",
-        "ERC1"
+        "HLA-A/B/C/D/E/F/G",
+        "B2M"
       ],
       [
-        "HSP90AA1",
-        "IKBKB"
+        "B2M",
+        "CANX"
       ],
       [
-        "HSP90AA1",
-        "IKBKG"
+        "HLA-A/B/C/D/E/F/G",
+        "CALR"
       ],
       [
-        "HSP90AA1",
-        "CHUK"
+        "HLA-A/B/C/D/E/F/G",
+        "PDIA3"
       ],
       [
-        "HSP90AA1",
-        "ERC1"
+        "TAP1",
+        "HLA-A/B/C/D/E/F/G"
       ],
       [
-        "CHUK",
-        "NFKB1"
+        "TAP2",
+        "HLA-A/B/C/D/E/F/G"
       ],
       [
-        "CHUK",
-        "HDAC3"
+        "TAPBP",
+        "HLA-A/B/C/D/E/F/G"
       ],
       [
-        "CHUK",
-        "NCOR2"
+        "HLA-A/B/C/D/E/F/G",
+        "TAPBP"
       ],
       [
-        "CHUK",
-        "RELA"
+        "B2M",
+        "TAPBP"
       ],
       [
-        "CHUK",
-        "NFKB2"
+        "CALR",
+        "TAPBP"
       ],
       [
-        "CHUK",
-        "IKBKB"
+        "PDIA3",
+        "TAPBP"
       ]
     ],
     "v2_without_legacy_pair": [
+      "['596', 'BCL2'] -[affects]-> ['NFKB1']",
+      "['596', 'BCL2'] -[affects]-> ['NFKB1']",
+      "['596', 'BCL2'] -[affects]-> ['NFKB1']",
+      "['596', 'BCL2'] -[affects]-> ['NFKB1']",
+      "['598', 'BCL2L1'] -[affects]-> ['NFKB1']",
+      "['598', 'BCL2L1'] -[affects]-> ['RELB']",
+      "['330', 'BIRC3'] -[affects]-> ['NCOR2']",
+      "['330', 'BIRC3'] -[affects]-> ['NFKB1']",
+      "['330', 'BIRC3'] -[affects]-> ['RELA']",
+      "['330', 'BIRC3'] -[affects]-> ['NCOR2']",
+      "['330', 'BIRC3'] -[affects]-> ['NFKB1']",
+      "['330', 'BIRC3'] -[affects]-> ['RELA']",
+      "['330', 'BIRC3'] -[affects]-> ['NFKB1']",
+      "['330', 'BIRC3'] -[affects]-> ['NFKB1']",
+      "['330', 'BIRC3'] -[affects]-> ['NFKB1']",
+      "['330', 'BIRC3'] -[affects]-> ['NFKB1']",
+      "['6363', 'CCL19'] -[affects]-> ['NFKB2']",
+      "['6363', 'CCL19'] -[affects]-> ['RELB']",
+      "['6347', 'CCL2'] -[affects]-> ['NFKB1']",
+      "['6347', 'CCL2'] -[affects]-> ['RELA']",
+      "['6352', 'CCL5'] -[affects]-> ['NFKB1']",
+      "['6352', 'CCL5'] -[affects]-> ['RELA']",
       "['1147', 'CHUK'] -[interacts_with]-> ['1147', 'CHUK']",
-      "['1147'] -[interacts_with]-> ['1147']",
-      "['1147'] -[interacts_with]-> ['1147']",
-      "['1147'] -[interacts_with]-> ['1147']",
-      "['4790'] -[interacts_with]-> ['4790']",
-      "['4790'] -[interacts_with]-> ['4790']",
-      "['4790'] -[interacts_with]-> ['4790']",
-      "['4790'] -[interacts_with]-> ['4790']",
-      "['4790'] -[interacts_with]-> ['4790']",
-      "['4790'] -[interacts_with]-> ['5966']",
-      "['4790'] -[interacts_with]-> ['5966']",
-      "['4790'] -[interacts_with]-> ['5966']",
-      "['4790'] -[interacts_with]-> ['5966']",
-      "['4790'] -[interacts_with]-> ['5966']",
-      "['4790'] -[interacts_with]-> ['5966']",
-      "['4790'] -[interacts_with]-> ['5966']",
-      "['4790'] -[interacts_with]-> ['5966']",
-      "['4790'] -[interacts_with]-> ['5966']",
-      "['4790'] -[interacts_with]-> ['5970']",
-      "['4790'] -[interacts_with]-> ['5970']",
-      "['4790'] -[interacts_with]-> ['5970']",
-      "['4790'] -[interacts_with]-> ['5970']",
-      "['4790'] -[interacts_with]-> ['5970']",
-      "['4790'] -[interacts_with]-> ['5970']",
-      "['4790'] -[interacts_with]-> ['5970']"
+      "['1147', 'CHUK'] -[interacts_with]-> ['1147', 'CHUK']",
+      "['1147', 'CHUK'] -[interacts_with]-> ['1147', 'CHUK']"
     ],
-    "v2_reversed_in_legacy": [],
+    "v2_reversed_in_legacy": [
+      "['9612', 'NCOR2'] -[interacts_with]-> ['RELA']",
+      "['9612', 'NCOR2'] -[interacts_with]-> ['RELA']",
+      "['4790', 'NFKB1'] -[interacts_with]-> ['64332', 'NFKBIZ']",
+      "['4790', 'NFKB1'] -[interacts_with]-> ['64332', 'NFKBIZ']",
+      "['4792', 'NFKBIA'] -[interacts_with]-> ['REL']",
+      "['4792', 'NFKBIA'] -[interacts_with]-> ['REL']",
+      "['4792', 'NFKBIA'] -[interacts_with]-> ['REL']",
+      "['4792', 'NFKBIA'] -[interacts_with]-> ['REL']"
+    ],
     "sign_disagreements": []
   },
   "files": [
     {
       "side": "v2",
       "url": "https://static-content.springer.com/esm/art%3A10.1186%2F1752-0509-4-63/MediaObjects/12918_2010_452_MOESM2_ESM.XLS",
-      "path": "/root/data/pypath-cache/macrophage/12918_2010_452_MOESM2_ESM.XLS",
+      "path": "/Users/jschaul/Library/Caches/pypath/macrophage/12918_2010_452_MOESM2_ESM.XLS",
       "size": 1222656,
       "sha256": "3967de9623e49929d0774f4d2f02edb8eac7cc0b48b84f6a5e278410e42f0f58",
-      "mtime": "2026-10-13"
+      "mtime": "2026-10-14"
     },
     {
       "side": "legacy",
       "url": "https://static-content.springer.com/esm/art%3A10.1186%2F1752-0509-4-63/MediaObjects/12918_2010_452_MOESM2_ESM.XLS",
-      "path": "/root/data/pypath-cache/macrophage/12918_2010_452_MOESM2_ESM.XLS",
+      "path": "/Users/jschaul/Library/Caches/pypath/macrophage/12918_2010_452_MOESM2_ESM.XLS",
       "size": 1222656,
       "sha256": "3967de9623e49929d0774f4d2f02edb8eac7cc0b48b84f6a5e278410e42f0f58",
-      "mtime": "2026-10-13"
+      "mtime": "2026-10-14"
     }
   ]
 }
