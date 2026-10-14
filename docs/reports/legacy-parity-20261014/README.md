@@ -152,7 +152,7 @@ stopped as well.
 | HPRD (enzyme-substrate) | 4,264 | 4,256 | 8 | 5 | – | nearly identical |
 | dbPTM | 1,107 | 1,100 | 7 | 1 | – | v2 better |
 | CA1 | 1,259 | 1,056 | 203 | 0 | 551 / 553 | intended gap; option |
-| **Macrophage** | 1,702 | 174 | 1,528 | 222 | – | **v2 drops complexes** |
+| **Macrophage** | 1,702 | 174 | 1,528 | 222 | – | **v2 leaves out complexes; decision** |
 | Guide to Pharmacology | 742 | 120 | 622 | – | 109 / 109 | identifiers spelled differently |
 
 - **HPRD**: legacy keeps the in vivo modifications by default; compared with
@@ -173,8 +173,14 @@ stopped as well.
   other partner; v2 emits no relation for these rows. The rows of two proteins
   are mapped correctly (591 of 690; the others name no gene, e.g. `MAP3K?`, or
   state no relation). The complex cells list their members' symbols and Gene IDs
-  (`ATM:CHUK:IKBKB:IKBKG`, `472:1147:3551:4214:23085`; the counts do not always
-  agree), so v2 could make them complexes of their members.
+  (`ATM:CHUK:IKBKB:IKBKG`, `472:1147:3551:4214:23085`): 161 of the 268
+  distinct cells have as many Gene IDs as symbols, 14 have fewer IDs, 93 have
+  none but symbols with the form in brackets (`NFKB1(p50):RELB`). The module
+  leaves them out deliberately: a complex cell sometimes lists all members and
+  sometimes only the member that takes part (a complex `NFKBIA` drawn as
+  `RELA (p65): NFKB1 (p50)`). A decision: keep them out, read the cells with
+  two or more members as complexes (some partial), or pair each member with
+  the partner as legacy does.
 - **Guide to Pharmacology**: legacy names a peptide ligand by its gene symbol
   (`TNFSF9`), v2 by its GtoP ligand, UniProt and Ensembl identifiers (P41273):
   the pair is there (checked for TNFSF9 and its receptor Q07011), but the
