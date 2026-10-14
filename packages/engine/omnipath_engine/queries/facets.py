@@ -134,28 +134,41 @@ class FacetsQueries:
             {term: filters[term] for term in RELATION_QUALIFIER_FILTERS}
         )
         queries = [
-            f"""SELECT 'base' kind, to_json(struct_pack(
+            (
+                f"""SELECT 'base' kind, to_json(struct_pack(
             category:=category, predicate:=predicate, subject_type:=subject_type, object_type:=object_type,
             taxon:=taxon, sign:=sign, sources:=sources, n:=count(*))) payload
             FROM matched WHERE {where_sql}
-            GROUP BY category, predicate, subject_type, object_type, taxon, sign, sources"""
+            GROUP BY category, predicate, subject_type, object_type, taxon, sign, sources""",
+                list(params),
+            )
         ]
-        query_params = list(params)
         for term in RELATION_QUALIFIER_FILTERS:
             qualifier_where, qualifier_params = self._relation_where(
                 {other: filters[other] for other in RELATION_QUALIFIER_FILTERS if other != term}
             )
-            queries.append(f"""SELECT 'qualifier' kind,
+            queries.append(
+                (
+                    f"""SELECT 'qualifier' kind,
                 to_json(struct_pack(term:='{term}', value:=value, n:=count(DISTINCT relation_key))) payload
                 FROM (SELECT relation_key, unnest({term}) AS value FROM matched WHERE {qualifier_where})
-                GROUP BY value""")
-            query_params.extend(qualifier_params)
+                GROUP BY value""",
+                    qualifier_params,
+                )
+            )
         materialization = "MATERIALIZED" if filters["entity_ids"] else "NOT MATERIALIZED"
-        combined = self._db.execute(
-            f"""WITH matched AS {materialization} ({matched})
-            {" UNION ALL ".join(queries)}""",
-            [*common_params, *query_params],
-        ).fetchall()
+        # One statement per part. Sent as one UNION ALL over the shared selection, the
+        # unfiltered counts of release 2026.10.14.1 (170 resources, 32.7 million relations)
+        # never finished in DuckDB 1.5.6: its executor waited for a task that never came,
+        # while each part alone took about 2 s.
+        combined = [
+            row
+            for query, query_params in queries
+            for row in self._db.execute(
+                f"WITH matched AS {materialization} ({matched}) {query}",
+                [*common_params, *query_params],
+            ).fetchall()
+        ]
         grouped = [
             tuple(
                 json.loads(raw)[key]
