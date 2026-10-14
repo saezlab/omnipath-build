@@ -87,6 +87,22 @@ def test_pins_queries_and_default_independent_of_mtime(setup):
     assert client.get("/releases").json()["default"] == "latest"
 
 
+def test_topic_map_follows_the_release(setup):
+    _, engine, client, _, _ = setup
+    for release in ("2026.08", "latest"):
+        catalog = client.get(f"/resources?shape=svelte&release={release}").json()["resources"]
+        expected = {}
+        for resource in catalog:
+            for tag in resource.get("tags") or []:
+                if tag["dimension"] == "topic":
+                    expected.setdefault(tag["id"], []).append(resource["resource_id"])
+        topics = client.get(f"/resources/topics?release={release}").json()["topics"]
+        assert {t["id"]: t["resources"] for t in topics} == {
+            k: sorted(v) for k, v in expected.items()
+        }
+        assert all(t["label"] for t in topics)
+
+
 def test_static_urls_pin_selected_resource_version(setup, monkeypatch):
     _, engine, client, _, _ = setup
     monkeypatch.setattr(engine, "public_data_url", "https://data.example.org")

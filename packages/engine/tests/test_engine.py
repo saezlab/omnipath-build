@@ -219,6 +219,50 @@ class TestInventoryHotReload(unittest.TestCase):
             listed = {item["key"]: item["relations_count"] for item in engine.list_resources()}
             self.assertEqual(listed["uniprot/v2"], 3)
 
+    def test_catalog_is_kept_until_the_data_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_resource(root, "uniprot", "v1", n_relations=1)
+            engine = ParquetServingEngine(data_root=root)
+            builds = []
+            build = engine._build_resource_catalog
+            engine._build_resource_catalog = lambda: builds.append(1) or build()
+            first = engine.list_resource_catalog()
+            self.assertEqual(engine.list_resource_catalog(), first)
+            self.assertEqual(len(builds), 1)
+            # A caller's change does not reach the kept catalog.
+            first[0]["version"] = "changed"
+            self.assertEqual(engine.list_resource_catalog()[0]["version"], "v1")
+            time.sleep(0.05)
+            _write_resource(root, "uniprot", "v2", n_relations=3)
+            catalog = engine.list_resource_catalog()
+            self.assertEqual(len(builds), 2)
+            self.assertEqual(catalog[0]["version"], "v2")
+            self.assertEqual(catalog[0]["interaction_count"], 3)
+            # So does a change of the query policy.
+            (root / "query_policy.json").write_text('{"disabled_resources": ["uniprot"]}')
+            self.assertFalse(engine.list_resource_catalog()[0]["queryable"])
+            self.assertEqual(len(builds), 3)
+
+    def test_topic_map_lists_each_topics_resources(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name in ("signor", "uniprot", "chebi"):
+                _write_resource(root, name, "v1", n_relations=1)
+            engine = ParquetServingEngine(data_root=root)
+            catalog = engine.list_resource_catalog()
+            expected = {}
+            for resource in catalog:
+                for tag in resource.get("tags") or []:
+                    if tag["dimension"] == "topic":
+                        expected.setdefault(tag["id"], set()).add(resource["resource_id"])
+            self.assertTrue(expected, "the fixture resources have topics")
+            topics = engine.list_resource_topics()
+            self.assertEqual({t["id"]: set(t["resources"]) for t in topics}, expected)
+            self.assertTrue(all(t["label"] and t["resources"] == sorted(t["resources"]) for t in topics))
+            sizes = [len(t["resources"]) for t in topics]
+            self.assertEqual(sizes, sorted(sizes, reverse=True))
+
     def test_skips_version_with_a_missing_table(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -87,6 +87,19 @@ class FacetsQueries:
         limit = payload.pop("taxonomyLimit", None)
         query = str(payload.pop("taxonomyQuery", "") or "").strip().casefold()
         items = self._cached_facets("relations", payload, resources, self._compute_relation_facets)
+        others = _without_sources(payload)
+        if others != payload:
+            # As in the entity filters, the sources are counted under every other filter but
+            # not under the source selection, so a source that is not selected keeps its count
+            # and stays listed. Without other filters these are the cached unfiltered counts.
+            unselected = self._cached_facets(
+                "relations", others, resources, self._compute_relation_facets
+            )
+            items = sorted(
+                [i for i in items if i["facetName"] != "source"]
+                + [i for i in unselected if i["facetName"] == "source"],
+                key=lambda i: (-i["scopedCount"], i["facetName"], i["facetValue"]),
+            )
         if limit is None:
             return items  # Existing API callers can still request the complete list.
         limit = max(1, min(int(limit), 10000))
@@ -332,3 +345,16 @@ class FacetsQueries:
             "sources": sorted(set(sources)),
             "interactionTypes": sorted(set(interaction_types)),
         }
+
+
+# The payload keys of the source selection (``filters.normalize_filters`` aliases).
+SOURCE_KEYS = ("sources", "resources")
+
+
+def _without_sources(payload: dict[str, Any]) -> dict[str, Any]:
+    """The payload without its source selection, at the top level and under ``filters``."""
+    out = {key: value for key, value in payload.items() if key not in SOURCE_KEYS or not value}
+    nested = out.get("filters")
+    if isinstance(nested, dict) and any(nested.get(key) for key in SOURCE_KEYS):
+        out["filters"] = {key: value for key, value in nested.items() if key not in SOURCE_KEYS}
+    return out

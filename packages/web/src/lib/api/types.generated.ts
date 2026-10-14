@@ -856,6 +856,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/resources/topics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Resource Topics
+         * @description The biological topics of the release, each with the resources that have it.
+         */
+        get: operations["list_resource_topics_resources_topics_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/resources/{resource_id}/download": {
         parameters: {
             query?: never;
@@ -2181,6 +2201,26 @@ export interface components {
             id: string;
             /** Label */
             label: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /** ResourceTopic */
+        ResourceTopic: {
+            /** Description */
+            description: string;
+            /** Id */
+            id: string;
+            /** Label */
+            label: string;
+            /** Resources */
+            resources?: string[];
+        } & {
+            [key: string]: unknown;
+        };
+        /** ResourceTopicsResponse */
+        ResourceTopicsResponse: {
+            /** Topics */
+            topics?: components["schemas"]["ResourceTopic"][];
         } & {
             [key: string]: unknown;
         };
@@ -4390,6 +4430,35 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_resource_topics_resources_topics_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResourceTopicsResponse"];
                 };
             };
             /** @description Internal Server Error */

@@ -122,6 +122,7 @@ class ParquetServingEngine(
         self._detail_cache = QueryCache(max_entries=256, max_bytes=32 * 1024**2)
         self._relationship_cache = QueryCache(max_entries=128, max_bytes=32 * 1024**2)
         self._example_cache = QueryCache(max_entries=16, max_bytes=1024**2)
+        self._catalog_cache = QueryCache(max_entries=8, max_bytes=64 * 1024**2)
         self._inventory = InventorySnapshot({}, {}, ())
         self._inventory_scope: ContextVar[InventorySnapshot | None] = ContextVar(
             "inventory_scope", default=None

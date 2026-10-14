@@ -157,6 +157,47 @@ class ResourcesQueries:
         return out
 
     def list_resource_catalog(self) -> list[dict[str, Any]]:
+        """The explorer catalog of the release in scope.
+
+        It reads every resource's files, build manifest and statistics (about 1 s for 171
+        resources), so it is kept until the data, the release, the query policy or the public
+        address of the files changes.
+        """
+        self._refresh_inventory_if_stale()
+        key = (
+            self._inventory_fingerprint,
+            json.dumps(self._release_scope.get(), sort_keys=True, default=str),
+            tuple(sorted(self._disabled_query_resources())),
+            getattr(self, "public_data_url", None),
+        )
+        return self._catalog_cache.get(key, self._build_resource_catalog)
+
+    def list_resource_topics(self) -> list[dict[str, Any]]:
+        """The topic tags of the catalog, each with the resources that have it.
+
+        What the topic blocks of the explorer need, without the rest of the catalog: the
+        topics with most resources first, their resources in name order.
+        """
+        topics: dict[str, dict[str, Any]] = {}
+        for resource in self.list_resource_catalog():
+            for tag in resource.get("tags") or []:
+                if tag.get("dimension") != "topic":
+                    continue
+                topic = topics.setdefault(
+                    tag["id"],
+                    {
+                        "id": tag["id"],
+                        "label": tag["label"],
+                        "description": tag.get("description", ""),
+                        "resources": [],
+                    },
+                )
+                topic["resources"].append(resource["resource_id"])
+        for topic in topics.values():
+            topic["resources"].sort()
+        return sorted(topics.values(), key=lambda t: (-len(t["resources"]), t["label"]))
+
+    def _build_resource_catalog(self) -> list[dict[str, Any]]:
         catalog: list[dict[str, Any]] = []
         disabled = self._disabled_query_resources()
         for info in self._selected_resource_infos(include_disabled=True):

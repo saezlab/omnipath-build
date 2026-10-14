@@ -3213,6 +3213,51 @@
         "title": "ResourceTag",
         "type": "object"
       },
+      "ResourceTopic": {
+        "additionalProperties": true,
+        "properties": {
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "resources": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Resources",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "description"
+        ],
+        "title": "ResourceTopic",
+        "type": "object"
+      },
+      "ResourceTopicsResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "topics": {
+            "items": {
+              "$ref": "#/components/schemas/ResourceTopic"
+            },
+            "title": "Topics",
+            "type": "array"
+          }
+        },
+        "title": "ResourceTopicsResponse",
+        "type": "object"
+      },
       "ResourcesResponse": {
         "additionalProperties": true,
         "properties": {
@@ -6676,6 +6721,38 @@
           }
         },
         "summary": "Download Resources",
+        "tags": [
+          "resources"
+        ]
+      }
+    },
+    "/resources/topics": {
+      "get": {
+        "description": "The biological topics of the release, each with the resources that have it.",
+        "operationId": "list_resource_topics_resources_topics_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResourceTopicsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "List Resource Topics",
         "tags": [
           "resources"
         ]

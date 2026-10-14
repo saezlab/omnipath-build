@@ -87,6 +87,28 @@ def test_facets_ignore_own_selection_but_keep_other_filters(engine):
     assert engine.get_scoped_relation_facets({"relation_categories": ["ontology"]}) == []
 
 
+def test_sources_are_counted_without_the_source_selection(engine):
+    # Like the entity filters: a source that is not selected keeps its count, every other
+    # filter still applies, and the other facets follow the selection.
+    everything = engine.get_scoped_relation_facets({})
+    sources = {f["facetValue"]: f["scopedCount"] for f in everything if f["facetName"] == "source"}
+    chosen = sorted(sources)[0]
+    for payload in ({"sources": [chosen]}, {"filters": {"sources": [chosen]}}, {"resources": [chosen]}):
+        facets = engine.get_scoped_relation_facets(payload)
+        assert {f["facetValue"]: f["scopedCount"] for f in facets if f["facetName"] == "source"} == sources
+        assert [f for f in facets if f["facetName"] != "source"] == [
+            f for f in engine._compute_relation_facets({"sources": [chosen]}) if f["facetName"] != "source"
+        ]
+    filtered = {"object_direction_qualifier": ["decreased"]}
+    expected = {
+        f["facetValue"]: f["scopedCount"]
+        for f in engine.get_scoped_relation_facets(filtered)
+        if f["facetName"] == "source"
+    }
+    facets = engine.get_scoped_relation_facets({**filtered, "sources": [chosen]})
+    assert {f["facetValue"]: f["scopedCount"] for f in facets if f["facetName"] == "source"} == expected
+
+
 def test_export_uses_same_qualifier_filter(engine):
     data, _ = engine.export_slice(filters={"object_direction_qualifier": ["decreased"]})
     assert pq.read_table(io.BytesIO(data))["relation_key"].to_pylist() == ["b"]

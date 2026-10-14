@@ -8,6 +8,7 @@ from omnipath_api.models import (
     ResourceDownloadRequest,
     ResourceFilesResponse,
     ResourcesResponse,
+    ResourceTopicsResponse,
 )
 from fastapi import APIRouter
 from omnipath_api.routers.common import _call, _zip_files
@@ -39,6 +40,12 @@ def list_resources(
     else:
         resources = _call(request, "list_resources")
     return {"resources": resources}
+
+
+@router.get("/resources/topics", response_model=ResourceTopicsResponse, tags=["resources"])
+def list_resource_topics(request: Request) -> dict[str, Any]:
+    """The biological topics of the release, each with the resources that have it."""
+    return {"topics": _call(request, "list_resource_topics")}
 
 
 @router.post("/resources/download", tags=["resources"], response_model=None)

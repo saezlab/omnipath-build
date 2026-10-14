@@ -466,6 +466,17 @@ class ResourcesResponse(APIModel):
     resources: list[ResourceRecord] = Field(default_factory=list)
 
 
+class ResourceTopic(APIModel):
+    id: str
+    label: str
+    description: str
+    resources: list[str] = Field(default_factory=list)
+
+
+class ResourceTopicsResponse(APIModel):
+    topics: list[ResourceTopic] = Field(default_factory=list)
+
+
 class ResourceFilesResponse(APIModel):
     resource_id: str
     version: str | None = None
