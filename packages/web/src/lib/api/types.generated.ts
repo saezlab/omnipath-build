@@ -2339,6 +2339,8 @@ export interface components {
             object_aspect_qualifier?: string[];
             /** Object Direction Qualifier */
             object_direction_qualifier?: string[];
+            /** Partner Types */
+            partner_types?: string[];
             /** Predicates */
             predicates?: string[];
             /** Protein Entity Keys */

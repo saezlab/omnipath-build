@@ -357,6 +357,7 @@ export async function fetchScopedRelationFacetCounts(
     object_direction_qualifier?: string[];
     causal_mechanism_qualifier?: string[];
     interactionTypes?: string[];
+    partnerTypes?: string[];
     sources?: string[];
     taxonomyIds?: string[];
     taxonomyLimit?: number;

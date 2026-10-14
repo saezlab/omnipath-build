@@ -22,6 +22,7 @@
   import { IsMobile } from '$lib/hooks/is-mobile.svelte';
   import { getUiPreferences } from '$lib/stores/ui-preferences.svelte';
   import { fetchRelationsSearch, fetchTopHit, type TopHit } from '$lib/api/client';
+  import { formatNumber } from '$lib/utils/format';
   import type { EntityLike } from '$lib/domain/display';
   import type { SearchFilters } from '$lib/types/search';
   import type { InteractionListRow } from '$lib/types/interactions';
@@ -55,6 +56,8 @@
   let loading = $state(true);
   let loadingMore = $state(false);
   let hasMore = $state(true);
+  // The relations matching the current scope and filters (the filter panels show totals).
+  let total = $state<number | null>(null);
   let offset = $state(0);
   let error = $state<string | null>(null);
   let selectedInteraction = $state<InteractionListRow | null>(null);
@@ -180,6 +183,7 @@
     hasMore = true;
     loading = true;
     error = null;
+    total = null;
 
     if (resolvingQueryEntities) {
       return;
@@ -205,6 +209,7 @@
         const hits = rowsFromSearch(data);
 
         results = hits;
+        total = typeof data.total === 'number' ? data.total : hits.length;
         hasMore = hits.length === RESULTS_PER_PAGE;
         offset = RESULTS_PER_PAGE;
       } catch (err) {
@@ -356,6 +361,11 @@
 {/snippet}
 
 {#snippet resultsActions()}
+  {#if total !== null}
+    <span class="text-xs text-muted-foreground tabular-nums" aria-live="polite"
+      >{formatNumber(total)} relations</span
+    >
+  {/if}
   <ExportMenu
     endpoint="/export"
     body={{ filters: exportFilters }}

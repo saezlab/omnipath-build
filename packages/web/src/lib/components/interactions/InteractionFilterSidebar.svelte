@@ -12,7 +12,7 @@
   import { fetchScopedRelationFacetCounts } from '$lib/api/client';
   import { getIdentifierTypeLabel, getRelationPredicateLabel } from '$lib/domain/display';
   import { getEntityTypeEmoji } from '$lib/utils/entity-types';
-  import { splitEmptyOptions } from '$lib/utils/facets';
+  import { selectedFirst, splitEmptyOptions } from '$lib/utils/facets';
   import { truncateTitle } from '$lib/actions/truncate-title';
   import { formatNumber } from '$lib/utils/format';
 
@@ -85,13 +85,9 @@
         endpointMode: scopeEndpointMode,
         mode: scopeMode,
         annotationTermIds: scopedAnnotationIds?.length ? scopedAnnotationIds : undefined,
-        predicates: filters.predicates,
-        relation_categories: filters.relation_categories,
-        object_aspect_qualifier: filters.object_aspect_qualifier,
-        object_direction_qualifier: filters.object_direction_qualifier,
-        causal_mechanism_qualifier: filters.causal_mechanism_qualifier,
-        interactionTypes: filters.interaction_types,
-        sources: filters.sources,
+        // The counts are those of the scope without the filters of the panels (the results
+        // show the live count), so a filter change asks for nothing new; the chosen taxa are
+        // sent so that they stay listed.
         taxonomyIds: filters.taxonomy_ids,
       },
     ]),
@@ -199,6 +195,43 @@
     }, 0),
   );
 
+  // Participant types: one chosen type keeps the relations with that type at either end; a
+  // second keeps the pair (protein and chemical: protein-chemical). Once a type is chosen, a
+  // second row of it appears under it, for the pair of that type with itself (protein-protein).
+  const firstType = $derived(filters.interaction_types?.[0]);
+  const secondType = $derived(firstType ? filters.partner_types?.[0] : undefined);
+  const participantRows = $derived.by(() => {
+    const rest = interactionTypeOptions.filter((type) => type !== firstType && type !== secondType);
+    if (!firstType) return interactionTypeOptions.map((type) => ({ type, second: false }));
+    return [
+      { type: firstType, second: false },
+      { type: firstType, second: true },
+      ...(secondType && secondType !== firstType ? [{ type: secondType, second: true }] : []),
+      ...rest.map((type) => ({ type, second: true })),
+    ];
+  });
+  function participantCount(type: string, second: boolean): number | undefined {
+    if (!firstType || !second) return getCount('participant_type', type);
+    return getCount('participant_pair', [firstType, type].sort().join('|')) ?? 0;
+  }
+  function toggleParticipant(type: string, second: boolean) {
+    let first = firstType;
+    let partner = secondType;
+    if (!second) {
+      // The first type: choosing it, or clearing it (the second takes its place).
+      if (first === type)
+        [first, partner] = [partner && partner !== type ? partner : undefined, undefined];
+      else first = type;
+    } else {
+      partner = partner === type ? undefined : type;
+    }
+    onFilterChange({
+      ...filters,
+      interaction_types: first ? [first] : undefined,
+      partner_types: first && partner ? [partner] : undefined,
+    });
+  }
+
   function handleArrayToggle(filterKey: keyof SearchFilters, value: string) {
     const currentValues = (filters[filterKey] as string[] | undefined) || [];
     const newValues = currentValues.includes(value)
@@ -249,7 +282,11 @@
       qualifierOptions[key] || [],
       (value) => getCount(key, value) ?? 0,
       (value) => selected.includes(value),
-    ).shown.sort((a, b) => (getCount(key, b) ?? 0) - (getCount(key, a) ?? 0));
+    ).shown.sort(
+      (a, b) =>
+        Number(selected.includes(b)) - Number(selected.includes(a)) ||
+        (getCount(key, b) ?? 0) - (getCount(key, a) ?? 0),
+    );
   }
   const directionValues = $derived(qualifierValues('object_direction_qualifier'));
   const aspectValues = $derived(qualifierValues('object_aspect_qualifier'));
@@ -368,7 +405,7 @@
                   <div
                     class="space-y-1 max-h-64 overflow-y-auto pr-2 {isDefaultOnly ? '' : 'pl-4'}"
                   >
-                    {#each predicates as predicate}
+                    {#each selectedFirst( predicates, (predicate) => (filters.predicates || []).includes(predicate) ) as predicate}
                       {@render filterOptionRow(
                         'predicates',
                         predicate,
@@ -486,17 +523,19 @@
               Object.keys(predicatesByCategory).length === 0,
             )}{/if}
           <div class="space-y-1 max-h-64 overflow-y-auto pr-2">
-            {#each interactionTypeOptions as option}
-              {@const participantType = formatParticipantType(option)}
-              {@render filterOptionRow(
-                'interaction_types',
-                option,
-                participantType.label,
-                filters.interaction_types || [],
-                () => handleArrayToggle('interaction_types', option),
-                participantType.icon,
-                getCount('participant_type', option),
-              )}
+            {#each participantRows as row (`${row.type}:${row.second}`)}
+              {@const participantType = formatParticipantType(row.type)}
+              <div class={row.second && row.type === firstType ? 'pl-5' : ''}>
+                {@render filterOptionRow(
+                  row.second ? 'partner_types' : 'interaction_types',
+                  row.type,
+                  participantType.label,
+                  row.second ? (secondType ? [secondType] : []) : firstType ? [firstType] : [],
+                  () => toggleParticipant(row.type, row.second),
+                  participantType.icon,
+                  participantCount(row.type, row.second),
+                )}
+              </div>
             {/each}
           </div>
         </div>
@@ -546,7 +585,7 @@
               class="mb-2 w-full rounded border px-2 py-1 text-sm"
               bind:value={taxonomyDraft}
             />
-            {#each taxonomyOptions as option}
+            {#each selectedFirst( taxonomyOptions, (option) => (filters.taxonomy_ids || []).includes(option) ) as option}
               {@render filterOptionRow(
                 'taxonomy_ids',
                 option,

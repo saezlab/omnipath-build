@@ -5,6 +5,7 @@
   import ExploreBrowserShell from '$lib/components/explore/ExploreBrowserShell.svelte';
   import EntitiesExploreTab from '$lib/components/explore/EntitiesExploreTab.svelte';
   import RelationsExploreTab from '$lib/components/explore/RelationsExploreTab.svelte';
+  import AppliedFilters from '$lib/components/explore/AppliedFilters.svelte';
   import SelectionSheet from '$lib/components/selection/SelectionSheet.svelte';
   import { getSelectionStore } from '$lib/stores/selection.svelte';
   import type { SearchFilters } from '$lib/types/search';
@@ -124,16 +125,16 @@
   bind:searchInputRef={inputRef}
 >
   {#snippet content()}
-    {#if sourceScope.length}
-      <div class="mb-3 flex flex-wrap items-center gap-2 text-sm">
-        <span>Resources: {sourceScope.join(', ')}</span>
-        <button
-          class="text-primary underline"
-          onclick={() => updateFilters({ ...entityFilters, sources: [] })}
-          >Clear resource scope</button
-        >
-      </div>
-    {/if}
+    <AppliedFilters
+      filters={tab === 'entity' ? entityMatchFilters : interactionMatchFilters}
+      onClear={(keys) => {
+        const next: SearchFilters = {
+          ...(tab === 'entity' ? entityMatchFilters : interactionMatchFilters),
+        };
+        for (const key of keys) delete next[key];
+        updateFilters(next, tab === 'relations');
+      }}
+    />
     {#if tab === 'entity'}
       <EntitiesExploreTab
         {query}
