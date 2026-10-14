@@ -133,6 +133,58 @@ ComplexPortal (PSI-MI XML vs ComplexTAB) and Matrisome (the rescued 2014 XLS vs
 the current Google Sheet) read different files. These need the served-level
 comparison against the legacy web service instead.
 
+## Second batch: thirteen more resources
+
+Same method; the results are the JSON files of the same names. A legacy input
+that downloads with `requests` or `urllib` instead of `Curl` (KEA did) is now
+stopped as well.
+
+| Resource | Legacy pairs | Found in v2 | Only legacy | Only v2 | Signs agree | Verdict |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| ARN | 95 | 95 | 0 | 0 | 28 / 28 | identical |
+| NRF2ome | 109 | 109 | 0 | 0 | 41 / 41 | identical |
+| Li2012 | 185 | 185 | 0 | 0 | – | identical |
+| PhosphoNetworks | 1,821 | 1,821 | 0 | 0 | – | identical |
+| PhosphoPoint | 9,269 | 9,269 | 0 | 0 | – | identical |
+| Ramilowski2015 | 1,894 | 1,894 | 0 | 0 | – | identical |
+| LRdb | 3,239 | 3,239 | 0 | 0 | – | identical |
+| CellTalkDB | 3,398 | 3,398 | 0 | 0 | – | identical |
+| HPRD (enzyme-substrate) | 4,264 | 4,256 | 8 | 5 | – | nearly identical |
+| dbPTM | 1,107 | 1,100 | 7 | 1 | – | v2 better |
+| CA1 | 1,259 | 1,056 | 203 | 0 | 551 / 553 | intended gap; option |
+| **Macrophage** | 1,702 | 174 | 1,528 | 222 | – | **v2 drops complexes** |
+| Guide to Pharmacology | 742 | 120 | 622 | – | 109 / 109 | identifiers spelled differently |
+
+- **HPRD**: legacy keeps the in vivo modifications by default; compared with
+  the in vitro ones included, as v2 has them. 8 pairs are left, a few
+  transglutaminase and amidation records whose enzyme the two sides name
+  differently; not traced further.
+- **dbPTM**: legacy keeps enzyme cells such as `MAPK1 OR MAPK3` as one name;
+  v2 splits them.
+- **CA1**: components without an accession (`CALCIUM`, `PIP2`, `IP3`, `cAMP`,
+  `cGMP`, `SEROTONIN`, `GLYCINE`, `GLUTAMATE`, ions, DNA elements) are not
+  emitted by v2, on purpose: the table has no identifier for them. Legacy keeps
+  the names, but legacy OmniPath could not map them either. The table's
+  Function column says what they are (Messenger, Lipid, Ligand, Ion), so about
+  250 links with small molecules could be added with a table of ChEBI terms, as
+  for CellChat.
+- **Macrophage**: 1,075 of the 2,024 rows of the sheet have a complex on one
+  side or both. Legacy splits a complex into its genes and pairs each with the
+  other partner; v2 emits no relation for these rows. The rows of two proteins
+  are mapped correctly (591 of 690; the others name no gene, e.g. `MAP3K?`, or
+  state no relation). The complex cells list their members' symbols and Gene IDs
+  (`ATM:CHUK:IKBKB:IKBKG`, `472:1147:3551:4214:23085`; the counts do not always
+  agree), so v2 could make them complexes of their members.
+- **Guide to Pharmacology**: legacy names a peptide ligand by its gene symbol
+  (`TNFSF9`), v2 by its GtoP ligand, UniProt and Ensembl identifiers (P41273):
+  the pair is there (checked for TNFSF9 and its receptor Q07011), but the
+  comparison cannot see it. Legacy also keeps only human targets.
+
+Not comparable on the same file: DIP (legacy reads another release), SPIKE
+(legacy translates to UniProt), phospho.ELM, MIMP, iPTMnet and HPMR (legacy
+reads further files). KEA and ICELLNET: the legacy function fails inside
+(`generator raised StopIteration`).
+
 ## How far this reaches
 
 Of the 173 inputs_v2 modules, 99 read at least one file under a URL that a

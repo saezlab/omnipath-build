@@ -210,6 +210,19 @@ def setup(scratch: Path) -> None:
 
     curl.Curl.__init__ = cached_curl_init
 
+    # Some legacy inputs download with requests or urllib instead of Curl.
+    import requests.adapters
+    import urllib.request
+
+    def no_download(*args, **_kwargs):
+        # HTTPAdapter.send(self, request, ...) or urlopen(url_or_request, ...)
+        request = args[1] if len(args) > 1 else args[0] if args else None
+        url = getattr(request, 'url', None) or getattr(request, 'full_url', None) or request
+        raise NotCached(f'legacy download outside Curl: {url}')
+
+    requests.adapters.HTTPAdapter.send = no_download
+    urllib.request.urlopen = no_download
+
 
 # Keys ----------------------------------------------------------------------
 
@@ -234,7 +247,14 @@ def tokens(value: Any) -> frozenset[str]:
 
 
 def id_tokens(values: Iterable[Any]) -> frozenset[str]:
-    return frozenset().union(*(tokens(v) for v in values)) if values else frozenset()
+    """Spellings of several identifiers; a list among them is its items."""
+    out = set()
+    for value in values or ():
+        if isinstance(value, (list, tuple, set, frozenset)):
+            out |= id_tokens(value)
+        else:
+            out |= tokens(value)
+    return frozenset(out)
 
 
 def sign_of(value: Any) -> str | None:
@@ -639,6 +659,33 @@ def _v2_cellphonedb_roles():
             yield (row[key], row['role'])
 
 
+def _legacy_rel(module: str, function: str, subject, object_, sign=None, **kwargs):
+    """A legacy function's records as pairs: subject, object and sign are
+    attribute names (or callables of the record)."""
+
+    def get(rec, field):
+        if callable(field):
+            return field(rec)
+        return rec[field] if isinstance(rec, dict) else getattr(rec, field)
+
+    def run():
+        import importlib
+
+        records = getattr(importlib.import_module(f'pypath.inputs.{module}'), function)(**kwargs)
+        for rec in records:
+            yield Rel(
+                id_tokens(get(rec, f) for f in _fields(subject)),
+                id_tokens(get(rec, f) for f in _fields(object_)),
+                sign_of(get(rec, sign)) if sign else None,
+            )
+
+    return run
+
+
+def _fields(spec) -> tuple:
+    return spec if isinstance(spec, tuple) else (spec,)
+
+
 def _cellchat():
     from pypath.inputs import cellchatdb
     from pypath.inputs_v2.cellchat import metabolite
@@ -759,6 +806,97 @@ spec(
     'matrisome', 'annotation', _matrisome, _v2_matrisome,
     serve='matrisome',
     note='Legacy reads the rescued XLS master list; inputs_v2 reads the current XLSX.',
+)
+
+
+spec(
+    'ca1', 'relation',
+    _legacy_rel('ca1', 'ca1_interactions', ('genesymbol_source', 'uniprot_source'),
+                ('genesymbol_target', 'uniprot_target'), 'effect'),
+    lambda: v2_relations(datasets('ca1', 'interactions')()),
+    serve='ca1',
+)
+spec(
+    'arn', 'relation',
+    _legacy_rel('netbiol', 'arn_interactions', 'source_uniprot', 'target_uniprot', 'effect'),
+    lambda: v2_relations(datasets('arn', 'interactions')()),
+    serve='arn',
+)
+spec(
+    'nrf2ome', 'relation',
+    _legacy_rel('netbiol', 'nrf2ome_interactions', 'source_uniprot', 'target_uniprot', 'effect'),
+    lambda: v2_relations(datasets('nrf2ome', 'interactions')()),
+    serve='nrf2ome',
+)
+spec(
+    'macrophage', 'relation',
+    _legacy_rel('macrophage', 'macrophage_interactions', 'source_genesymbol', 'target_genesymbol'),
+    lambda: v2_relations(datasets('macrophage', 'interactions')()),
+    serve='macrophage',
+)
+spec(
+    'hprd', 'relation',
+    _legacy_rel('hprd', 'hprd_enzyme_substrate', 'kinase', ('substrate', 'substrate_refseqp'),
+                in_vivo=False),
+    lambda: v2_relations(datasets('hprd', 'enzyme_substrate')()),
+    serve='hprd',
+    note='Enzyme-substrate pairs, legacy with the in vitro ones as inputs_v2; legacy gives no sign.',
+)
+spec(
+    'li2012', 'relation',
+    _legacy_rel('li2012', 'li2012_enzyme_substrate', 'kinase', 'substrate'),
+    lambda: v2_relations(datasets('li2012', 'kinase_substrate')()),
+    serve='li2012',
+)
+spec(
+    'phosphonetworks', 'relation',
+    _legacy_rel('phosphonetworks', 'phosphonetworks_enzyme_substrate', 'kinase', 'substrate'),
+    lambda: v2_relations(datasets('phosphonetworks', 'enzyme_substrate')()),
+    serve='phosphonetworks',
+)
+spec(
+    'phosphopoint', 'relation',
+    _legacy_rel('phosphopoint', 'phosphopoint_interactions',
+                ('source_genesymbol', 'source_entrez'), ('target_genesymbol', 'target_entrez')),
+    lambda: v2_relations(datasets('phosphopoint', 'interactions', 'enzyme_substrate')()),
+    serve='phosphopoint',
+    note='inputs_v2 splits the pairs into interactions and enzyme-substrate by category.',
+)
+spec(
+    'dbptm', 'relation',
+    lambda: (
+        r for r in _legacy_rel('dbptm', 'dbptm_enzyme_substrate', 'kinase', 'substrate')()
+        if r.subject
+    ),
+    lambda: v2_relations(datasets('dbptm', 'enzyme_substrate')()),
+    serve='dbptm',
+    note='Legacy records with an enzyme; legacy also lists the PTM sites without one.',
+)
+spec(
+    'guidetopharma', 'relation',
+    _legacy_rel('guide2pharma', 'guide2pharma_interactions', 'ligand', 'target', 'effect',
+                endogenous=False),
+    lambda: v2_relations(datasets('guidetopharma', 'interactions')()),
+    serve='guidetopharma',
+    note='Legacy with all ligands, not only endogenous ones; human.',
+)
+spec(
+    'ramilowski2015', 'relation',
+    _legacy_rel('ramilowski2015', 'ramilowski_interactions', 'ligand', 'receptor'),
+    lambda: v2_relations(datasets('ramilowski2015', 'interactions')()),
+    serve='ramilowski2015',
+)
+spec(
+    'lrdb', 'relation',
+    _legacy_rel('lrdb', 'lrdb_interactions', 'ligand_genesymbol', 'receptor_genesymbol'),
+    lambda: v2_relations(datasets('lrdb', 'interactions')()),
+    serve='lrdb',
+)
+spec(
+    'celltalkdb', 'relation',
+    _legacy_rel('celltalkdb', 'celltalkdb_interactions', 'ligand_genesymbol', 'receptor_genesymbol'),
+    lambda: v2_relations(datasets('celltalkdb', 'human_interactions')()),
+    serve='celltalkdb',
 )
 
 

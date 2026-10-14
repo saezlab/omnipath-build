@@ -1,0 +1,177 @@
+{
+  "resource": "macrophage",
+  "kind": "relation",
+  "note": "",
+  "v2_seconds": 0.6,
+  "legacy_seconds": 0.1,
+  "legacy_pairs": 1702,
+  "legacy_pairs_found_in_v2": 174,
+  "legacy_pairs_missing_in_v2": 1528,
+  "missing_by_ids_known_to_v2": {
+    "both": 197,
+    "one": 185,
+    "neither": 1146
+  },
+  "v2_relations": 591,
+  "v2_relations_without_legacy_pair": 222,
+  "v2_relations_reversed_in_legacy": 0,
+  "v2_signs": {
+    "None": 542,
+    "+": 26,
+    "-": 23
+  },
+  "signs_compared": 0,
+  "signs_agree": 0,
+  "signs_disagree": 0,
+  "samples": {
+    "legacy_missing_in_v2": [
+      [
+        "ATM",
+        "MAP3K?"
+      ],
+      [
+        "ATM",
+        "NFKBIA"
+      ],
+      [
+        "CHUK",
+        "NFKBIA"
+      ],
+      [
+        "IKBKB",
+        "NFKBIA"
+      ],
+      [
+        "IKBKG",
+        "NFKBIA"
+      ],
+      [
+        "ATM",
+        "CHUK"
+      ],
+      [
+        "ATM",
+        "ERC1"
+      ],
+      [
+        "IKBKG",
+        "ERC1"
+      ],
+      [
+        "ATM",
+        "IKBKB"
+      ],
+      [
+        "BCL3",
+        "NFKB1"
+      ],
+      [
+        "BCL3",
+        "NFKB2"
+      ],
+      [
+        "CDC37",
+        "IKBKB"
+      ],
+      [
+        "CDC37",
+        "IKBKG"
+      ],
+      [
+        "CDC37",
+        "CHUK"
+      ],
+      [
+        "CDC37",
+        "ERC1"
+      ],
+      [
+        "HSP90AA1",
+        "IKBKB"
+      ],
+      [
+        "HSP90AA1",
+        "IKBKG"
+      ],
+      [
+        "HSP90AA1",
+        "CHUK"
+      ],
+      [
+        "HSP90AA1",
+        "ERC1"
+      ],
+      [
+        "CHUK",
+        "NFKB1"
+      ],
+      [
+        "CHUK",
+        "HDAC3"
+      ],
+      [
+        "CHUK",
+        "NCOR2"
+      ],
+      [
+        "CHUK",
+        "RELA"
+      ],
+      [
+        "CHUK",
+        "NFKB2"
+      ],
+      [
+        "CHUK",
+        "IKBKB"
+      ]
+    ],
+    "v2_without_legacy_pair": [
+      "['1147', 'CHUK'] -[interacts_with]-> ['1147', 'CHUK']",
+      "['1147'] -[interacts_with]-> ['1147']",
+      "['1147'] -[interacts_with]-> ['1147']",
+      "['1147'] -[interacts_with]-> ['1147']",
+      "['4790'] -[interacts_with]-> ['4790']",
+      "['4790'] -[interacts_with]-> ['4790']",
+      "['4790'] -[interacts_with]-> ['4790']",
+      "['4790'] -[interacts_with]-> ['4790']",
+      "['4790'] -[interacts_with]-> ['4790']",
+      "['4790'] -[interacts_with]-> ['5966']",
+      "['4790'] -[interacts_with]-> ['5966']",
+      "['4790'] -[interacts_with]-> ['5966']",
+      "['4790'] -[interacts_with]-> ['5966']",
+      "['4790'] -[interacts_with]-> ['5966']",
+      "['4790'] -[interacts_with]-> ['5966']",
+      "['4790'] -[interacts_with]-> ['5966']",
+      "['4790'] -[interacts_with]-> ['5966']",
+      "['4790'] -[interacts_with]-> ['5966']",
+      "['4790'] -[interacts_with]-> ['5970']",
+      "['4790'] -[interacts_with]-> ['5970']",
+      "['4790'] -[interacts_with]-> ['5970']",
+      "['4790'] -[interacts_with]-> ['5970']",
+      "['4790'] -[interacts_with]-> ['5970']",
+      "['4790'] -[interacts_with]-> ['5970']",
+      "['4790'] -[interacts_with]-> ['5970']"
+    ],
+    "v2_reversed_in_legacy": [],
+    "sign_disagreements": []
+  },
+  "files": [
+    {
+      "side": "v2",
+      "url": "https://static-content.springer.com/esm/art%3A10.1186%2F1752-0509-4-63/MediaObjects/12918_2010_452_MOESM2_ESM.XLS",
+      "path": "/root/data/pypath-cache/macrophage/12918_2010_452_MOESM2_ESM.XLS",
+      "size": 1222656,
+      "sha256": "3967de9623e49929d0774f4d2f02edb8eac7cc0b48b84f6a5e278410e42f0f58",
+      "mtime": "2026-10-13"
+    },
+    {
+      "side": "legacy",
+      "url": "https://static-content.springer.com/esm/art%3A10.1186%2F1752-0509-4-63/MediaObjects/12918_2010_452_MOESM2_ESM.XLS",
+      "path": "/root/data/pypath-cache/macrophage/12918_2010_452_MOESM2_ESM.XLS",
+      "size": 1222656,
+      "sha256": "3967de9623e49929d0774f4d2f02edb8eac7cc0b48b84f6a5e278410e42f0f58",
+      "mtime": "2026-10-13"
+    }
+  ]
+}
