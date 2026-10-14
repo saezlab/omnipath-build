@@ -21,6 +21,7 @@
   } from '$lib/components/ui/sheet/index.js';
   import EntityGroups from '$lib/components/explore/EntityGroups.svelte';
   import GroupToggle from '$lib/components/explore/GroupToggle.svelte';
+  import TopicSourcePicker from './TopicSourcePicker.svelte';
   import EntityDetailsDialog from '$lib/components/entity/EntityDetailsDialog.svelte';
   import {
     fetchEntityExamples,
@@ -404,7 +405,7 @@
       )}</WorkspacePanel
     >
     <WorkspacePanel id="sources" title="Sources" busy={facetCountsLoading}
-      >{@render filterSection(
+      >{@render topicCards()}{@render filterSection(
         'Data Sources',
         'sources',
         sourceOptions,
@@ -442,6 +443,7 @@
       () => {},
       mobile ? undefined : handleClearFilters,
     )}
+    {@render topicCards()}
     {@render filterSection(
       'Data Sources',
       'sources',
@@ -539,6 +541,15 @@
       <p class="text-sm text-muted-foreground">Loading filters…</p>
     </div>
   {/if}
+{/snippet}
+
+<!-- Topic cards that select the sources of a topic. -->
+{#snippet topicCards()}
+  <TopicSourcePicker
+    selected={filters.sources || []}
+    available={sourceOptions.map((option) => option.value)}
+    onChange={(sources) => handleFilterChange({ sources: sources.length ? sources : undefined })}
+  />
 {/snippet}
 
 {#snippet groupToggle()}

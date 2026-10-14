@@ -5,6 +5,7 @@
   import { page as currentPage } from '$app/state';
   import { formatTaxonomy } from '$lib/utils/taxonomy';
   import { Button } from '$lib/components/ui/button/index.js';
+  import TopicSourcePicker from '$lib/components/explore/TopicSourcePicker.svelte';
   import { Checkbox } from '$lib/components/ui/checkbox/index.js';
   import { Label } from '$lib/components/ui/label/index.js';
   import type { SearchFilters } from '$lib/types/search';
@@ -507,6 +508,13 @@
             'Sources',
             Object.keys(predicatesByCategory).length === 0 && interactionTypeOptions.length === 0,
           )}{/if}
+        <!-- Topic cards that select the sources of a topic. -->
+        <TopicSourcePicker
+          selected={filters.sources || []}
+          available={sourceOptions}
+          onChange={(sources) =>
+            onFilterChange({ ...filters, sources: sources.length ? sources : undefined })}
+        />
         <div class="space-y-1 max-h-64 overflow-y-auto pr-2">
           {#each sourceSplit.shown as option}
             {@render filterOptionRow(

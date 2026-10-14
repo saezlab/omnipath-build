@@ -9,6 +9,10 @@
   import * as Table from '$lib/components/ui/table/index.js';
   import ResourceRow from '$lib/components/resources/ResourceRow.svelte';
   import ResourceDetailsDialog from '$lib/components/resources/ResourceDetailsDialog.svelte';
+  // Topic cards above the list; they replace the topic group of the filters.
+  import TopicBlocks from '$lib/components/resources/TopicBlocks.svelte';
+  import TopicDownloadDialog from '$lib/components/resources/TopicDownloadDialog.svelte';
+  import type { ResourceTag } from '$lib/resources/types';
   import type { ResourceRecord } from '$lib/resources/types';
   import {
     defaultDirection,
@@ -27,6 +31,8 @@
   let showFilters = $state(false);
   let detailsResource = $state<ResourceRecord | null>(null);
   let detailsOpen = $state(false);
+  let downloadTopics = $state<ResourceTag[]>([]);
+  let downloadOpen = $state(false);
   const query = $derived(page.url.searchParams.get('q') || '');
   const selectedTags = $derived(page.url.searchParams.getAll('tag'));
   const licenses = $derived(page.url.searchParams.getAll('use'));
@@ -171,6 +177,23 @@
     </Button>
   </div>
 
+  <TopicBlocks
+    resources={data.resources}
+    {selectedTags}
+    onToggle={(id) => toggle('tag', id)}
+    onClear={(ids) => {
+      const url = new URL(page.url);
+      const keep = url.searchParams.getAll('tag').filter((tag) => !ids.includes(tag));
+      url.searchParams.delete('tag');
+      for (const tag of keep) url.searchParams.append('tag', tag);
+      navigate(url);
+    }}
+    onDownload={(topics) => {
+      downloadTopics = topics;
+      downloadOpen = true;
+    }}
+  />
+
   {#if sampleLimit}
     <p class="rounded-md border px-3 py-2 text-xs text-muted-foreground" role="note">
       This release is a sample build: up to {sampleLimit.toLocaleString('en')} input records per dataset.
@@ -294,7 +317,8 @@
           >{/if}
       </header>
       <div class="lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
-        {#each dimensions as dimension (dimension.id)}
+        <!-- The topics are the cards above the list. -->
+        {#each dimensions.filter((dimension) => dimension.id !== 'topic') as dimension (dimension.id)}
           {@const options = tags
             .filter((tag) => tag.dimension === dimension.id)
             .map((tag) => ({ tag, count: tagCount(tag.id, tag.dimension) }))
@@ -341,6 +365,8 @@
     </aside>
   </div>
 </div>
+
+<TopicDownloadDialog bind:open={downloadOpen} topics={downloadTopics} resources={data.resources} />
 
 <ResourceDetailsDialog
   bind:open={detailsOpen}
