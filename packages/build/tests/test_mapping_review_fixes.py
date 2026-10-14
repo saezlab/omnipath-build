@@ -255,6 +255,35 @@ def test_macrophage_partners_are_read_as_legacy_pypath_read_them(monkeypatch):
     }
 
 
+def test_oreganno_cells_of_several_names_give_the_first_as_legacy_did():
+    from pypath.inputs_v2 import oreganno
+
+    assert oreganno._symbol("STAT1/STAT3") == "STAT1"
+    assert oreganno._symbol("E4TF1, Fli-1 (RBF Motif)") == "E4TF1"
+    assert oreganno._symbol("NF-kappa B") == "NFkappa"
+    # A cell of one name keeps its dash, which legacy removed.
+    assert oreganno._symbol("HLA-A") == "HLA-A"
+    relation = oreganno.interactions_schema(
+        {"tf_symbol": "STAT1/STAT3", "gene_symbol": "OPRM1", "species": "Homo sapiens"}
+    )
+    assert {(i.type, i.value) for i in relation.subject.identifiers} >= {
+        (Namespace.GENESYMBOL, "STAT1"), (Namespace.NAME, "STAT1/STAT3"),
+    }
+
+
+def test_mirdeathdb_symbol_with_several_products_gives_each_as_legacy_did():
+    from pypath.inputs_v2.parsers.mirdeathdb import each_product, mirbase_products
+
+    products = mirbase_products("hsa-let-7a-5p,hsa-let-7b-5p", "MIMAT0000062,MIMAT0000063")
+    rows = each_product(products)
+    assert [(r["mirbase_mature"], r["mirbase_mature_name"]) for r in rows] == [
+        ("MIMAT0000062", "hsa-let-7a-5p"), ("MIMAT0000063", "hsa-let-7b-5p"),
+    ]
+    assert rows[0]["mature_organism_codes"] == ["hsa"]
+    single = mirbase_products("hsa-miR-21-5p", "MIMAT0000076")
+    assert each_product(single) == [single]
+
+
 def test_chembl_units_are_selected_from_source_and_reach_quantity():
     con = duckdb.connect()
     try:

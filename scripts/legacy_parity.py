@@ -16,6 +16,9 @@ Keys by kind:
   references);
 - annotation: (entity, value).
 
+Legacy identifier translation (pypath.utils.mapping) is replaced by identity,
+so legacy keeps the source's identifiers too.
+
 Nothing is downloaded: both sides read the files in PYPATH_DOWNLOAD_DATADIR
 (the build's download directory), and a legacy input that asks for a file the
 inputs_v2 module does not have fails with NotCached. Each resource runs in its
@@ -142,6 +145,21 @@ def setup(scratch: Path) -> None:
     unichem.unichem_sources = lambda *a, **k: {}
     mirbase.mirbase_organisms = lambda *a, **k: {}
 
+    # Legacy inputs translate identifiers with tables downloaded from UniProt;
+    # here every name translates to itself, so that legacy keeps the source's
+    # identifiers as inputs_v2 does.
+    import pypath.utils.mapping as mapping
+    import pypath.inputs.uniprot_db as uniprot_db
+
+    mapping.map_name = lambda name, *a, **k: {name} if name else set()
+    mapping.map_name0 = lambda name, *a, **k: name
+    mapping.map_names = lambda names, *a, **k: {n for n in names if n}
+    mapping.label = lambda name, *a, **k: name
+    mapping.id_from_label = lambda label, *a, **k: {label} if label else set()
+    mapping.id_from_label0 = lambda label, *a, **k: label
+    uniprot_db.is_uniprot = lambda name, *a, **k: bool(_ISOFORM.match(f'{name}-1'))
+    uniprot_db.is_swissprot = uniprot_db.is_uniprot
+
     # Organism names, without the Ensembl and NCBI tables the legacy lookups
     # download.
     import pypath.utils.taxonomy as taxonomy
@@ -192,6 +210,39 @@ def setup(scratch: Path) -> None:
 
     v2_base.download_and_open = cached_download_and_open
 
+    # Legacy inputs ported to the download manager call the shared
+    # download_and_open: served the inputs_v2 file of the same request.
+    import pypath.share.downloads as downloads
+
+    def legacy_download_and_open(url, filename, subfolder, large=True, encoding='utf-8',
+                                 default_mode='r', ext=None, needed=None, **kwargs):
+        post = kwargs.get('query') if kwargs.get('post') else None
+        path = _served.get(_request(url, post))
+        if path is None or not os.path.isfile(path):
+            raise NotCached(f'legacy download with no inputs_v2 file: {url}')
+        _record_file('legacy', url, path)
+        return Opener(
+            path=path, ext=ext, needed=needed, large=large,
+            default_mode=default_mode, encoding=encoding,
+        )
+
+    downloads.download_and_open = legacy_download_and_open
+
+    # ... and some call the download manager itself for the file's path.
+    class CachedDownloads:
+        def download(self, url, *args, **kwargs):
+            post = kwargs.get('query') if kwargs.get('post') else None
+            path = _served.get(_request(url, post))
+            if path is None or not os.path.isfile(path):
+                raise NotCached(f'legacy download with no inputs_v2 file: {url}')
+            _record_file('legacy', url, path)
+            return path
+
+        def __getattr__(self, name):
+            raise NotCached(f'download manager: {name}')
+
+    downloads.get_download_manager = lambda *a, **k: CachedDownloads()
+
     curl_init = curl.Curl.__init__
 
     def cached_curl_init(self, url, *args, **kwargs):
@@ -237,9 +288,17 @@ def tokens(value: Any) -> frozenset[str]:
     value = str(value).strip()
     if not value:
         return frozenset()
+    if value.upper().startswith('INCHIKEY='):
+        value = value[9:]
     out = {value.upper()}
+    # HMDB accessions of five digits are the old spelling of seven.
+    if re.fullmatch(r'HMDB\d{5}', value.upper()):
+        out.add(f'HMDB00{value[4:]}')
     if ':' in value:
         out.add(value.split(':', 1)[1].strip().upper())
+    if ',' in value:
+        # A list of complex members, in any order.
+        out.add(','.join(sorted(v.strip().upper() for v in value.split(',') if v.strip())))
     for v in list(out):
         if match := _ISOFORM.match(v):
             out.add(match.group(1))
@@ -303,6 +362,10 @@ class Spec:
     serve: str = ''
     aliases: dict[str, str] = field(default_factory=dict)
     note: str = ''
+    # Only the first records of each inputs_v2 dataset (for the largest
+    # resources): every v2 relation should be in legacy, but legacy pairs
+    # missing in v2 then say nothing.
+    v2_subset: int | None = None
 
 
 # inputs_v2 records -----------------------------------------------------------
@@ -320,6 +383,20 @@ def _ref_ids(ref) -> list[str]:
     if hasattr(ref, 'identifiers'):
         return [i.value for i in ref.identifiers or ()]
     return [getattr(ref, 'identifier', None)]
+
+
+def _member_tokens(ref) -> frozenset[str]:
+    """A complex as its members: for each namespace all members have, their
+    identifiers of it joined in order."""
+    members = [m.member for m in getattr(ref, 'membership', None) or () if not m.is_parent]
+    if len(members) < 2:
+        return frozenset()
+    by_type = [
+        {name(i.type): str(i.value).strip().upper() for i in member.identifiers or ()}
+        for member in members
+    ]
+    shared = set.intersection(*(set(ids) for ids in by_type))
+    return frozenset(','.join(sorted(ids[t] for ids in by_type)) for t in shared)
 
 
 def _ref_taxa(ref) -> set[str]:
@@ -357,8 +434,8 @@ def v2_relations(records, taxon: str | None = None) -> Iterable[Rel]:
         ):
             continue
         yield Rel(
-            id_tokens(_ref_ids(relation.subject)),
-            id_tokens(_ref_ids(relation.object)),
+            id_tokens(_ref_ids(relation.subject)) | _member_tokens(relation.subject),
+            id_tokens(_ref_ids(relation.object)) | _member_tokens(relation.object),
             _v2_sign(relation),
             label=f'{_ref_ids(relation.subject)} -[{name(relation.predicate)}]-> {_ref_ids(relation.object)}',
         )
@@ -385,11 +462,16 @@ def v2_complexes(records, prefer: str = 'uniprot', taxon: str | None = None) -> 
             yield frozenset(min(tokens(i), key=len) for i in ids)
 
 
+_V2_SUBSET: int | None = None
+
+
 def datasets(module: str, *names: str, **kwargs) -> Callable[[], Iterable[Any]]:
     def run():
         import importlib
 
         resource = importlib.import_module(f'pypath.inputs_v2.{module}').resource
+        if _V2_SUBSET:
+            kwargs.setdefault('max_records', _V2_SUBSET)
         for name in names:
             yield from getattr(resource, name)(**kwargs)
 
@@ -415,9 +497,11 @@ def compare_relations(legacy: Iterable[Rel], v2: Iterable[Rel]) -> dict[str, Any
     matched: set[tuple[str, str]] = set()
     sign_pairs: dict[tuple[str, str], set] = defaultdict(set)
     v2_signs = Counter()
+    v2_all: set[tuple[str, str]] = set()
     for rel in v2:
         v2_total += 1
         v2_ids |= rel.subject | rel.object
+        v2_all.update((a, b) for a in rel.subject for b in rel.object)
         v2_signs[rel.sign] += 1
         hits = {(a, b) for a in rel.subject for b in rel.object if (a, b) in legacy_signs}
         if hits:
@@ -431,7 +515,10 @@ def compare_relations(legacy: Iterable[Rel], v2: Iterable[Rel]) -> dict[str, Any
 
     # A legacy record is found when any spelling of its pair matched.
     found = [rec for rec in legacy_records if rec & matched]
-    missing = [rec for rec in legacy_records if not rec & matched]
+    unmatched = [rec for rec in legacy_records if not rec & matched]
+    # An undirected pair that v2 has the other way round.
+    reversed_ = [rec for rec in unmatched if any((b, a) in v2_all for a, b in rec)]
+    missing = [rec for rec in unmatched if not any((b, a) in v2_all for a, b in rec)]
 
     sign_agree = sign_disagree = 0
     disagreements = []
@@ -458,6 +545,7 @@ def compare_relations(legacy: Iterable[Rel], v2: Iterable[Rel]) -> dict[str, Any
     return {
         'legacy_pairs': len(legacy_records),
         'legacy_pairs_found_in_v2': len(found),
+        'legacy_pairs_reversed_in_v2': len(reversed_),
         'legacy_pairs_missing_in_v2': len(missing),
         'missing_by_ids_known_to_v2': {
             'both': missing_known[2], 'one': missing_known[1], 'neither': missing_known[0],
@@ -629,7 +717,8 @@ def _cellphonedb():
     def ids(partner):
         if hasattr(partner, 'ids'):
             return id_tokens(i for ids in partner.ids.values() for i in ids)
-        return tokens(partner)
+        # A metabolite system ("Acetylcholine_byCHAT") is its metabolite in v2.
+        return tokens(partner) | tokens(str(partner).split('_by')[0] if '_by' in str(partner) else None)
 
     for rec in cellphonedb.cellphonedb_interactions():
         yield Rel(ids(rec.id_a), ids(rec.id_b))
@@ -684,6 +773,119 @@ def _legacy_rel(module: str, function: str, subject, object_, sign=None, **kwarg
 
 def _fields(spec) -> tuple:
     return spec if isinstance(spec, tuple) else (spec,)
+
+
+def _legacy_annotations(module: str, function: str, value, key=None, **kwargs):
+    """A legacy annotation function (key: set of records) as pairs of the key
+    and the value; value (and key) are attribute names or callables of a
+    record, and a callable can give several values."""
+
+    def run():
+        import importlib
+
+        records = getattr(importlib.import_module(f'pypath.inputs.{module}'), function)(**kwargs)
+        for k, annotations in records.items():
+            for a in annotations:
+                values = value(a) if callable(value) else getattr(a, value)
+                if not isinstance(values, (list, tuple, set)):
+                    values = [values]
+                subject = tokens(k) if key is None else id_tokens(_fields(getattr(a, key)))
+                for v in values:
+                    if v not in (None, ''):
+                        yield Rel(subject, tokens(v))
+
+    return run
+
+
+def v2_pairs(records, taxon: str | None = None, transitive: bool = False) -> Iterable[Rel]:
+    """Relations as pairs, and the associations and members of entities: an
+    entity with its associated term, a member with its group, through nested
+    groups (with ``transitive``, a member also with the groups above its own)."""
+
+    def members(entity, above):
+        ids = id_tokens(_ref_ids(entity))
+        groups = [ids, *above] if transitive else [ids]
+        for membership in entity.membership or ():
+            member = id_tokens(_ref_ids(membership.member))
+            for group in groups:
+                yield Rel(member, group)
+            yield from members(membership.member, groups)
+
+    for record in records:
+        if record is None:
+            continue
+        if hasattr(record, 'subject'):
+            yield from v2_relations([record], taxon)
+            continue
+        ids = id_tokens(_ref_ids(record))
+        for association in record.associations or ():
+            yield Rel(ids, tokens(association.object.identifier))
+        yield from members(record, [])
+
+
+def v2_id_pairs(records, key: str, values: tuple[str, ...]) -> Iterable[Rel]:
+    """An entity's identifier of one namespace with each of its identifiers
+    of others (``key`` and ``values`` are parts of namespace names)."""
+    for record in records:
+        if record is None:
+            continue
+        identifiers = [(name(i.type).lower(), i.value) for i in record.identifiers or ()]
+        keys = id_tokens(v for t, v in identifiers if key in t)
+        for t, v in identifiers:
+            if any(n in t for n in values) and keys:
+                yield Rel(keys, tokens(v))
+
+
+def v2_annotation_pairs(records, term: str) -> Iterable[Rel]:
+    """An entity with the values of one of its annotations."""
+    for record in records:
+        if record is None:
+            continue
+        ids = id_tokens(_ref_ids(record))
+        for annotation in record.annotations or ():
+            if term in name(annotation.term):
+                yield Rel(ids, tokens(name(annotation.value)))
+
+
+def _legacy_id_pairs(module: str, function: str, key, values: dict, **kwargs):
+    """Legacy metabolite records as pairs of their ID and each cross-reference
+    (``values``: field to a prefix to strip, or None)."""
+
+    def get(rec, field):
+        return rec.get(field) if isinstance(rec, dict) else getattr(rec, field, None)
+
+    def run():
+        import importlib
+
+        for rec in getattr(importlib.import_module(f'pypath.inputs.{module}'), function)(**kwargs):
+            subject = tokens(key(rec) if callable(key) else get(rec, key))
+            for field in values:
+                found = get(rec, field)
+                for v in found if isinstance(found, (list, tuple, set)) else [found]:
+                    if v not in (None, '', 'CHEBI:'):
+                        yield Rel(subject, tokens(v))
+
+    return run
+
+
+def _complex_or_id(value) -> str:
+    """A legacy partner: its identifier, or a complex as its members."""
+    if hasattr(value, 'components'):
+        return ','.join(sorted(str(c) for c in value.components))
+    return value
+
+
+def datasets_starting(module: str, *prefixes: str) -> Callable[[], Iterable[Any]]:
+    """The datasets of a module whose names start with one of the prefixes."""
+
+    def run():
+        import importlib
+
+        resource = importlib.import_module(f'pypath.inputs_v2.{module}').resource
+        names = [n for n in resource.datasets() if n.startswith(prefixes)]
+        yield from datasets(module, *names)()
+
+    return run
 
 
 def _cellchat():
@@ -899,6 +1101,169 @@ spec(
     serve='celltalkdb',
 )
 
+# Third batch.
+spec('adhesome', 'relation', _legacy_rel('adhesome', 'adhesome_interactions', 'source', 'target', 'effect'),
+     lambda: v2_relations(datasets('adhesome', 'interactions', 'website_interactions')()), serve='adhesome')
+spec('cancerdrugsdb', 'relation',
+     _legacy_rel('cancerdrugsdb', 'cancerdrugsdb_interactions',
+                 ('drug_pubchem', 'drug_chembl', 'drug_drugbank', 'drug_label'), 'target_uniprot'),
+     lambda: v2_relations(datasets('cancerdrugsdb', 'drug_targets')()), serve='cancerdrugsdb')
+spec('cellcall', 'relation', _legacy_rel('cellcall', 'cellcall_interactions', 'ligand_uniprot', 'receptor_uniprot'),
+     lambda: v2_relations(datasets('cellcall', 'human_core_interactions', 'human_extended_interactions')()),
+     serve='cellcall')
+spec('cellcellinteractions', 'relation',
+     _legacy_annotations('cellcellinteractions', 'cellcellinteractions_annotations', 'mainclass'),
+     lambda: v2_pairs(datasets('cellcellinteractions', 'genes')()), serve='cellcellinteractions')
+spec('celltypist', 'relation', _legacy_annotations('celltypist', 'celltypist_annotations', 'cell_ontology'),
+     lambda: v2_pairs(datasets('celltypist', 'markers')()), serve='celltypist')
+spec('compleat', 'complex',
+     lambda: (_complex_tokens(c) for c in __import__('pypath.inputs.compleat', fromlist=['x']).compleat_complexes().values()),
+     lambda: v2_complexes(datasets('compleat', 'literature_complexes', 'predicted_complexes')()), serve='compleat')
+spec('cpad', 'relation', _legacy_annotations('cpad', 'cpad_annotations', 'cancer', key='pathway'),
+     lambda: v2_pairs(datasets('cpad', 'entries')()), serve='cpad', note='Pathway and cancer.')
+spec('cpdb', 'relation', _legacy_rel('cpdb', 'cpdb_interactions', lambda r: r[0], lambda r: r[1]),
+     lambda: v2_relations(datasets('cpdb', 'interactions')()), serve='cpdb')
+spec('cytosig', 'relation', _legacy_annotations('cytosig', 'cytosig_annotations', 'cytokine'),
+     lambda: v2_pairs(datasets('cytosig', 'signature')()), serve='cytosig')
+spec('domino', 'relation', _legacy_rel('domino', 'domino_interactions', 'uniprot_A', 'uniprot_B'),
+     lambda: v2_relations(datasets('domino', 'interactions')()), serve='domino')
+spec('elm', 'relation', _legacy_rel('elm', 'elm_interactions', 'uniprot_motif', 'uniprot_domain'),
+     lambda: v2_relations(datasets('elm', 'interactions')()), serve='elm')
+spec('encode', 'relation', _legacy_rel('encode', 'encode_tf_mirna_interactions', 'tf_genesymbol', 'mirna'),
+     lambda: v2_relations(datasets('encode', 'tf_mirna')()), serve='encode',
+     note='The TF-miRNA table; legacy has no function for the TF-gene tables.')
+spec('gpcrdb', 'relation', _legacy_annotations('gpcrdb', 'gpcrdb_annotations', 'subfamily'),
+     lambda: v2_pairs(datasets('gpcrdb', 'families')()), serve='gpcrdb', note='Receptor and its subfamily.')
+spec('havugimana', 'complex',
+     lambda: (_complex_tokens(c) for c in __import__('pypath.inputs.havugimana', fromlist=['x']).havugimana_complexes().values()),
+     lambda: v2_complexes(datasets('havugimana', 'complexes')()), serve='havugimana')
+spec('hippie', 'relation', _legacy_rel('hippie', 'hippie_interactions', 'id_a', 'id_b', score_threshold=0),
+     lambda: v2_relations(datasets('hippie', 'interactions')()), serve='hippie',
+     note='Legacy without its default score threshold of 0.75, as v2 keeps all with their scores.')
+spec('hpo', 'relation', _legacy_annotations('hpo', 'hpo_annotations', 'hpo_id'),
+     lambda: v2_pairs(datasets('hpo', 'annotations')()), serve='hpo', note='Gene and phenotype term.')
+spec('htri', 'relation',
+     _legacy_rel('htri', 'htri_interactions', ('entrez_tf', 'genesymbol_tf'), ('entrez_target', 'genesymbol_target')),
+     lambda: v2_relations(datasets('htri', 'interactions')()), serve='htri')
+spec('humap', 'complex',
+     lambda: (_complex_tokens(c) for c in __import__('pypath.inputs.humap', fromlist=['x']).humap2and3_complexes().values()),
+     lambda: v2_complexes(datasets('humap', 'humap2_complexes', 'humap3_complexes')()), serve='humap')
+spec('lambert2018', 'relation',
+     _legacy_annotations('lambert2018', 'lambert2018_annotations',
+                         lambda a: (['human_transcription_factors'] if a.is_tf else []) + [a.binding_domain]),
+     lambda: v2_pairs(datasets('lambert2018', 'transcription_factors', 'families')()), serve='lambert2018',
+     note='Gene with the TF list and its DNA-binding domain family.')
+spec('lncdisease', 'relation', _legacy_rel('lncdisease', 'lncdisease_interactions', 'source', 'target'),
+     lambda: v2_relations(datasets('lncdisease', 'interactions')()), serve='lncdisease')
+spec('lncrnadb', 'relation', _legacy_rel('lncrnadb', 'lncrnadb_interactions', 'lncrna', 'partner'),
+     lambda: v2_relations(datasets('lncrnadb', 'associations')()), serve='lncrnadb')
+spec('mcam', 'relation',
+     lambda: (Rel(tokens(u), tokens('human_cell_adhesion_molecule'))
+              for u in __import__('pypath.inputs.mcam', fromlist=['x']).mcam_cell_adhesion_molecules()),
+     lambda: v2_pairs(datasets('mcam', 'proteins')()), serve='mcam')
+spec('mirdeathdb', 'relation', _legacy_rel('mirdeathdb', 'mirdeathdb_interactions', 'mirna', 'target_entrez'),
+     lambda: v2_relations(datasets('mirdeathdb', 'interactions')()), serve='mirdeathdb')
+spec('mirecords', 'relation',
+     _legacy_rel('mirecords', 'mirecords_interactions', 'mirna_name', ('target_refseq', 'target_genesymbol')),
+     lambda: v2_relations(datasets('mirecords', 'interactions')()), serve='mirecords')
+spec('mppi', 'relation', _legacy_rel('mppi', 'mppi_interactions', lambda r: r[2], lambda r: r[6]),
+     lambda: v2_relations(datasets('mppi', 'interactions')()), serve='mppi')
+spec('ncrdeathdb', 'relation', _legacy_rel('ncrdeathdb', 'ncrdeathdb_interactions', 'ncrna', 'target_gene'),
+     lambda: v2_relations(datasets('ncrdeathdb', 'interactions', 'homology_predictions')()), serve='ncrdeathdb')
+spec('netpath', 'relation',
+     _legacy_rel('netpath', 'netpath_interactions', lambda r: (r[0], r[1]), lambda r: (r[2], r[3])),
+     lambda: v2_relations(datasets('netpath', 'interactions')()), serve='netpath')
+spec('oreganno', 'relation', _legacy_rel('oreganno', 'oreganno_interactions', 'tf', 'target'),
+     lambda: v2_relations(datasets('oreganno', 'interactions')()), serve='oreganno')
+spec('panglaodb', 'relation', _legacy_annotations('panglaodb', 'panglaodb_annotations', 'cell_type'),
+     lambda: v2_pairs(datasets('panglaodb', 'markers')()), serve='panglaodb', note='Gene and cell type.')
+spec('pazar', 'relation', _legacy_rel('pazar', 'pazar_interactions', 'tf', 'target'),
+     lambda: v2_relations(datasets('pazar', 'interactions')()), serve='pazar')
+spec('pdzbase', 'relation', _legacy_rel('pdzbase', 'pdzbase_interactions', 'uniprot_pdz', 'uniprot_ligand'),
+     lambda: v2_relations(datasets('pdzbase', 'interactions')()), serve='pdzbase')
+spec('phobius', 'relation',
+     _legacy_annotations('phobius', 'phobius_annotations',
+                         lambda a: (['transmembrane'] if a.tm_helices else [])
+                         + (['signal_peptide'] if a.signal_peptide else [])),
+     lambda: v2_pairs(datasets('phobius', 'predictions')()), serve='phobius')
+spec('phosphatome', 'relation',
+     _legacy_annotations('phosphatome', 'phosphatome_annotations',
+                         lambda a: [a.fold, a.family, a.subfamily]
+                         + (['Protein substrates'] if a.has_protein_substrates else [])
+                         + (['Non-protein substrates'] if a.has_non_protein_substrates else [])),
+     lambda: v2_pairs(datasets('phosphatome', 'class_annotations', 'families')(), transitive=True),
+     serve='phosphatome')
+spec('tfcensus', 'relation',
+     _legacy_annotations('tfcensus', 'tfcensus_annotations', lambda a: ['human_transcription_factors']),
+     lambda: v2_pairs(datasets('tfcensus', 'transcription_factors')()), serve='tfcensus')
+spec('topdb', 'relation',
+     _legacy_annotations('topdb', 'topdb_annotations', lambda a: ['protein']),
+     lambda: (Rel(r.subject, tokens('protein')) for r in v2_pairs(datasets('topdb', 'proteins')())),
+     serve='topdb', note='The proteins only: legacy reads the regions, v2 the protein classes.')
+spec('wang', 'relation',
+     _legacy_rel('wang', 'wang_interactions', ('entrez_source', 'genesymbol_source'),
+                 ('entrez_target', 'genesymbol_target'), 'effect'),
+     lambda: v2_relations(datasets('wang', 'interactions')()), serve='wang')
+spec('zhong2015', 'relation',
+     _legacy_annotations('zhong2015', 'zhong2015_annotations',
+                         lambda a: {v: k for k, v in __import__('pypath.inputs_v2.zhong2015', fromlist=['x']).CAM_TYPES.items()}.get(a.type, a.type)),
+     lambda: v2_pairs(datasets('zhong2015', 'genes')()), serve='zhong2015')
+spec('laudanna_directions', 'relation',
+     _legacy_rel('laudanna', 'laudanna_directions', 'source_genesymbol', 'target_genesymbol'),
+     lambda: v2_relations(datasets('laudanna', 'signaling_flow')()), serve='laudanna')
+spec('laudanna_effects', 'relation',
+     _legacy_rel('laudanna', 'laudanna_effects', 'source_genesymbol', 'target_genesymbol', 'effect'),
+     lambda: v2_relations(datasets('laudanna', 'signaling_direction')()), serve='laudanna')
+spec('instruct', 'relation',
+     _legacy_rel('instruct', 'get_instruct', lambda r: r['uniprots'][0], lambda r: r['uniprots'][1]),
+     lambda: v2_relations(datasets('instruct', 'interactions')()), serve='instruct')
+spec('tcdb', 'relation',
+     lambda: (Rel(tokens(u), tokens(c[0])) for u, c in __import__('pypath.inputs.tcdb', fromlist=['x']).tcdb_classes().items()),
+     lambda: v2_annotation_pairs(datasets('tcdb', 'transporters')(), 'topic'), serve='tcdb',
+     note='Protein and TC number.')
+spec('recon3d_metabolites', 'relation',
+     _legacy_id_pairs('recon3d', 'recon3d_metabolites', 'base_id', ('chebi', 'hmdb', 'kegg', 'metanetx')),
+     lambda: v2_id_pairs(
+         (m.member for r in datasets('recon3d', 'reactions')() if r for m in r.membership or ()),
+         'bigg', ('chebi', 'hmdb', 'kegg', 'metanetx'),
+     ),
+     serve='recon3d',
+     note='BiGG metabolite and its cross-references; v2 has the metabolites of reactions as their members.')
+spec('recon3d_reactions', 'relation',
+     lambda: (Rel(tokens(r['id']), tokens(m.rsplit('_', 1)[0]))
+              for r in __import__('pypath.inputs.recon3d', fromlist=['x']).recon3d_reactions() for m in r['metabolites']),
+     lambda: (Rel(r.object, r.subject) for r in v2_pairs(datasets('recon3d', 'reactions')())),
+     serve='recon3d', note='Reaction and its metabolites (BiGG).')
+spec('imm1415_metabolites', 'relation',
+     _legacy_id_pairs('imm1415', 'imm1415_metabolites', 'base_id', ('chebi', 'hmdb', 'kegg', 'metanetx')),
+     lambda: v2_id_pairs(datasets('imm1415', 'metabolites')(), 'bigg', ('chebi', 'hmdb', 'kegg', 'metanetx')),
+     serve='imm1415', note='BiGG metabolite and its cross-references.')
+spec('lipidmaps', 'relation',
+     _legacy_id_pairs('lipidmaps', 'lipidmaps_lipids', 'id', ('chebi', 'inchikey', 'pubchem', 'hmdb', 'swisslipids')),
+     lambda: v2_id_pairs(datasets('lipidmaps', 'lipids')(), 'lipidmaps', ('chebi', 'inchikey', 'pubchem', 'hmdb', 'swisslipids')),
+     serve='lipidmaps', note='LIPID MAPS ID and its cross-references.')
+spec('swisslipids', 'relation',
+     _legacy_id_pairs('swisslipids', 'swisslipids_lipids', 'id', ('chebi', 'inchikey', 'lipidmaps', 'hmdb', 'metanetx')),
+     lambda: v2_id_pairs(datasets('swisslipids', 'lipids')(), 'swisslipids', ('chebi', 'inchikey', 'lipidmaps', 'hmdb', 'metanetx')),
+     serve='swisslipids', note='SwissLipids ID and its cross-references.')
+spec('kea', 'relation', _legacy_rel('kea', 'kea_interactions', 'enzyme', 'substrate'),
+     lambda: v2_relations(datasets('kea', 'enzyme_substrate')()), serve='kea')
+spec('icellnet', 'relation',
+     _legacy_rel('icellnet', 'icellnet_interactions',
+                 lambda r: _complex_or_id(r.ligand), lambda r: _complex_or_id(r.receptor)),
+     lambda: v2_relations(datasets('icellnet', 'interactions')()), serve='icellnet')
+spec('spike', 'relation',
+     _legacy_rel('spike', 'spike_interactions', ('entrez_a', 'genesymbol_a'), ('entrez_b', 'genesymbol_b')),
+     lambda: v2_relations(datasets_starting('spike', 'regulations', 'interactions')()), serve='spike',
+     note='Regulations and interactions of all quality levels.')
+spec('spike_complexes', 'complex',
+     lambda: (_complex_tokens(c) for c in __import__('pypath.inputs.spike', fromlist=['x']).spike_complexes().values()),
+     lambda: v2_complexes(datasets('spike', 'complexes')()), serve='spike')
+spec('hmdb', 'relation',
+     _legacy_id_pairs('hmdb.metabolites', 'raw', 'accession', ('chebi_id', 'inchikey', 'kegg_id', 'pubchem_compound_id')),
+     lambda: v2_id_pairs(datasets('hmdb', 'metabolites')(), 'hmdb', ('chebi', 'inchikey', 'kegg', 'pubchem')),
+     serve='hmdb', note='HMDB accession and its cross-references.')
+
 
 # Driver --------------------------------------------------------------------
 
@@ -908,7 +1273,11 @@ def run(spec: Spec) -> dict[str, Any]:
     _files.clear()
     _served.clear()
     serve(spec.serve, spec.aliases)
+    global _V2_SUBSET
+    _V2_SUBSET = spec.v2_subset
     result: dict[str, Any] = {'resource': spec.name, 'kind': spec.kind, 'note': spec.note}
+    if spec.v2_subset:
+        result['v2_subset'] = spec.v2_subset
     outputs = {}
     for side, produce in (('v2', spec.v2), ('legacy', spec.legacy)):
         started = time.time()
