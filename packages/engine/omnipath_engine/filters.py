@@ -44,6 +44,9 @@ class SearchFilters(BaseModel):
     object_direction_qualifier: list[str] = Field(default_factory=list)
     causal_mechanism_qualifier: list[str] = Field(default_factory=list)
     interaction_types: list[str] = Field(default_factory=list)
+    # With interaction_types: the type at the other end of a relation, so that
+    # interaction_types=[protein] and partner_types=[chemical] is protein-chemical.
+    partner_types: list[str] = Field(default_factory=list)
     annotation_term_ids: list[str] = Field(default_factory=list)
     gene_mode: Literal["any", "both", "source", "source_only", "target", "target_only"] = "any"
     scope_endpoint_mode: Literal[
@@ -68,6 +71,7 @@ class SearchFilters(BaseModel):
             "taxonomy_ids": ("taxonomyIds", "ncbi_tax_id"),
             "relation_categories": ("categories",),
             "interaction_types": ("interactionTypes",),
+            "partner_types": ("partnerTypes",),
             "annotation_term_ids": ("annotationTermIds",),
         }
         for canonical, legacy in aliases.items():

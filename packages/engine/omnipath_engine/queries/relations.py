@@ -74,14 +74,26 @@ class RelationsQueries:
             or filters.get("interactionTypes")
             or filters.get("entity_types")
         )
+        partner_types = self._as_list(filters.get("partner_types") or filters.get("partnerTypes"))
         if interaction_types:
             norm_types = [biolink_entity_type(t) for t in interaction_types]
             placeholders = ", ".join("?" for _ in norm_types)
-            where_clauses.append(
-                f"(subject_type IN ({placeholders}) OR object_type IN ({placeholders}))"
-            )
-            params.extend(norm_types)
-            params.extend(norm_types)
+            if partner_types:
+                # One endpoint of a chosen type and the other of a chosen partner type, in
+                # either direction: protein and partner protein is protein-protein.
+                partners = [biolink_entity_type(t) for t in partner_types]
+                partner_marks = ", ".join("?" for _ in partners)
+                where_clauses.append(
+                    f"((subject_type IN ({placeholders}) AND object_type IN ({partner_marks}))"
+                    f" OR (object_type IN ({placeholders}) AND subject_type IN ({partner_marks})))"
+                )
+                params.extend([*norm_types, *partners, *norm_types, *partners])
+            else:
+                where_clauses.append(
+                    f"(subject_type IN ({placeholders}) OR object_type IN ({placeholders}))"
+                )
+                params.extend(norm_types)
+                params.extend(norm_types)
 
         taxons = self._as_list(
             filters.get("ncbi_tax_id") or filters.get("taxonomy_ids") or filters.get("taxonomyIds")

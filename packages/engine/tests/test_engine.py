@@ -133,11 +133,30 @@ class TestParquetServingEngine(unittest.TestCase):
             self.assertEqual(key(scoped["rows"]), key(full["rows"]))
             self.assertEqual(scoped["total"], full["total"])
             self.assertEqual(
-                self.engine.get_scoped_relation_facets({"sources": [resource]}),
-                self.engine.get_scoped_relation_facets({"sources": [resource]}, resources),
+                self.engine._compute_relation_facets({"sources": [resource]}),
+                self.engine._compute_relation_facets({"sources": [resource]}, resources),
             )
         # A source the release does not have matches nothing.
         self.assertEqual(self.engine.search_relations(filters={"sources": ["nosuch"]})["rows"], [])
+
+    def test_partner_types_select_pairs_of_endpoint_types(self):
+        rows = self.engine.search_relations(limit=1000)["rows"]
+        pairs = {(r["subject_type"], r["object_type"]) for r in rows}
+        self.assertTrue(pairs)
+        facets = self.engine.get_scoped_relation_facets({})
+        counts = {(f["facetName"], f["facetValue"]): f["scopedCount"] for f in facets}
+        for first, second in sorted(pairs):
+            filters = {"interaction_types": [first], "partner_types": [second]}
+            found = self.engine.search_relations(filters=filters, limit=1000)
+            # Either direction, never another type at either end.
+            self.assertTrue(found["rows"])
+            for row in found["rows"]:
+                self.assertIn((row["subject_type"], row["object_type"]), {(first, second), (second, first)})
+            # The pair count is what choosing both types keeps; a type alone, what choosing it keeps.
+            pair = "|".join(sorted((first, second)))
+            self.assertEqual(counts["participant_pair", pair], found["total"])
+            alone = self.engine.search_relations(filters={"interaction_types": [first]}, limit=1000)
+            self.assertEqual(counts["participant_type", first], alone["total"])
 
     def test_entity_key_lookup_skips_identifier_scan(self):
         fake = "a" * 64

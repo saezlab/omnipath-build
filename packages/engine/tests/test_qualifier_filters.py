@@ -72,8 +72,9 @@ def test_combined_filters_and_multi_select(engine):
         engine.search_relations(filters={"object_direction_qualifier": ["activation"]})
 
 
-def test_facets_ignore_own_selection_but_keep_other_filters(engine):
-    facets = engine.get_scoped_relation_facets(
+def test_filtered_counts_ignore_own_selection_but_keep_other_filters(engine):
+    # The computation under filters (the panels show the counts without them, below).
+    facets = engine._compute_relation_facets(
         {
             "object_aspect_qualifier": ["activity"],
             "object_direction_qualifier": ["increased"],
@@ -84,29 +85,22 @@ def test_facets_ignore_own_selection_but_keep_other_filters(engine):
     assert counts["object_aspect_qualifier", "activity"] == 1
     assert counts["object_direction_qualifier", "decreased"] == 1
     assert counts["object_direction_qualifier", "increased"] == 1
-    assert engine.get_scoped_relation_facets({"relation_categories": ["ontology"]}) == []
+    assert engine._compute_relation_facets({"relation_categories": ["ontology"]}) == []
 
 
-def test_sources_are_counted_without_the_source_selection(engine):
-    # Like the entity filters: a source that is not selected keeps its count, every other
-    # filter still applies, and the other facets follow the selection.
+def test_panel_counts_are_the_counts_without_the_panel_filters(engine):
+    # Each option shows what it holds, whatever else is chosen; the results show the live
+    # count. The same counts, from the cache, for every combination of panel filters.
     everything = engine.get_scoped_relation_facets({})
-    sources = {f["facetValue"]: f["scopedCount"] for f in everything if f["facetName"] == "source"}
-    chosen = sorted(sources)[0]
-    for payload in ({"sources": [chosen]}, {"filters": {"sources": [chosen]}}, {"resources": [chosen]}):
-        facets = engine.get_scoped_relation_facets(payload)
-        assert {f["facetValue"]: f["scopedCount"] for f in facets if f["facetName"] == "source"} == sources
-        assert [f for f in facets if f["facetName"] != "source"] == [
-            f for f in engine._compute_relation_facets({"sources": [chosen]}) if f["facetName"] != "source"
-        ]
-    filtered = {"object_direction_qualifier": ["decreased"]}
-    expected = {
-        f["facetValue"]: f["scopedCount"]
-        for f in engine.get_scoped_relation_facets(filtered)
-        if f["facetName"] == "source"
-    }
-    facets = engine.get_scoped_relation_facets({**filtered, "sources": [chosen]})
-    assert {f["facetValue"]: f["scopedCount"] for f in facets if f["facetName"] == "source"} == expected
+    assert everything
+    for payload in (
+        {"sources": ["test"]},
+        {"filters": {"sources": ["test"]}},
+        {"object_direction_qualifier": ["decreased"], "predicates": ["affects"]},
+        {"interactionTypes": ["protein"], "partnerTypes": ["protein"], "taxonomyIds": ["9606"]},
+        {"relation_categories": ["ontology"]},
+    ):
+        assert engine.get_scoped_relation_facets(payload) == everything
 
 
 def test_export_uses_same_qualifier_filter(engine):
@@ -154,7 +148,7 @@ def test_batched_qualifier_counts_match_independent_scans(engine, payload):
         expected.update({(term, value): count for value, count in rows})
     actual = {
         (f["facetName"], f["facetValue"]): f["scopedCount"]
-        for f in engine.get_scoped_relation_facets(payload)
+        for f in engine._compute_relation_facets(payload)
         if f["facetName"] in RELATION_QUALIFIER_FILTERS
     }
     assert actual == expected

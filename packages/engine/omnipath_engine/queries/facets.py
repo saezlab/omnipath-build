@@ -86,20 +86,14 @@ class FacetsQueries:
         payload = dict(payload or {})
         limit = payload.pop("taxonomyLimit", None)
         query = str(payload.pop("taxonomyQuery", "") or "").strip().casefold()
-        items = self._cached_facets("relations", payload, resources, self._compute_relation_facets)
-        others = _without_sources(payload)
-        if others != payload:
-            # As in the entity filters, the sources are counted under every other filter but
-            # not under the source selection, so a source that is not selected keeps its count
-            # and stays listed. Without other filters these are the cached unfiltered counts.
-            unselected = self._cached_facets(
-                "relations", others, resources, self._compute_relation_facets
-            )
-            items = sorted(
-                [i for i in items if i["facetName"] != "source"]
-                + [i for i in unselected if i["facetName"] == "source"],
-                key=lambda i: (-i["scopedCount"], i["facetName"], i["facetValue"]),
-            )
+        # The counts are those of the scope (an entity selection, annotation terms) without the
+        # filters of the panels: what each option holds, not what it would add to the current
+        # filters. Counting under every filter combination took 2 to 17 s on the full release
+        # and held a query slot each time; these are computed once per scope and kept (the
+        # unfiltered ones are warmed at startup). The results show the live count.
+        items = self._cached_facets(
+            "relations", _without(payload, RELATION_FILTER_KEYS), resources, self._compute_relation_facets
+        )
         if limit is None:
             return items  # Existing API callers can still request the complete list.
         limit = max(1, min(int(limit), 10000))
@@ -211,8 +205,13 @@ class FacetsQueries:
         for row in grouped:
             category, predicate, subject_type, object_type, taxon, sign, sources, n = row
             add("predicate", predicate, n, category)
-            add("participant_type", subject_type, n)
-            add("participant_type", object_type, n)
+            # A relation counts once for each type at its ends: what choosing the type keeps.
+            for participant in {subject_type, object_type}:
+                add("participant_type", participant, n)
+            # And once for its pair of types, in either direction ("chemical_entity|protein"):
+            # what choosing both types keeps, "protein|protein" for a type chosen twice.
+            if subject_type and object_type:
+                add("participant_pair", "|".join(sorted((subject_type, object_type))), n)
             add("taxonomy_id", taxon, n)
             add("sign", sign, n)
             add("category", category, n)
@@ -347,14 +346,35 @@ class FacetsQueries:
         }
 
 
-# The payload keys of the source selection (``filters.normalize_filters`` aliases).
-SOURCE_KEYS = ("sources", "resources")
+# The payload keys of the relation filter panels, with their ``filters.normalize_filters``
+# aliases; the relation counts leave them out (the scope keys stay).
+RELATION_FILTER_KEYS = (
+    "sources",
+    "resources",
+    "taxonomy_ids",
+    "taxonomyIds",
+    "ncbi_tax_id",
+    "predicates",
+    "relation_categories",
+    "categories",
+    "object_aspect_qualifier",
+    "object_direction_qualifier",
+    "causal_mechanism_qualifier",
+    "interaction_types",
+    "interactionTypes",
+    "entity_types",
+    "entityTypes",
+    "partner_types",
+    "partnerTypes",
+    "signs",
+    "min_evidence_count",
+)
 
 
-def _without_sources(payload: dict[str, Any]) -> dict[str, Any]:
-    """The payload without its source selection, at the top level and under ``filters``."""
-    out = {key: value for key, value in payload.items() if key not in SOURCE_KEYS or not value}
+def _without(payload: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
+    """The payload without a selection, at the top level and under ``filters``."""
+    out = {key: value for key, value in payload.items() if key not in keys or not value}
     nested = out.get("filters")
-    if isinstance(nested, dict) and any(nested.get(key) for key in SOURCE_KEYS):
-        out["filters"] = {key: value for key, value in nested.items() if key not in SOURCE_KEYS}
+    if isinstance(nested, dict) and any(nested.get(key) for key in keys):
+        out["filters"] = {key: value for key, value in nested.items() if key not in keys}
     return out

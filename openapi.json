@@ -3623,6 +3623,13 @@
             "title": "Object Direction Qualifier",
             "type": "array"
           },
+          "partner_types": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Partner Types",
+            "type": "array"
+          },
           "predicates": {
             "items": {
               "type": "string"
