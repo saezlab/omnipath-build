@@ -146,6 +146,13 @@ class RelationsQueries:
         those relations (and their evidence, for molecular forms) per resource.
         """
         filters = normalize_filters(filters)
+        if not resources and filters["sources"]:
+            # A relation lists only its own resource among its sources, so a source filter
+            # needs the files of those resources only; the WHERE below keeps the filter. A
+            # source that is no queryable resource of the release reads every file, as before,
+            # and matches nothing.
+            queryable = {info["resource"] for info in self._selected_resource_infos(None)}
+            resources = [source for source in filters["sources"] if source in queryable] or None
         where, params = self._relation_where(filters, qualifiers=qualifiers)
         form = form_match_sql(filters) if has_form_filters(filters) else None
         candidates = self._endpoint_candidates(filters, resources)

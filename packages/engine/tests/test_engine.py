@@ -118,6 +118,27 @@ class TestParquetServingEngine(unittest.TestCase):
             )
             self.assertLessEqual(len(scoped["entities"]), len(all_results["entities"]))
 
+    def test_a_source_filter_reads_only_that_resources_relations(self):
+        # The same relations and counts as a filter over every file, from that file alone.
+        resources = sorted({info["resource"] for info in self.engine._selected_resource_infos(None)})
+        self.assertGreater(len(resources), 1)
+        for resource in resources:
+            filters = {"sources": [resource]}
+            selection, _ = self.engine._relation_selection(filters)
+            self.assertIn(f"/{resource}/", selection)
+            self.assertEqual(selection.count("relation.parquet"), 1)
+            scoped = self.engine.search_relations(filters=filters, limit=1000)
+            full = self.engine.search_relations(filters=filters, resources=resources, limit=1000)
+            key = lambda rows: sorted((r["resource"], r["relation_id"]) for r in rows)
+            self.assertEqual(key(scoped["rows"]), key(full["rows"]))
+            self.assertEqual(scoped["total"], full["total"])
+            self.assertEqual(
+                self.engine.get_scoped_relation_facets({"sources": [resource]}),
+                self.engine.get_scoped_relation_facets({"sources": [resource]}, resources),
+            )
+        # A source the release does not have matches nothing.
+        self.assertEqual(self.engine.search_relations(filters={"sources": ["nosuch"]})["rows"], [])
+
     def test_entity_key_lookup_skips_identifier_scan(self):
         fake = "a" * 64
         self.assertEqual(self.engine.resolve_entity_keys([fake]), [fake])
