@@ -388,7 +388,7 @@
           <div class="space-y-2">
             {@render sectionHeading('Relation types', true)}
             <div class="space-y-2">
-              {#each Object.entries(predicatesByCategory) as [category, predicates]}
+              {#each Object.entries(predicatesByCategory) as [category, predicates] (category)}
                 {@const isDefaultOnly =
                   category.toLowerCase() === 'default' &&
                   Object.keys(predicatesByCategory).length === 1}
@@ -405,7 +405,7 @@
                   <div
                     class="space-y-1 max-h-64 overflow-y-auto pr-2 {isDefaultOnly ? '' : 'pl-4'}"
                   >
-                    {#each selectedFirst( predicates, (predicate) => (filters.predicates || []).includes(predicate) ) as predicate}
+                    {#each selectedFirst( predicates, (predicate) => (filters.predicates || []).includes(predicate) ) as predicate (predicate)}
                       {@render filterOptionRow(
                         'predicates',
                         predicate,
@@ -432,7 +432,7 @@
             <div class="space-y-2">
               <p class="effect-heading" role="heading" aria-level="4">Direction</p>
               <div class="flex flex-wrap gap-1.5" role="group" aria-label="Direction">
-                {#each directionValues as value}
+                {#each directionValues as value (value)}
                   {@const pressed = (filters.object_direction_qualifier || []).includes(value)}
                   <Button
                     size="xs"
@@ -463,7 +463,7 @@
             <div class="space-y-1.5">
               <p class="effect-heading" role="heading" aria-level="4">Aspect</p>
               <div class="space-y-1">
-                {#each aspectValues as value}
+                {#each aspectValues as value (value)}
                   {@render filterOptionRow(
                     'object_aspect_qualifier',
                     value,
@@ -481,7 +481,7 @@
             <div class="space-y-1.5">
               <p class="effect-heading" role="heading" aria-level="4">Mechanism</p>
               <div class="space-y-1">
-                {#each visibleMechanisms as value}
+                {#each visibleMechanisms as value (value)}
                   {@render filterOptionRow(
                     'causal_mechanism_qualifier',
                     value,
@@ -555,7 +555,7 @@
             onFilterChange({ ...filters, sources: sources.length ? sources : undefined })}
         />
         <div class="space-y-1 max-h-64 overflow-y-auto pr-2">
-          {#each sourceSplit.shown as option}
+          {#each sourceSplit.shown as option (option)}
             {@render filterOptionRow(
               'sources',
               option,
@@ -585,7 +585,7 @@
               class="mb-2 w-full rounded border px-2 py-1 text-sm"
               bind:value={taxonomyDraft}
             />
-            {#each selectedFirst( taxonomyOptions, (option) => (filters.taxonomy_ids || []).includes(option) ) as option}
+            {#each selectedFirst( taxonomyOptions, (option) => (filters.taxonomy_ids || []).includes(option) ) as option (option)}
               {@render filterOptionRow(
                 'taxonomy_ids',
                 option,

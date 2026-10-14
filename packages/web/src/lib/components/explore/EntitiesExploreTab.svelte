@@ -496,7 +496,7 @@
         {/if}
       </div>
       <div class="max-h-64 space-y-1 overflow-y-auto pr-2">
-        {#each listed.slice(0, visibleLimit) as option}
+        {#each listed.slice(0, visibleLimit) as option (option.value)}
           {@const selected = selectedValues.includes(option.value)}
           {@const count = scopedFacetCounts.get(`${facetNameForFilter(filterKey)}:${option.value}`)}
           <div class="flex items-center justify-between gap-2 py-0.5">
