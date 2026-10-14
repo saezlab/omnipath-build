@@ -1,184 +1,313 @@
 ---
 name: omnipath-parquet
-description: Lists versioned OmniPath Parquet resources, downloads their published tables, and explains the normalized data model. Use when discovering datasets, downloading resource files, or analyzing downloaded OmniPath Parquet data.
+description: Installs versioned OmniPath resources locally with the omnipath_client Python package and queries them as a DuckDB database, with SQL, entity search and relation exports. Use when finding OmniPath resources, getting OmniPath data, or answering questions about entities, relations, sources and evidence in OmniPath.
 ---
 
-# OmniPath Parquet Resources
+# Use OmniPath
 
-This serving stack publishes one set of normalized Parquet tables per resource version. Use the HTTP API to list datasets and download files. Do not look for Postgres tables or retired zip-of-gold archives.
+Use the `omnipath_client` Python package. It downloads the resources you choose
+once, writes a DuckDB database of them, and answers every later question from
+your machine, with SQL or with the same search and relation export the
+OmniPath website runs. The API is contacted only while installing.
 
-## Base URL
+```python
+import omnipath_client as op
 
-Hosted API:
+op.init(["signor"], progress=print)        # once: download and write the database
 
-```text
-https://omnipath-metabo-dev.schaul.click/api
+with op.connect() as db:
+    db.sql("SELECT predicate, count(*) n FROM signor.relation GROUP BY 1").fetchall()
+    db.search("TP53")                      # ranked entities, as the website searches
+    db.relations("TP53", sources="signor") # relations, as the explorer exports them
 ```
 
-Local development:
+Use the HTTP API directly (last section) only when Python is not available.
 
-```text
-http://127.0.0.1:8085
-```
+## Install
 
-From the Svelte app, the same routes are public under `/api` (for example `http://127.0.0.1:5173/api`).
-
-## Layout
-
-```text
-resources/<resource>/<version>/
-├── entity.parquet
-├── entity_identifier.parquet
-├── entity_annotation.parquet
-├── entity_evidence.parquet
-├── relation.parquet
-├── relation_annotation.parquet
-├── relation_evidence.parquet
-└── evidence_payloads.parquet
-```
-
-The default `release=latest` selects the highest numeric version of each resource.
-Use `GET /releases` to discover published OmniPath releases, then pass
-`?release=<release>` consistently to catalog, file-list and download
-requests to pin a release. An OmniPath release pins a resource version; these
-version numbers need not match. Save the resolved artifact URLs for reproducibility.
-
-## List resources
+Python 3.11 or newer. Install the three packages from GitHub, in one command:
 
 ```bash
-curl -sS "http://127.0.0.1:8085/api/resources?shape=svelte"
+R=git+https://github.com/saezlab/omnipath-build@parquet-migration
+pip install "omnipath-core @ $R#subdirectory=packages/core" \
+            "omnipath-engine @ $R#subdirectory=packages/engine" \
+            "omnipath-client @ $R#subdirectory=packages/client"
+# add pandas for .df()
 ```
 
-Each item has `resource_id`, `version`, `entity_count`, `interaction_count`, `total_size_bytes`, and `files[]` (`name`, `url`, `size_bytes`, `rows`). Catalog listings omit `evidence_payloads.parquet`.
+With uv, use `uv pip install` with the same arguments. Do **not** run a bare
+`pip install omnipath-client`: that name on PyPI is a different package
+(saezlab/omnipath-client) and does not have `init` or `connect`. The older
+`omnipath` package is unrelated and can coexist.
 
-To include column schema:
+## Choose resources
 
 ```bash
-curl -sS "http://127.0.0.1:8085/api/resources/signor/files"
-curl -sS "http://127.0.0.1:8085/api/resources/signor/files?include_evidence=true"
+omnipath-client list        # name, version, size, installed state, tags
 ```
 
-## Download parquets
+```python
+for r in op.available():    # the catalog records
+    print(r["resource_id"], r["version"], r["total_size_bytes"],
+          [(t["dimension"], t["id"]) for t in r["tags"]])
+```
 
-The default zip holds every table except `evidence_payloads.parquet`. Evidence payloads are omitted unless you pass `include_evidence=true`.
+Each record also has `display_name`, `description`, `license`, `website`,
+`entity_count`, `interaction_count` and `files`.
+
+Resources are tagged in four dimensions, which `init` takes as arguments:
+
+- `topic`: `signaling`, `gene_regulation`, `metabolism`, `pharmacology`,
+  `cell_cell_communication`, `disease_phenotype`, `subcellular_localization`,
+  `cell_types`, `molecular_classification`, `nutrition`
+- `content`: `physical_interactions`, `causal_regulation`,
+  `enzyme_ptm_relationships`, `ligand_receptor_interactions`,
+  `compound_target_interactions`, `protein_complexes`, `pathways`,
+  `biochemical_reactions`, `molecular_transport`, `molecular_annotations`,
+  `identifier_mappings`, `ontologies`, `trait_associations`,
+  `literature_mentions`, `food_composition`
+- `knowledge_origin`: `literature_curated`, `experimental`,
+  `computationally_predicted`, `text_mined`
+- `molecule`: currently unused
+
+Tags can change between releases, so check `available()` when a tag is not
+accepted. Install only what the task needs: every resource is about 5.6 GB;
+most single resources are a few MB to a few hundred MB.
+
+## Install data
+
+```python
+op.init(["signor", "intact"])                  # by name
+op.init(topic="cell_cell_communication")       # by tag
+op.init(topic=["signaling", "gene_regulation"], knowledge_origin="literature_curated")
+op.init()                                      # every resource of the release
+```
 
 ```bash
-curl -fsSL -o signor.zip "http://127.0.0.1:8085/api/resources/signor/download"
-curl -fsSL -o signor-with-evidence.zip \
-  "http://127.0.0.1:8085/api/resources/signor/download?include_evidence=true"
+omnipath-client init signor intact
+omnipath-client init --topic signaling --knowledge-origin literature_curated
 ```
 
-One file:
+- **Selection.** Several tags of one dimension are alternatives; different
+  dimensions must all match.
+- **Adding.** Resources already installed stay installed. Running `init` again
+  with more names adds them and downloads only what is missing.
+- **Releases.** The default `release="latest"` takes the newest version of each
+  resource. `init(release="2026.9.6.2")` installs the versions that OmniPath
+  release pins; a release and the resource versions it pins have different
+  numbers. A data directory always holds one release: `init` with another
+  release moves every installed resource to it.
+- **Location.** The per-user data directory (`op.data_directory()`), or
+  `OMNIPATH_DATA_DIR`, or `data_dir=...` (`--data-dir`). Pass the same
+  `data_dir` to `connect`. Use a project directory when the work must be
+  reproducible or kept apart from other work.
+- **Raw evidence.** Original source records (`evidence_payloads`) are
+  downloaded only with `include_evidence=True` (`--evidence`). Ask for them
+  only when the task needs the source rows themselves.
+- **Speed.** `materialize=True` (`--materialize`) copies the data into native
+  DuckDB tables: two to five times faster queries, about twice the files' size
+  in extra disk. The default views are enough for most work.
+- **Interruptions.** An interrupted `init` keeps finished resources; run it
+  again to continue.
 
-```bash
-curl -fsSL -o signor-entity.parquet \
-  "http://127.0.0.1:8085/api/resources/signor/files/entity.parquet"
-curl -fsSL -o signor-relation.parquet \
-  "http://127.0.0.1:8085/api/resources/signor/files/relation.parquet"
+`init` contacts `OMNIPATH_API_URL` when set, otherwise the hosted API
+`https://omnipath-metabo-dev.schaul.click/api`.
+
+## Query
+
+```python
+db = op.connect()                    # or op.connect(data_dir=...)
+db.resources()                       # installed resources, versions, tags, licences
 ```
 
-Evidence payloads are available by explicit filename, not by default listing:
+`sql`, `search` and `relations` return DuckDB relations: rows are read when you
+fetch or export them.
 
-```bash
-curl -fsSL -o signor-evidence_payloads.parquet \
-  "http://127.0.0.1:8085/api/resources/signor/files/evidence_payloads.parquet"
+```python
+rel = db.sql("SELECT * FROM relation WHERE predicate = ?", ["affects"])
+rel.fetchall()                       # list of tuples
+rel.df()                             # pandas (needs pandas)
+rel.to_arrow_table()
+rel.write_parquet("affects.parquet")
+rel.filter("sign = -1").aggregate("count(*)")   # refine a result without rewriting the SQL
 ```
 
-Several resources:
+### Prebuilt queries
 
-```bash
-curl -fsSL -o omnipath-resources.zip \
-  -H "Content-Type: application/json" \
-  -d '{"resource_ids":["signor","chebi"]}' \
-  "http://127.0.0.1:8085/api/resources/download"
+These run the engine behind the hosted API and give the website's answers on
+the installed resources.
+
+```python
+db.search("TP53")                                      # entity_key, label, entity_type, namespace, identifier, taxon, relation_count, ...
+db.search("gluc", entity_types="chemical_entity", limit=50)
+key = db.search("TP53").fetchone()[0]                  # entity_key of the best match
+
+db.relations("TP53", sources="signor")
+db.relations(["TP53", "MDM2"], predicates="affects", taxonomy_ids="9606")
+db.relations("gene:entrez:7157")                       # every product of a gene
+
+db.entity(key)                                         # dict: entity, annotations, summary, relationships
 ```
 
-Allowed filenames: the eight table files in the layout above.
+- `relations` takes exact names, identifiers, entity keys or group keys
+  (`gene:entrez:7157`) at either endpoint. It returns one row per relation,
+  with the `relation` columns plus `annotations`, `evidence` (with molecular
+  forms) and `referenced_product_records` as nested lists. At most 100,000
+  relations; use SQL on `relation` for more.
+- Filters, for `relations` and `search`: `sources`, `predicates`, `signs`,
+  `taxonomy_ids`, `entity_types`, `partner_types`, `relation_categories`,
+  `interaction_types`, `is_directed`, `min_evidence_count`,
+  `reference_entity_keys`, `protein_entity_keys`, `transcript_entity_keys`,
+  `isoform_identifiers`, `annotation_term_ids` and the qualifier filters. One
+  value stands for a list of one. An unknown filter name raises an error that
+  lists the valid ones.
+- `entity` takes the exact `entity_key`. It returns None when no installed
+  resource has it.
+- With a subset installed, counts and merged entities cover only that subset.
+- `db.engine` exposes the rest of the API (facets, grouped search, ontology
+  browsing, molecular context).
+
+### Tables
+
+| Name | Contents |
+| --- | --- |
+| `entity`, `relation`, ... | one table over every installed resource, with `_resource` and `_resource_version` columns |
+| `signor.relation`, `chembl.entity`, ... | the same tables of one resource, in a schema named after it |
+| `resources` | installed resources, versions, and whether raw evidence is installed |
+
+In the tables over every resource, shared entities and relations are **not
+deduplicated**: there is one row per resource that has them. Use
+`entity_key` / `relation_key` to match them across resources, or `search` and
+`relations`, which merge them.
+
+Join child tables to their parent on `entity_id` / `relation_id` **and**
+`_resource` (these ids number rows within one resource version):
+
+```sql
+SELECT e.label, r.predicate, r.object_label, r._resource
+FROM entity AS e
+JOIN relation AS r
+  ON e.entity_key = r.subject_entity_key
+ AND e._resource = r._resource
+WHERE e.reference_entity_key = 'entrez:7157'   -- TP53 and its products, whatever the canonical id
+```
+
+Lookup tables `init` derives, for fast filtering without scanning:
+
+- `entity_term` (`term`, `kind`, `entity_id`): lowercase labels and
+  identifiers, to find entities by name: `WHERE term = 'tp53'`
+- `relation_endpoint` (`key`, `key_kind`, `side`, `relation_id`, `predicate`,
+  `category`): endpoint keys of relations, to find relations by endpoint
+- `entity_group` (`group_key`, `kind`, `entity_id`): gene, reference and
+  structure (`connectivity`) groups of entities
+
+The database is read-only. Make your own tables with `CREATE TEMP TABLE`, or
+write results to Parquet.
 
 ## Schema
 
-`entity_id` and `relation_id` number the rows of `entity.parquet` and `relation.parquet` within one resource version. Child tables refer to their entity or relation by that id; `ordinal` keeps the original order. `entity_key` and `relation_key` identify the same entity or relation across resources.
+`entity_key` and `relation_key` are 64-character keys that identify an entity
+or relation across resources. `ordinal` keeps the original order of child rows.
 
-### `entity.parquet`
+### `entity`
 
-| column                 | type         | meaning                                                 |
-| ---------------------- | ------------ | ------------------------------------------------------- |
-| `entity_id`            | int32        | Row number in this file                                 |
-| `entity_key`           | string       | Canonical entity identity                               |
-| `entity_type`          | string       | Normalized type (protein, small_molecule, …)            |
-| `namespace`            | string       | Canonical identifier namespace                          |
-| `identifier`           | string       | Canonical identifier                                    |
-| `taxon`                | string       | NCBI taxonomy id when known                             |
-| `label`                | string       | Display name                                            |
-| `reference_entity_key` | string       | Shared reference, normally `entrez:<GeneID>`            |
-| `gene_reference_keys`  | list<string> | Catalogue gene links of a product                       |
-| `group_connectivity`   | string       | First InChIKey block (chemical structure group)         |
-| `has_hierarchy`        | bool         | Ontology-style parent/child present                     |
-| `parent_count`         | int64        | Incoming hierarchy edges                                |
-| `child_count`          | int64        | Outgoing hierarchy edges                                |
-| `*_count`              | int64        | Number of identifiers, annotations, evidence, relations |
+| column | type | meaning |
+| --- | --- | --- |
+| `entity_id` | int32 | Row number within the resource version |
+| `entity_key` | string | Canonical entity identity |
+| `entity_type` | string | `protein`, `chemical_entity`, `macromolecular_complex`, … |
+| `namespace`, `identifier` | string | Canonical identifier, e.g. `uniprot` / `P04637` |
+| `taxon` | string | NCBI taxonomy id when known |
+| `label` | string | Display name |
+| `reference_entity_key` | string | Shared reference, normally `entrez:<GeneID>` |
+| `gene_reference_keys` | list<string> | Catalogue gene links of a product |
+| `group_connectivity` | string | First InChIKey block (chemical structure group) |
+| `has_hierarchy`, `parent_count`, `child_count` | bool, int64 | Ontology-style hierarchy |
+| `*_count` | int64 | Number of identifiers, annotations, evidence, relations |
 
-Child tables of `entity` (each with `entity_id`, `ordinal`):
+Child tables (each with `entity_id`, `ordinal`):
 
 - `entity_identifier`: `ns`, `id`, `is_canonical`, `source`
 - `entity_annotation`: `term`, `value`, `quantity_*` (measurement fields), `source`, `dataset`
 - `entity_evidence`: `source`, `dataset`, `row_id`, `upstream_id`, `annotations`, `molecular_form`
 
-### `relation.parquet`
+### `relation`
 
-| column                          | type         | meaning                                     |
-| ------------------------------- | ------------ | ------------------------------------------- |
-| `relation_id`                   | int32        | Row number in this file                     |
-| `relation_key`                  | string       | Canonical relation identity                 |
-| `statement_kind`                | string       | `relation` or `ontology`                    |
-| `subject_entity_key`            | string       | Subject `entity_key`                        |
-| `subject_label`, `subject_type` | string       | Subject display name and type               |
-| `predicate`                     | string       | Relation predicate                          |
-| `object_entity_key`             | string       | Object `entity_key`                         |
-| `object_label`, `object_type`   | string       | Object display name and type                |
-| `*_reference_entity_key`        | string       | Endpoint references                         |
-| `taxon`                         | string       | Shared or primary taxon                     |
-| `is_directed`                   | bool         | Directed edge                               |
-| `sign`                          | int32        | `-1`, `0`, or `1`                           |
-| `category`                      | string       | `interaction`, `association`, `ontology`, … |
-| `interaction_class`             | string       | Optional interaction class                  |
-| `sources`                       | list<string> | Provenance sources                          |
-| `evidence_count`                | int64        | Number of `relation_evidence` rows          |
-| `*_qualifier`                   | list<string> | Biolink qualifiers                          |
+| column | type | meaning |
+| --- | --- | --- |
+| `relation_id` | int32 | Row number within the resource version |
+| `relation_key` | string | Canonical relation identity |
+| `statement_kind` | string | `relation` or `ontology` |
+| `subject_entity_key`, `object_entity_key` | string | Endpoint `entity_key`s |
+| `subject_label`, `subject_type`, `object_label`, `object_type` | string | Endpoint names and types |
+| `*_reference_entity_key` | string | Endpoint references |
+| `predicate` | string | Relation predicate, e.g. `affects`, `has_member` |
+| `taxon` | string | Shared or primary taxon |
+| `is_directed` | bool | Directed edge |
+| `sign` | int32 | `-1`, `0` or `1` |
+| `category` | string | `interaction`, `association`, `ontology`, … |
+| `interaction_class` | string | Optional interaction class |
+| `sources` | list<string> | Provenance sources |
+| `evidence_count` | int64 | Number of `relation_evidence` rows |
+| `*_qualifier` | list<string> | Biolink qualifiers |
 
-Child tables of `relation` (each with `relation_id`, `ordinal`):
+Child tables (each with `relation_id`, `ordinal`):
 
 - `relation_annotation`: `term`, `value`, `quantity_*`, `source`, `dataset`, `scope`
 - `relation_evidence`: `source`, `dataset`, `row_id`, `upstream_id`, `annotations`, `subject_molecular_form`, `object_molecular_form`
 
-Join relation evidence payloads with `relation_key` + `source` + `row_id` within the same resource version. Entity payloads use `entity_key` instead of `relation_key`.
+### `evidence_payloads` (only with raw evidence)
 
-### `evidence_payloads.parquet`
-
-| column         | type   | meaning                                   |
-| -------------- | ------ | ----------------------------------------- |
+| column | type | meaning |
+| --- | --- | --- |
 | `relation_key` | string | Parent relation, null for entity payloads |
-| `entity_key`   | string | Parent entity, null for relation payloads |
-| `source`       | string | Upstream resource                         |
-| `row_id`       | string | Source row identity                       |
-| `payload_json` | string | Original source record as JSON            |
+| `entity_key` | string | Parent entity, null for relation payloads |
+| `source` | string | Upstream resource |
+| `row_id` | string | Source row identity |
+| `payload_json` | string | Original source record as JSON |
 
-## Query downloaded files
+Join a payload to its evidence row on `relation_key` (or `entity_key`) +
+`source` + `row_id`, within the same resource.
+
+## Without Python
+
+The database works with any DuckDB client, for SQL only (`search`,
+`relations` and `entity` need Python):
 
 ```bash
-python - <<'PY'
-import duckdb
-con = duckdb.connect()
-print(con.execute("SELECT entity_type, count(*) n FROM 'signor-entity.parquet' GROUP BY 1 ORDER BY n DESC").fetchall())
-print(con.execute("SELECT predicate, count(*) n FROM 'signor-relation.parquet' GROUP BY 1 ORDER BY n DESC LIMIT 10").fetchall())
-PY
+duckdb -readonly "$(python -c 'import omnipath_client as op; print(op.data_directory())')/omnipath.duckdb"
 ```
+
+```sql
+ATTACH '/path/to/omnipath.duckdb' AS omnipath (READ_ONLY);   -- from another database, R, ...
+```
+
+Without the client at all, the HTTP API serves the catalog and the files
+(`https://omnipath-metabo-dev.schaul.click/api`):
+
+```bash
+API=https://omnipath-metabo-dev.schaul.click/api
+curl -sS "$API/releases"                                   # published releases
+curl -sS "$API/resources?shape=svelte"                     # catalog: versions, sizes, files[].url
+curl -fsSL -o signor-relation.parquet "$API/resources/signor/files/relation.parquet"
+curl -fsSL -o signor.zip "$API/resources/signor/download"  # every table but evidence_payloads
+```
+
+Pass `?release=<release>` to every request to pin a release. The files are the
+tables above, one Parquet file each, without `_resource` columns and without
+the lookup tables.
 
 ## Rules
 
-- Prefer `resource_id` values returned by `GET /resources?shape=svelte`.
-- Download individual files using `files[].url` when provided, or `/resources/{id}/files/{filename}`. Use `/resources/{id}/download` for ZIPs.
-- Pin a published release when reproducibility matters; retain the resolved resource versions and URLs.
-- Do not request `evidence_payloads.parquet` unless the task needs raw source records.
-- Join child tables to `entity` / `relation` by `entity_id` / `relation_id` within one resource version.
-- Filtered slices of relations (not whole resources) use `POST /export`.
+- Use the client. Fall back to the HTTP API only without Python.
+- Install the smallest selection that answers the question; add resources
+  later with another `init`.
+- Use `search` to turn a name into an `entity_key`, and `relations` for an
+  entity's relations, before writing SQL for the same thing. Use SQL for
+  counts, aggregates and anything over 100,000 relations.
+- In SQL over every resource, remember there is one row per resource; join
+  on `_resource` as well as the ids.
+- For reproducible work, pin `release=...`, use a dedicated `data_dir`, and
+  record `db.resources()` (resource versions) with the results.
+- Request raw evidence only when the task needs original source records.
+- Write result files as Parquet.

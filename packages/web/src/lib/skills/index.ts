@@ -18,12 +18,13 @@ export const skills: Skill[] = [
   {
     name: 'omnipath-parquet',
     title: 'Use OmniPath',
-    description: 'Find resources, download data, and understand entities and relations.',
+    description:
+      'Install resources with the OmniPath client and query entities and relations locally.',
     kind: 'Use the data',
     capabilities: [
-      'Browse versioned resources',
-      'Download Parquet files',
-      'Work with entities, relations, and evidence',
+      'Install resources by name or topic',
+      'Query a local DuckDB database with SQL',
+      'Search entities and export relations as the website does',
     ],
     examples: [
       'Download the SIGNOR relations and count them by predicate.',
