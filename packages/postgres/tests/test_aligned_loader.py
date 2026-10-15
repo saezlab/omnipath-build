@@ -423,3 +423,40 @@ def test_current_clis_finish_without_parquets_skip_committed_then_explicitly_reb
             ).format(sql.Identifier(schema))
         )
         assert cursor.fetchone() == ("2026.09", "digest", {"rows": 2})
+
+
+class _LockSettingsCursor:
+    """Answers the two queries of _check_lock_capacity."""
+
+    def __init__(self, relations, settings):
+        self.answers = [relations, settings]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, *args):
+        pass
+
+    def fetchone(self):
+        return self.answers.pop(0)
+
+
+class _LockSettingsConnection:
+    def __init__(self, relations, settings):
+        self.relations, self.settings = relations, settings
+
+    def cursor(self):
+        return _LockSettingsCursor(self.relations, self.settings)
+
+
+def test_lock_capacity_is_checked_before_the_projection():
+    # dev5, October 2026: 59 partitioned tables and indexes, ~290 shared relations;
+    # the default 64 locks x 100 connections held 46 resources but not 171.
+    assert aligned_loader.required_locks(59, 290, 46) < 64 * 100 < aligned_loader.required_locks(59, 290, 171)
+    aligned_loader._check_lock_capacity(_LockSettingsConnection((59, 290), (64, 100)), "omnipath", 46)
+    with pytest.raises(ValueError, match="max_locks_per_transaction to 256"):
+        aligned_loader._check_lock_capacity(_LockSettingsConnection((59, 290), (64, 100)), "omnipath", 171)
+    aligned_loader._check_lock_capacity(_LockSettingsConnection((59, 290), (4096, 100)), "omnipath", 171)

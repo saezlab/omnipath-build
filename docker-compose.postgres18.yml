@@ -49,6 +49,11 @@ services:
       - max_parallel_workers=${POSTGRES_MAX_PARALLEL_WORKERS:-4}
       - -c
       - effective_io_concurrency=${POSTGRES_EFFECTIVE_IO_CONCURRENCY:-200}
+      # The release loader defers the constraints of every resource partition in
+      # one transaction: about 60 locks per resource. The default 64 per connection
+      # slot held 46 resources but not 171 ("out of shared memory").
+      - -c
+      - max_locks_per_transaction=${POSTGRES_MAX_LOCKS_PER_TRANSACTION:-512}
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U omnipath -d omnipath"]
       interval: 5s

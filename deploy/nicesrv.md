@@ -91,3 +91,26 @@ Set `OMNIPATH_DATABASE_URL` for the intended database first. Use the normal user
 environment, including `HOME`, so DuckDB can load its HTTP extension. Local
 DuckDB staging is temporary; no persistent Parquet download cache is created.
 Release `2026.10.9` was loaded this way into dev5 on beauty in 1 h 47 min.
+
+For a large release, copy it first and load the copy. Release `2026.10.14.2` (171
+resources) failed twice over HTTPS on beauty: DuckDB reported "Could not resolve
+hostname" in the projection staging after thousands of good requests, retries did
+not help. The copy (14 GB, checksums checked, files the host does not publish
+skipped) took 3.5 minutes:
+
+```sh
+uv run python scripts/mirror_release.py 2026.10.14.2 /tmp/release \
+  --base-url https://data.omnipath-metabo-dev.schaul.click
+make load-postgres \
+  RELEASE_MANIFEST=/tmp/release/releases/2026.10.14.2.json \
+  DATA_ROOT=/tmp/release \
+  POSTGRES_SCHEMA=an_explicit_new_schema
+```
+
+The load defers the constraints of all resource partitions in one transaction,
+about 60 locks per resource; the loader checks before the projection that
+PostgreSQL's lock table can hold them. The default `max_locks_per_transaction` of
+64 held 46 resources but not 171: set it higher (the build compose uses 512, dev5
+runs with 4096) and restart PostgreSQL. Release `2026.10.14.2` loaded into dev5
+from a local copy in 2 h 40 min: 210 GB, 5.2 million entities, 27.9 million
+relations.

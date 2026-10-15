@@ -9,6 +9,7 @@ description = "Load pinned, resolved OmniPath Parquet releases into PostgreSQL"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "certifi>=2023.7.22",
     "omnipath-core>=0.1.0,<0.2.0",
     "omnipath-subsets>=0.1.0,<0.2.0",
     "duckdb>=1.5,<2",

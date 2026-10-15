@@ -1619,6 +1619,7 @@ name = "omnipath-postgres"
 version = "0.1.0"
 source = { editable = "packages/postgres" }
 dependencies = [
+    { name = "certifi" },
     { name = "duckdb" },
     { name = "omnipath-core" },
     { name = "omnipath-subsets" },
@@ -1630,6 +1631,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "certifi", specifier = ">=2023.7.22" },
     { name = "duckdb", specifier = ">=1.5,<2" },
     { name = "omnipath-core", editable = "packages/core" },
     { name = "omnipath-subsets", editable = "packages/subsets" },

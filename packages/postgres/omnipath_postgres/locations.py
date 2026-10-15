@@ -8,11 +8,16 @@ from __future__ import annotations
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+from functools import cache
 import io
+import os
+import ssl
 from time import perf_counter
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 from urllib.request import Request, urlopen
+
+import certifi
 
 Location = str | Path
 TIMEOUT = 60
@@ -87,11 +92,22 @@ def join_location(root: Location, *parts: str) -> Location:
     return Path(root).joinpath(*parts)
 
 
+@cache
+def ssl_context() -> ssl.SSLContext:
+    """Certificate authorities for HTTPS: SSL_CERT_FILE where it is set, else certifi's.
+
+    The standalone Python builds that uv installs do not find the system's
+    certificates on every host (NixOS): reading a release there failed with
+    CERTIFICATE_VERIFY_FAILED.
+    """
+    return ssl.create_default_context(cafile=None if os.environ.get("SSL_CERT_FILE") else certifi.where())
+
+
 def open_http(url: str, *, method: str = "GET", headers: dict | None = None):
     request = Request(
         validate_url(url), method=method, headers={"Accept-Encoding": "identity", **(headers or {})}
     )
-    response = urlopen(request, timeout=TIMEOUT)
+    response = urlopen(request, timeout=TIMEOUT, context=ssl_context())
     try:
         validate_url(response.geturl())
         if response.headers.get("Content-Encoding", "identity") != "identity":

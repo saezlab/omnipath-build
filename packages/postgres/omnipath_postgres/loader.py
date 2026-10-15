@@ -79,6 +79,51 @@ def _lock(conn, schema):
     acquire_schema_lock(conn, schema)
 
 
+def required_locks(partitioned: int, shared: int, sources: int) -> int:
+    """Locks that deferring the constraints takes in one transaction.
+
+    Every partitioned table and partitioned index gets a partition per source and
+    a default one; dropping the constraints and indexes locks all of them, and the
+    shared relations besides.
+    """
+    return partitioned * (sources + 1) + shared
+
+
+def _check_lock_capacity(conn, schema, sources):
+    """Fail before the projection when PostgreSQL cannot hold the deferral's locks.
+
+    The shared lock table holds max_locks_per_transaction locks per connection slot
+    (max_connections + max_prepared_transactions). With the default 64 and 100
+    connections, 46 resources fit and 171 do not ("out of shared memory" after
+    the projection, in _defer_constraints).
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """SELECT count(*) FILTER (WHERE c.relkind IN ('p','I')),
+                      count(*) FILTER (WHERE c.relkind IN ('r','i'))
+            FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+            WHERE n.nspname=%s AND NOT c.relispartition""",
+            [schema],
+        )
+        partitioned, shared = cur.fetchone()
+        cur.execute(
+            "SELECT current_setting('max_locks_per_transaction')::int,"
+            " current_setting('max_connections')::int"
+            " + current_setting('max_prepared_transactions')::int"
+        )
+        per_slot, slots = cur.fetchone()
+    needed = required_locks(partitioned, shared, sources)
+    if needed > per_slot * slots:
+        # A quarter for the foreign keys' referenced tables and other sessions.
+        suggestion = 1 << max(6, (needed * 5 // 4 // slots).bit_length())
+        raise ValueError(
+            f"PostgreSQL's lock table holds {per_slot * slots} locks "
+            f"(max_locks_per_transaction={per_slot} x {slots} slots); loading "
+            f"{sources} resources needs about {needed}. Set max_locks_per_transaction "
+            f"to {suggestion} or more and restart PostgreSQL."
+        )
+
+
 def _identity(conn, schema, expected=None):
     with conn.cursor() as cur:
         cur.execute(
@@ -570,6 +615,7 @@ def load_release(
                 )
         try:
             ensure_schema(conn, schema=schema, indexes=False, progress=True)
+            _check_lock_capacity(conn, schema, len(release.resources))
             _metadata_schema(conn, schema, release)
             identity = (release.version, release.sha256)
             with TemporaryDirectory(prefix="main-projection-", dir=spool) as directory:
