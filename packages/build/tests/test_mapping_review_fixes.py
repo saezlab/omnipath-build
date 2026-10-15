@@ -12,7 +12,17 @@ from omnipath_build.writer import ParquetWriter
 from omnipath_core.measurements import quantity_dict
 from omnipath_core.naming import Namespace
 from omnipath_core.silver_schema import format_term
-from pypath.inputs_v2 import cellchat, cellphonedb, chembl, rampdb, reactome, signor, swisslipids
+from pypath.inputs_v2 import (
+    cellchat,
+    cellphonedb,
+    chembl,
+    connectomedb,
+    icellnet,
+    rampdb,
+    reactome,
+    signor,
+    swisslipids,
+)
 from pypath.inputs_v2.base import ontology_term_to_entity
 from pypath.inputs_v2.parsers import chembl as chembl_parser
 from pypath.internals.ontology_schema import OntologyTerm
@@ -447,3 +457,122 @@ def test_ensembl_normalization_matches_library_sql(ns, value):
         assert normalize_identifier(ns, value) == [(ns, normalized)]
     finally:
         con.close()
+
+
+def _participant_values(tables, term):
+    """{(endpoint label, value)} of a participant-scoped relation annotation."""
+    relations = {r["relation_id"]: r for r in tables["relation"]}
+    return {
+        (relations[a["relation_id"]][f"{a['scope']}_label"], a["value"])
+        for a in tables["relation_annotation"]
+        if a["term"] == term and a["scope"] in ("subject", "object")
+    }
+
+
+def _relation_values(tables, term):
+    return {
+        a["value"]
+        for a in tables["relation_annotation"]
+        if a["term"] == term and a["scope"] == "relation"
+    }
+
+
+def test_connectomedb_locations_stay_with_their_participant(tmp_path):
+    row = {
+        "Interaction ID": "CDB15:0000001",
+        "LR Pair": "A2M LRP1",
+        "Ligand Symbols": "A2M (FWP007)",
+        "Receptor Symbols": "LRP1 (APR, CD91)",
+        "Ligand Species ID": "HGNC:7",
+        "Receptor Species ID": "HGNC:6692",
+        "Ligand Location": "secreted, cell membrane",
+        "Receptor Location": "cell membrane",
+        "Species": "Human",
+    }
+    tables = final([connectomedb.interactions_schema(row)], tmp_path, "connectomedb")
+    assert _participant_values(tables, connectomedb.LOCATION) == {
+        ("A2M", "secreted, cell membrane"),
+        ("LRP1", "cell membrane"),
+    }
+    assert _participant_values(tables, "connectomedb:participant_role") == {
+        ("A2M", "ligand"),
+        ("LRP1", "receptor"),
+    }
+
+
+def test_cellchat_interaction_class_and_partner_attributes(tmp_path):
+    protein = {
+        **_cellchat_row("TGFB1", ["TGFB1"], annotation="Secreted Signaling"),
+        "interaction_name": "TGFB1_TGFBR1_TGFBR2",
+        "receptor_name": "TGFbR1_R2",
+        "receptor_genes": ["TGFBR1", "TGFBR2"],
+        "ligand_location": "Extracellular",
+        "ligand_transmembrane": "FALSE",
+        "ligand_secreted_type": "growth factor",
+        "receptor_location": "Cell membrane",
+        "receptor_transmembrane": "TRUE",
+        "receptor_secreted_type": "",
+    }
+    metabolite = {
+        **_cellchat_row("5-HT-TPH1_SLC18A1", ["TPH1", "SLC18A1"]),
+        "receptor_location": "Cell membrane",
+    }
+    relations = [cellchat.map_cellchat_interaction(r) for r in (protein, metabolite)]
+    tables = final(relations, tmp_path, "cellchat")
+    assert _relation_values(tables, cellchat.INTERACTION_CLASS) == {
+        "Secreted Signaling",
+        "Non-protein Signaling",
+    }
+    roles = _participant_values(tables, "connectomedb:participant_role")
+    assert ("TGFB1", "ligand") in roles and ("HTR1A", "receptor") in roles
+    assert {value for _, value in roles} == {"ligand", "receptor"} and len(roles) == 4
+    assert ("TGFB1", "growth factor") in _participant_values(tables, cellchat.SECRETED_TYPE)
+    # An empty cell gives no annotation.
+    assert {v for _, v in _participant_values(tables, cellchat.SECRETED_TYPE)} == {"growth factor"}
+    assert {v for _, v in _participant_values(tables, cellchat.TRANSMEMBRANE)} == {"FALSE", "TRUE"}
+    assert {v for _, v in _participant_values(tables, cellchat.LOCATION)} == {
+        "Extracellular",
+        "Cell membrane",
+    }
+
+
+def test_cellphonedb_interaction_attributes(tmp_path):
+    row = {
+        "partner_a": "P01137",
+        "partner_b": "P36897",
+        "directionality": "Ligand-Receptor",
+        "classification": "Signaling by Transforming growth factor",
+        "is_ppi": "True",
+    }
+    tables = final([cellphonedb.interactions_schema(row)], tmp_path, "cellphonedb")
+    assert _relation_values(tables, cellphonedb.DIRECTIONALITY) == {"Ligand-Receptor"}
+    assert _relation_values(tables, cellphonedb.CLASSIFICATION) == {
+        "Signaling by Transforming growth factor"
+    }
+    assert _relation_values(tables, cellphonedb.IS_PPI) == {"True"}
+
+
+def _icellnet_row(ligands, receptors):
+    row = {f"Ligand {i}": "" for i in range(1, 5)} | {f"Receptor {i}": "" for i in range(1, 6)}
+    row |= {f"Ligand {i}": gene for i, gene in enumerate(ligands, 1)}
+    row |= {f"Receptor {i}": gene for i, gene in enumerate(receptors, 1)}
+    return row | {"Reference": "1335692"}
+
+
+def test_icellnet_spreadsheet_currency_cells_are_gene_symbols():
+    assert icellnet._clean_gene("1,00\xa0DKK") == "DKK1"
+    assert icellnet._clean_gene("3,00\xa0NPR") == "NPR3"
+    assert icellnet._clean_gene("SCD2") == "SCD2"
+
+
+def test_icellnet_roles_follow_the_ligand_and_receptor_columns(tmp_path):
+    pairs = [("OSTN", "3,00\xa0NPR"), ("HGF", "SDC1"), ("APOE", "SCARB1"), ("SDC2", "FGFR4")]
+    relations = [icellnet.map_icellnet_interaction(_icellnet_row([l], [r])) for l, r in pairs]
+    tables = final(relations, tmp_path, "icellnet")
+    expected = {(icellnet._clean_gene(l), "ligand") for l, _ in pairs}
+    expected |= {(icellnet._clean_gene(r), "receptor") for _, r in pairs}
+    assert _participant_values(tables, "connectomedb:participant_role") == expected
+    # The predicate is symmetric: some pairs are stored receptor first, and the
+    # roles must still name the right endpoint.
+    ligands = {l for l, _ in pairs}
+    assert any(r["subject_label"] not in ligands for r in tables["relation"])
