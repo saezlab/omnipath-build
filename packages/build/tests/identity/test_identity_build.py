@@ -340,13 +340,16 @@ def test_ramp_gene_source_gene_mappings(q):
 
 def test_gene_products(q):
     rows = q("SELECT protein_entity_id,entrez_id,taxon FROM $products_by_protein")
-    assert rows == sorted(rows) and len(rows) == 16
+    assert rows == sorted(rows) and len(rows) == 20
     assert ("uniprot:P04637", "7157", "9606") in rows
+    # Neither gene's symbol is the gene name CYCS: both stay.
     assert ("uniprot:P99999", "7158", "9606") in rows and ("uniprot:P99999", "7159", "9606") in rows
+    assert [r[1] for r in rows if r[0] == "uniprot:P0C0L4"] == ["720"]
+    assert [r[1] for r in rows if r[0] == "uniprot:P0DN86"] == ["1082", "93659", "94115"]
     assert ("uniprot:Q00003", "5555", "9606") in rows  # target record absent: kept
     assert not [r for r in rows if r[0] == "uniprot:Q00002"]  # known, different organisms: dropped
     by_gene = q("SELECT entrez_id,protein_entity_id,taxon FROM $products_by_gene")
-    assert by_gene == sorted(by_gene) and len(by_gene) == 16
+    assert by_gene == sorted(by_gene) and len(by_gene) == 20
 
 
 def test_lipid_structures_rule5(q):

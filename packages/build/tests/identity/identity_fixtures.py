@@ -146,6 +146,21 @@ def protein_hubs():
     uniprot.record(
         "Q00003", ("uniprot", "Q00003"), ("entrez", "5555"), ("hgnc", "HGNC:5555"), **human
     )
+    # Several genes: the one whose symbol is the protein's gene name keeps it (C4A, not
+    # C4B); a protein naming two of its three genes keeps all three.
+    for gene, symbol in (("720", "C4A"), ("721", "C4B"), ("1082", "CGB3"), ("93659", "CGB5"), ("94115", "CGB8")):
+        entrez.record(gene, ("genesymbol", symbol), **human)
+    uniprot.record(
+        "P0C0L4", ("uniprot", "P0C0L4"), ("genesymbol", "C4A"), ("entrez", "720"), ("entrez", "721"), **human
+    )
+    uniprot.record(
+        "P0DN86",
+        ("uniprot", "P0DN86"),
+        ("genesymbol", "CGB3"),
+        ("genesymbol", "CGB5"),
+        *(("entrez", gene) for gene in ("1082", "93659", "94115")),
+        **human,
+    )
     # More than ten genes behind one symbol: every gene stays a candidate.
     for n in range(12):
         entrez.record(str(100 + n), **human)

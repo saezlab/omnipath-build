@@ -106,6 +106,10 @@ def xrefs_of(indexes, hub):
     return f"read_parquet({quote(indexes[hub] / 'xrefs.parquet')})"
 
 
+def by_record_of(indexes, hub):
+    return files(str(indexes[hub] / "by_record" / "*" / "*.parquet"))
+
+
 # ------------------------------------------------------------------------- stages
 def decide(ctx, c, indexes):
     """Rules 1-4: quarantine, lipid-name anchors, one-step attach, grouping."""
@@ -259,7 +263,11 @@ def decide(ctx, c, indexes):
 
 
 def stage_gene_products(ctx, directory, indexes):
-    """Rule 6, same derivation as `build_reference.gene_products_query` (brief 3.6)."""
+    """Rule 6: protein-gene links from UniProt GeneID cross-references (brief 3.6).
+
+    A protein linked to several genes keeps only the gene whose NCBI symbol is one of
+    its UniProt gene names, where exactly one is: P0C0L4 (gene name C4A) is a product
+    of C4A, not C4B; P0DN86 (CGB3, CGB5, CGB8) stays a product of all three."""
     c = ctx.connect("gene_products")
     out = ctx.out
     empty = "SELECT NULL::VARCHAR protein_entity_id,NULL::VARCHAR entrez_id,NULL::VARCHAR taxon WHERE false"
@@ -283,6 +291,26 @@ def stage_gene_products(ctx, directory, indexes):
             SELECT t.anchor,s.local_id,t.taxon FROM gf e JOIN {en} s ON s.local_id=e.local_id
             JOIN {up} t ON t.local_id=e.identifier AND t.anchor_count=1
             WHERE s.taxon IS NULL OR t.taxon IS NULL OR s.taxon=t.taxon)"""
+        c.execute(f"CREATE TABLE gp AS {query}")
+        c.execute(
+            f"""CREATE TABLE named AS
+            WITH multi AS (SELECT protein_entity_id,substr(protein_entity_id,9) local_id,entrez_id
+                FROM gp WHERE protein_entity_id IN
+                (SELECT protein_entity_id FROM gp GROUP BY 1 HAVING count(DISTINCT entrez_id)>1))
+            SELECT DISTINCT m.protein_entity_id,m.entrez_id FROM multi m
+            JOIN (SELECT local_id,value FROM {by_record_of(indexes, "uniprot")}
+                WHERE source_type='genesymbol' AND local_id IN (SELECT local_id FROM multi)) u
+                ON u.local_id=m.local_id
+            JOIN (SELECT local_id,value FROM {by_record_of(indexes, "entrez")}
+                WHERE source_type='genesymbol' AND local_id IN (SELECT entrez_id FROM multi)) g
+                ON g.local_id=m.entrez_id AND g.value=u.value"""
+        )
+        c.execute(
+            """DELETE FROM gp WHERE protein_entity_id IN
+            (SELECT protein_entity_id FROM named GROUP BY 1 HAVING count(*)=1)
+            AND (protein_entity_id,entrez_id) NOT IN (SELECT protein_entity_id,entrez_id FROM named)"""
+        )
+        query = "SELECT * FROM gp"
     n = ctx.copy(
         c,
         query + " ORDER BY protein_entity_id,entrez_id",

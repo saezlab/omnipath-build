@@ -1,5 +1,7 @@
 """Review regressions checked across parser, resolution and serving boundaries."""
 
+from types import SimpleNamespace
+
 import duckdb
 import pyarrow.parquet as pq
 import pytest
@@ -147,6 +149,29 @@ def test_cellchat_protein_ligands_stay_proteins():
     assert format_term(secreted.subject.type) == "protein"
 
 
+def test_cellchat_symbol_in_another_case_takes_the_gene_info_spelling():
+    import pandas as pd
+    from pypath.inputs_v2.parsers import cellchat as cellchat_parser
+
+    db = {
+        "interaction": pd.DataFrame(
+            [
+                {"ligand": "Cd99", "receptor": "Pilrb", "ligand.symbol": "Cd99", "receptor.symbol": "Pilrb"},
+                {"ligand": "C1orf112", "receptor": "Abc", "ligand.symbol": "C1orf112", "receptor.symbol": "Abc"},
+            ]
+        ),
+        "complex": pd.DataFrame(),
+        # ABC and Abc differ only in case: a symbol matching both keeps its spelling.
+        "geneInfo": pd.DataFrame({"Symbol": ["CD99", "PILRB", "C1orf112", "ABC", "Abc"]}),
+    }
+    db["interaction"].loc[1, "receptor.symbol"] = "aBC"
+    rows = list(cellchat_parser._iter_interaction_rows(db, "9606"))
+    assert [(r["ligand_genes"], r["receptor_genes"]) for r in rows] == [
+        (["CD99"], ["PILRB"]),
+        (["C1orf112"], ["aBC"]),
+    ]
+
+
 def test_cellchat_metabolite_abbreviation_is_the_longest_prefix():
     assert cellchat.metabolite("5-HT-DOPA-DDC") == "5-HT-DOPA"
     assert cellchat.metabolite("5-HT-TPH1_SLC6A4") == "5-HT"
@@ -180,6 +205,33 @@ def test_cellphonedb_complex_reference_and_definition_join(tmp_path):
     definition = cellphonedb.complexes_schema({"complex_name": "complex A", "uniprot_1": "P04637"})
     entities = final([interaction, definition], tmp_path, "cellphonedb")["entity"]
     assert len([e for e in entities if e["entity_type"] == "macromolecular_complex"]) == 1
+
+
+def test_cellphonedb_protein_written_by_its_symbol_is_a_protein(monkeypatch):
+    tables = {
+        "complexes": [{"complex_name": "IFNAR_complex"}],
+        "proteins": [{"uniprot": "IFNA1"}, {"uniprot": "HLAA"}, {"uniprot": "P01562"}],
+        "interactions": [{"partner_a": "IFNA1", "partner_b": "IFNAR_complex"}],
+    }
+    for name in ("complexes", "proteins"):
+        monkeypatch.setattr(
+            cellphonedb, f"download_{name}", SimpleNamespace(open=lambda name=name: name)
+        )
+    monkeypatch.setattr(cellphonedb, "iter_csv", lambda opener, **kw: iter(tables[opener]))
+    row = next(cellphonedb.iter_interactions("interactions"))
+    relation = cellphonedb.interactions_schema(row)
+    assert format_term(relation.subject.type) == "protein"
+    assert [(i.type, i.value) for i in relation.subject.identifiers] == [
+        (Namespace.GENESYMBOL, "IFNA1")
+    ]
+    assert format_term(relation.object.type) == "macromolecular_complex"
+    assert [(i.type, i.value) for i in relation.object.identifiers] == [
+        (Namespace.NAME, "IFNAR_complex")
+    ]
+    hla = cellphonedb.interactions_schema({"partner_a": "HLAA", "partner_b": "P01562"})
+    assert [(i.type, i.value) for i in hla.subject.identifiers] == [
+        (Namespace.GENESYMBOL, "HLA-A")
+    ]
 
 
 def test_cellphonedb_metabolite_systems_carry_their_chebi_term():
@@ -563,6 +615,7 @@ def test_icellnet_spreadsheet_and_misspelt_cells_are_gene_symbols():
     assert icellnet._clean_gene("1,00\xa0DKK") == "DKK1"
     assert icellnet._clean_gene("3,00\xa0NPR") == "NPR3"
     assert icellnet._clean_gene("SCD2") == "SDC2"
+    assert icellnet._clean_gene("NRP") == "NDP"
 
 
 def test_icellnet_roles_follow_the_ligand_and_receptor_columns(tmp_path):
