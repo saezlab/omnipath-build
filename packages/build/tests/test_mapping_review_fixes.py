@@ -559,10 +559,10 @@ def _icellnet_row(ligands, receptors):
     return row | {"Reference": "1335692"}
 
 
-def test_icellnet_spreadsheet_currency_cells_are_gene_symbols():
+def test_icellnet_spreadsheet_and_misspelt_cells_are_gene_symbols():
     assert icellnet._clean_gene("1,00\xa0DKK") == "DKK1"
     assert icellnet._clean_gene("3,00\xa0NPR") == "NPR3"
-    assert icellnet._clean_gene("SCD2") == "SCD2"
+    assert icellnet._clean_gene("SCD2") == "SDC2"
 
 
 def test_icellnet_roles_follow_the_ligand_and_receptor_columns(tmp_path):
