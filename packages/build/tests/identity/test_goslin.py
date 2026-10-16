@@ -111,3 +111,40 @@ def test_cache_persists_batches_and_invalidates_changed_normalizer(tmp_path):
     with NormalizationCache(tmp_path, changed_normalizer) as cache:
         assert cache.path != first_path
         assert cache.lookup(["PC 34:1"]) == []
+
+
+def test_general_database_parse_must_match_the_record_structure(tmp_path):
+    """Water's synonym HOH parses as a hydroxy fatty acid; its formula says otherwise."""
+    import json
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from omnipath_build.identity.goslin import build
+
+    chebi = tmp_path / "chebi.parquet"
+    rows = [
+        ("CHEBI:15377", "name", "water"),
+        ("CHEBI:15377", "synonym", "HOH"),
+        ("CHEBI:15377", "formula", "H2O"),
+        ("CHEBI:16196", "name", "oleic acid"),
+        ("CHEBI:16196", "synonym", "FA 18:1(9Z)"),
+        ("CHEBI:16196", "formula", "C18H33O2"),  # the anion: hydrogen does not count
+        ("CHEBI:9", "synonym", "PC 34:1"),  # no structure stated: nothing to contradict
+        # Lipid notation is the source's own statement, even against its formula.
+        ("CHEBI:89504", "name", "PC(36:2)"),
+        ("CHEBI:89504", "formula", "C44H84NO7P"),
+        ("CHEBI:17120", "name", "hexanoate"),  # read as WE 6:0/0:0: never a claim
+    ]
+    pq.write_table(
+        pa.Table.from_pylist([dict(hub_id=h, source_type=t, source_id=v) for h, t, v in rows]),
+        chebi,
+    )
+    out = tmp_path / "result"
+    build({"chebi": chebi}, out, workers=1, memory="256MB")
+    claims = {r["record_id"]: r["goslin"] for r in pq.read_table(out / "claims.parquet").to_pylist()}
+    assert "chebi:CHEBI:15377" not in claims
+    assert "chebi:CHEBI:17120" not in claims
+    assert claims["chebi:CHEBI:16196"] == normalize("FA 18:1(9Z)")["goslin"]
+    assert claims["chebi:CHEBI:9"] == normalize("PC 34:1")["goslin"]
+    assert claims["chebi:CHEBI:89504"] == normalize("PC(36:2)")["goslin"]
+    summary = json.loads((out / "summary.json").read_text())
+    assert summary["structure_rejected"] == 1

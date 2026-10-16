@@ -2,6 +2,17 @@
 
 IDs are local level-qualified descriptors, not accession numbers issued by Goslin.
 Only the most specific successfully parsed name level on each record is admitted.
+
+In a general compound database (ChEBI, HMDB, RefMet) a name can parse as a lipid
+by its shape alone: water's synonym "HOH" reads as the hydroxy fatty acid
+"FA 18:5;OH", and an anion named "-oate" as a wax ester "WE 18:2/0:0". A name the
+source writes in lipid notation (a chain such as ``16:0``) is the source's own
+lipid statement and stands. A parse of any other name counts only where it
+agrees with the structure the record states (a formula, or InChI's formula
+layer): the same composition, hydrogen aside, since charge states differ in it.
+The lipid databases' names are lipid names by construction and are not checked.
+A wax ester without its alcohol ("WE 6:0/0:0") is Goslin's reading of an
+"-oate" name in every hub, and is no claim anywhere.
 """
 
 from __future__ import annotations
@@ -9,7 +20,10 @@ from __future__ import annotations
 import concurrent.futures
 import contextlib
 import json
+import re
 import time
+from collections import Counter
+from functools import lru_cache
 from pathlib import Path
 
 import duckdb
@@ -22,6 +36,14 @@ from omnipath_resolver.goslin import normalize
 
 BATCH_NAMES = 128
 SOURCES = ("swisslipids", "lipidmaps", "hmdb", "chebi", "refmet")
+LIPID_DATABASES = frozenset({"swisslipids", "lipidmaps"})
+_ELEMENT = re.compile(r"(\d*)([A-Z][a-z]?)(\d*)")
+# A wax ester whose alcohol chain is empty: Goslin's reading of an "-oate" name.
+EMPTY_ALCOHOL = r"^[a-z_]+:WE .*/0:0$"
+# A chain written as carbons:double bonds: the name is lipid notation.
+LIPID_NOTATION = r"\d+:\d+"
+# Formula text no composition can be read from: R groups, repeat units, wildcards.
+_UNREADABLE = re.compile(r"[^A-Za-z0-9.+\-]|R|X")
 SCHEMA = pa.schema(
     [(n, pa.string()) for n in ("name", "goslin", "level", "status")]
     + [("specificity", pa.int32())]
@@ -34,6 +56,80 @@ def quote(value):
 
 def parse_batch(names):
     return [normalize(name) for name in names]
+
+
+def heavy_atoms(formula):
+    """Element counts without hydrogen, one Counter per ``.``-separated component.
+
+    None where the formula cannot be read (R groups, repeat units, charges in
+    brackets): a structure that cannot be compared vetoes nothing.
+    """
+    text = re.sub(r"[+-]\d*$", "", (formula or "").strip())
+    if not text or _UNREADABLE.search(text):
+        return None
+    components = []
+    for part in text.split("."):
+        multiplier, body = re.match(r"(\d*)(.*)", part).groups()
+        counts = Counter()
+        for prefix, element, count in _ELEMENT.findall(body):
+            if prefix:
+                return None
+            if element != "H":
+                counts[element] += int(count or 1)
+        if not counts and body.strip("H0123456789"):
+            return None
+        components.extend([counts] * int(multiplier or 1))
+    return components or None
+
+
+@lru_cache(maxsize=1 << 18)
+def lipid_atoms(goslin):
+    """Heavy-atom composition of a Goslin claim ``level:name``; None if it has none."""
+    from pygoslin.parser.Parser import LipidParser
+
+    try:
+        formula = _parser(LipidParser).parse(goslin.split(":", 1)[1]).get_sum_formula()
+    except Exception:
+        return None
+    atoms = heavy_atoms(formula)
+    return atoms[0] if atoms and len(atoms) == 1 else None
+
+
+_PARSERS = {}
+
+
+def _parser(kind):
+    if kind not in _PARSERS:
+        _PARSERS[kind] = kind()
+    return _PARSERS[kind]
+
+
+def contradicts(goslin, formula):
+    """The record's own structure has another composition than the lipid named."""
+    record = heavy_atoms(formula)
+    lipid = lipid_atoms(goslin)
+    if record is None or lipid is None:
+        return False
+    return lipid != sum(record, Counter()) and all(lipid != part for part in record)
+
+
+def _record_structures(c, hubs):
+    """``(record_id, formula)`` of the general databases' records that state one."""
+    pieces = [
+        f"""SELECT {quote(hub + ":")} || CASE WHEN {quote(hub)}='chebi' THEN
+              'CHEBI:' || regexp_replace(upper(trim(hub_id)), '^CHEBI:', '') ELSE trim(hub_id) END record_id,
+            coalesce(min(source_id) FILTER (WHERE source_type='formula'),
+                     min(regexp_extract(source_id, '^InChI=1S?/([^/]+)', 1))
+                       FILTER (WHERE source_type='inchi')) formula
+            FROM read_parquet({quote(path)})
+            WHERE source_type IN ('formula', 'inchi') AND hub_id IS NOT NULL AND source_id IS NOT NULL
+            GROUP BY 1"""
+        for hub, path in hubs.items()
+        if hub in SOURCES and hub not in LIPID_DATABASES
+    ]
+    if not pieces:
+        return "SELECT NULL::VARCHAR record_id, NULL::VARCHAR formula WHERE false"
+    return " UNION ALL ".join(pieces)
 
 
 def build(hubs, output, workers=6, memory="4GB", cache_dir=None):
@@ -174,12 +270,29 @@ def build(hubs, output, workers=6, memory="4GB", cache_dir=None):
                     drain()
                 while pending:
                     drain(True)
+        c.execute(f"""CREATE TEMP TABLE parsed AS SELECT n.*,p.goslin,p.level,p.specificity
+            FROM read_parquet({quote(output / "names.parquet")}) n
+            JOIN read_parquet({quote(output / "normalized.parquet")}) p USING(name)
+            WHERE p.status='parsed' AND NOT regexp_matches(p.goslin, {quote(EMPTY_ALCOHOL)})""")
+        c.execute(f"CREATE TEMP TABLE structures AS {_record_structures(c, hubs)}")
+        # A claim is checked when no name of the record written in lipid
+        # notation supports it.
+        checked = c.execute(
+            f"""SELECT p.record_id, p.goslin, min(s.formula) FROM parsed p
+            JOIN structures s USING (record_id)
+            WHERE p.hub NOT IN ({",".join(quote(h) for h in sorted(LIPID_DATABASES))})
+              AND s.formula IS NOT NULL
+            GROUP BY 1, 2
+            HAVING NOT bool_or(regexp_matches(p.name, {quote(LIPID_NOTATION)}))"""
+        ).fetchall()
+        rejected = [(record, goslin) for record, goslin, formula in checked if contradicts(goslin, formula)]
+        c.execute("CREATE TEMP TABLE rejected(record_id VARCHAR, goslin VARCHAR)")
+        if rejected:
+            c.executemany("INSERT INTO rejected VALUES (?, ?)", rejected)
         # Keeping only the most specific aliases prevents a record's generic synonym
         # from bridging otherwise different lipid descriptions or precision levels.
-        c.execute(f"""COPY (SELECT n.*,p.goslin,p.level FROM read_parquet({quote(output / "names.parquet")}) n
-            JOIN read_parquet({quote(output / "normalized.parquet")}) p USING(name)
-            WHERE p.status='parsed'
-            QUALIFY p.specificity=max(p.specificity) OVER(PARTITION BY record_id))
+        c.execute(f"""COPY (SELECT * EXCLUDE (specificity) FROM parsed ANTI JOIN rejected USING (record_id, goslin)
+            QUALIFY specificity=max(specificity) OVER(PARTITION BY record_id))
             TO {quote(output / "claims.parquet")} (FORMAT PARQUET, COMPRESSION ZSTD)""")
         counts = c.execute(f"""SELECT hub,count(DISTINCT record_id) records,count(DISTINCT goslin) identifiers
             FROM read_parquet({quote(output / "claims.parquet")}) GROUP BY hub""").fetchall()
@@ -188,6 +301,8 @@ def build(hubs, output, workers=6, memory="4GB", cache_dir=None):
             unique_names=total,
             parsed_names=done,
             cached_names=cached,
+            structure_checked=len(checked),
+            structure_rejected=len(rejected),
             seconds=round(time.monotonic() - start, 2),
             parse_status=c.execute(
                 f"SELECT status,count(*) FROM read_parquet({quote(output / 'normalized.parquet')}) GROUP BY status"

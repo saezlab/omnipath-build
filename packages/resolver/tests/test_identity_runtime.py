@@ -15,6 +15,9 @@ from identity_snapshot import (
     FINGERPRINT,
     LIPID,
     LIPID3,
+    AMINO,
+    ANION,
+    FATTY,
     NADH,
     NADH_2,
     NAMELESS,
@@ -644,6 +647,11 @@ def test_record_taxon_extras_and_missing(runtime):
         (f"inchikey:{NAMELESS}", NAMELESS),  # id local part, no CHEBI:/CID: formatting
         (f"inchikey:{LIPID}", "PC 16:0/18:1"),  # most specific Goslin name beats a chemical name
         ("goslin:species:PE 36:2", "PE 36:2"),
+        # a fatty-acyl shorthand only where a lipid database holds the compound
+        (f"inchikey:{FATTY}", "FA 18:1(9Z)"),
+        (f"inchikey:{AMINO}", "L-glutamine"),
+        # an "-oate" misread as a wax ester without its alcohol never labels
+        (f"inchikey:{ANION}", "FA 6:0"),
         ("chebi:CHEBI:99999", "multi"),
         ("chebi:CHEBI:70001", "grouped-chebi"),
         # gene: NCBI symbol, else the id

@@ -356,8 +356,7 @@ Decided 2026-10-16:
   parity reference for `main`, executed by nothing.
 - KEGG reactions stay untyped: KEGG states no compartments or type, and
   typing them all biochemical would add a claim.
-- Water's "FA 18:5;OH" label: the reference library gives water's InChIKey a
-  lipid alias; on the entity-resolution living doc's TODO list.
+- Water's "FA 18:5;OH" label: fixed separately the same day, see below.
 
 **Results** (version 2026.10.16 built on nicesrv into
 `/root/data/scratch/reaction-model-20261016/out`, not the served data root;
@@ -375,3 +374,25 @@ compared with release 2026.10.15.1)
 Pitfall met: Reactome's parser caches its parse (`_CACHE_VERSION`); a parser
 change without a version bump reuses the old rows.
 
+## Follow-up: lipid-name labels on non-lipids (2026-10-16)
+
+Water was labelled "FA 18:5;OH" because ChEBI lists "HOH" as a synonym and
+Goslin parses it as that hydroxy fatty acid; the label rule put any Goslin name
+before ChEBI's. Glutamine's "FA 5:0;2NH2,5NH2;5oxo" is a true parse of its
+systematic name ("diamino-oxopentanoic acid"): Goslin reads any substituted acid
+as a fatty acyl, and an "-oate" anion as a wax ester without its alcohol
+("hexanoate" → "WE 6:0/0:0", in SwissLipids too).
+
+- **Label rule** (`omnipath_resolver.identity_runtime`, record policy v5): a
+  fatty-acyl shorthand labels only from a SwissLipids or LIPID MAPS record; a
+  `WE …/0:0` shorthand never. On the 2026-10-13 library, 0.46% of the 318,732
+  entities with a lipid-name label change (sample of 5,000), all FA or WE:
+  water, glutamine, perfluorooctanoic acid, abscisic acid, crotonate, resolvins.
+  A few real fatty acids no lipid database holds fall back to their systematic
+  name.
+- **Hub index** (`omnipath_build.identity.goslin`): `WE …/0:0` is no claim in
+  any hub; in ChEBI, HMDB and RefMet a parse of a name not written in lipid
+  notation must have the record's composition (formula or InChI, hydrogen
+  aside). Records with a lipid name: ChEBI 20,649 → 19,271, HMDB 168,512 →
+  168,463, SwissLipids 777,126 → 776,910; LIPID MAPS and RefMet unchanged.
+  Takes effect with the next hub-index and library build.

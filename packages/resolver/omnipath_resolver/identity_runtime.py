@@ -27,7 +27,7 @@ from .observations import CODES
 
 FORMAT = "omnipath-identity-v2"
 # Bump when record assembly or label policy changes: cached records are discarded.
-RECORD_POLICY = "identity-record-v4"
+RECORD_POLICY = "identity-record-v5"
 CACHE_ENV = "OMNIPATH_IDENTITY_CACHE"
 
 KINDS = {"chemical": 1, "protein": 2, "gene": 3, "reaction": 4}
@@ -63,6 +63,22 @@ NOT_IDENTIFIERS = frozenset(
     {"smiles", "inchi", "formula", "synonym", "lipid_shorthand", "systematic_name", "iupac_name"}
 )
 CHEMICAL_NAME_HUBS = ("chebi", "hmdb", "chembl", "pubchem")
+# The lipid databases. Goslin reads any systematically named carboxylic acid as a
+# fatty acyl, so in a general compound database an amino acid (glutamine:
+# "FA 5:0;2NH2,5NH2;5oxo") or a synonym such as water's "HOH" yields one too: a
+# fatty-acyl shorthand labels a compound only when it is a lipid database's.
+LIPID_HUBS = frozenset({"swisslipids", "lipidmaps"})
+
+
+def _label_shorthand(hub: str, shorthand: str) -> bool:
+    """Whether a Goslin shorthand of a member record may label the entity.
+
+    A wax ester without its alcohol ("WE 6:0/0:0") is how Goslin misreads an
+    anion named "-oate", in every hub: it is never a label.
+    """
+    if shorthand.startswith("WE ") and shorthand.endswith("/0:0"):
+        return False
+    return hub in LIPID_HUBS or not shorthand.startswith("FA ")
 
 CHEMICAL_HUBS = (
     "chebi", "pubchem", "chembl", "hmdb", "lipidmaps", "swisslipids",
@@ -231,8 +247,9 @@ def choose_label(kind: int, entity_id: str, rows: list[tuple[str, str, str]]) ->
 
     ``rows`` are ``(hub, source_type, value)`` for every member record. First available:
     gene: NCBI Gene symbol or gene_info name; protein: primary gene name > entry name > accession;
-    chemical: lipid Goslin shorthand, else ChEBI > HMDB > ChEMBL > PubChem > other hub name
-    > systematic name (InChIKey-shaped and over-long values skipped); else the id local part.
+    chemical: lipid Goslin shorthand (a fatty-acyl one only from a lipid database's record,
+    a wax ester without its alcohol never), else ChEBI > HMDB > ChEMBL > PubChem > other hub name > systematic name
+    (InChIKey-shaped and over-long values skipped); else the id local part.
     """
     local = entity_id.split(":", 1)[1] if ":" in entity_id else entity_id
     by_type = defaultdict(list)
@@ -268,7 +285,9 @@ def choose_label(kind: int, entity_id: str, rows: list[tuple[str, str, str]]) ->
         parts = entity_id.split(":", 2)
         if len(parts) == 3 and parts[2]:
             return parts[2]
-    shorthand = _goslin_shorthand(values("goslin"))
+    shorthand = _goslin_shorthand(
+        v for h, v in by_type.get("goslin", ()) if _label_shorthand(h, str(v).partition(":")[2])
+    )
     if shorthand:
         return shorthand
     names = [(h, v) for h, v in by_type.get("name", ())]

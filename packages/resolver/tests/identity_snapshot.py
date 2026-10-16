@@ -28,6 +28,9 @@ ETHANOL = "LFQSCWFLJHTTHZ-UHFFFAOYSA-N"
 LIPID = "AAAAAAAAAAAAAA-LLLLLLLLLL-N"
 LIPID2 = "AAAAAAAAAAAAAA-MMMMMMMMMM-N"
 LIPID3 = "AAAAAAAAAAAAAA-NNNNNNNNNN-N"
+FATTY = "AAAAAAAAAAAAAA-FFFFFFFFFF-N"
+AMINO = "AAAAAAAAAAAAAA-GGGGGGGGGG-N"
+ANION = "AAAAAAAAAAAAAA-HHHHHHHHHH-N"
 NAMELESS = "BBBBBBBBBBBBBB-CCCCCCCCCC-N"
 ONLY_PC = "CCCCCCCCCCCCCC-DDDDDDDDDD-N"
 OTHERS = "DDDDDDDDDDDDDD-EEEEEEEEEE-N"
@@ -86,6 +89,21 @@ def hub_records():
         ],
     )  # fmt: skip  (disagrees with CHEBI:50000 on the full-structure name)
     rec("chebi", "CHEBI:50001", [("goslin", "full_structure:PE 18:0/18:1"), ("inchikey", LIPID3)])
+    # Goslin reads a systematically named acid as a fatty acyl: a real fatty acid,
+    # which a lipid database also holds, and an amino acid, which none does.
+    rec("chebi", "CHEBI:16196", [
+        ("name", "oleic acid"), ("goslin", "full_structure:FA 18:1(9Z)"), ("inchikey", FATTY),
+    ])  # fmt: skip
+    rec("lipidmaps", "LMFA01030002", [("goslin", "full_structure:FA 18:1(9Z)"), ("inchikey", FATTY)])
+    rec("chebi", "CHEBI:18050", [
+        ("name", "L-glutamine"), ("goslin", "full_structure:FA 5:0;2NH2,5NH2;5oxo"), ("inchikey", AMINO),
+    ])  # fmt: skip
+    rec("chebi", "CHEBI:17120", [
+        ("name", "hexanoate"), ("goslin", "full_structure:WE 6:0/0:0"), ("inchikey", ANION),
+    ])  # fmt: skip
+    rec("lipidmaps", "LMFA01010006", [
+        ("goslin", "full_structure:WE 6:0/0:0"), ("goslin", "full_structure:FA 6:0"), ("inchikey", ANION),
+    ])  # fmt: skip
     rec("swisslipids", "SLM:1", [("name", "a long lipid name"), ("goslin", "species:PE 36:2")])
     rec("hmdb", "HMDB0000001", [("inchikey", NAMELESS)])
     rec("pubchem", "5", [("name", "pc-name"), ("inchikey", ONLY_PC)])
