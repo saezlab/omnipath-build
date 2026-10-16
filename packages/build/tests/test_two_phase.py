@@ -120,6 +120,25 @@ def test_two_phase_worker_failure_does_not_publish(tmp_path, dataset, monkeypatc
     assert not multiprocessing.active_children()
 
 
+def test_dataset_without_rows_fails_unless_it_may_be_empty(tmp_path, dataset, monkeypatch):
+    monkeypatch.setattr(dataset.raw_dataset, "raw", lambda **kwargs: iter(()))
+    build = lambda name: build_resource(
+        "fixture",
+        version="1",
+        output_dir=tmp_path / name,
+        batch_workers=1,
+        library_dir=tmp_path / "empty",
+        progress=False,
+    )
+    with pytest.raises(RuntimeError, match=r"fixture:items yielded no rows"):
+        build("failed")
+    assert not (tmp_path / "failed/resources/fixture/1").exists()
+    monkeypatch.setattr(dataset.raw_dataset, "allow_empty", True, raising=False)
+    build("allowed")
+    assert (tmp_path / "allowed/resources/fixture/1").exists()
+    assert not multiprocessing.active_children()
+
+
 def test_two_phase_cancellation_reaps_workers_and_preserves_atomicity(tmp_path, dataset):
     cancelled = False
 

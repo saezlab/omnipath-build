@@ -155,7 +155,17 @@ indexed_reaction AS (
     -- derivation resolves every reaction to `other` on the current build, so
     -- reading it would type every transport event as a catalysis.
     CASE
-      WHEN event_type.name = %(transport_entity_type)s OR EXISTS (
+      -- The source's own reaction type first (SBO, on the event entity), then
+      -- the movement its participants state.
+      WHEN EXISTS (
+        SELECT 1 FROM annotation typed
+        JOIN entity_evidence_annotation stated ON stated.annotation_key=typed.annotation_key
+        JOIN entity_evidence_resolution resolution
+          ON resolution.source_id=stated.source_id
+         AND resolution.entity_evidence_id=stated.entity_evidence_id
+        WHERE resolution.entity_id=reaction.reaction_entity_id
+          AND typed.term=%(reaction_type_term)s AND typed.value=ANY(%(transport_types)s)
+      ) OR EXISTS (
         SELECT 1 FROM interaction_party leaving
         JOIN vocab_relation_role lr ON lr.relation_role_id=leaving.role_id AND lr.name='reactant'
         JOIN interaction_party arriving ON arriving.interaction_id=leaving.interaction_id

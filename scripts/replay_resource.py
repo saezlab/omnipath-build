@@ -430,6 +430,8 @@ def replay_resource(
                             dataset.raw_dataset, "raw", rows.iterator(dataset.dataset_name)
                         )
                     )
+                    # A replay reproduces what was published, an empty dataset included.
+                    stack.enter_context(patch.object(dataset.raw_dataset, "allow_empty", True))
                 stack.enter_context(patch.object(two_phase, "pickle", ParentInputPickle(rows)))
                 stack.enter_context(
                     patch.object(two_phase, "prepare_worker", offline_prepare_worker)

@@ -46,19 +46,15 @@ from omnipath_subsets.network_views._framework import NetworkDefinition
 # retiring view delivered them — the gate below says why.
 #
 # **The reaction-grain component delivers the transport half and not the rest.**
-# Rhea, Recon3D and Human-GEM state metabolite↔enzyme pairs that the record
-# holds as two hops through a reaction entity — gene → reaction and reaction →
-# metabolite — because the load binarised the reaction rather than keeping it
-# as a hyperedge. The derive now closes one of those hops where the resource
-# says the metabolite moved: a cargo stated as a reactant in one compartment
-# and a product in another, inside a reaction some protein catalyses, becomes
-# an ordinary transport pair between that protein and that metabolite, and
-# 7,847 of them reach this component. Two gaps remain, both with named causes.
-# Rhea contributes none, because it splits a transport into one membership per
-# side and the two sides are different entities, so nothing in it says the
-# same molecule appeared in both places. And a conversion that moves nothing
-# still has no pair reading at all — its enzyme reaches its substrates only
-# through the event.
+# Rhea, Recon3D and Human-GEM publish reactions as the source states them: a
+# molecular activity with its participants and catalysts. The build projects the
+# transport each states (``omnipath_build.projections``): a cargo a reaction
+# takes in one compartment and gives in another, with each catalyst the same
+# source row names, becomes an ordinary transport relation of that resource —
+# catalyst ``affects`` cargo, aspect transport — so it reaches this component
+# like any directly stated transporter-substrate pair. A conversion that moves
+# nothing still has no pair reading: its enzyme reaches its substrates only
+# through the reaction.
 _CURATED_SOURCES = (
     "cellinker",
     "guidetopharma",

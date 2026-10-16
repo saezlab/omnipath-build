@@ -103,7 +103,7 @@ def _payload_dictionary(rows):
 
 
 ENTITY_INPUT = _schema(
-    "old_key entity_type namespace identifier taxon label node_id library scope reference_entity_key",
+    "old_key entity_type namespace identifier taxon label node_id library scope reference_entity_key compartments",
     [
         ("scoped_name", pa.bool_()),
         ("scoped_symbol", pa.bool_()),
@@ -310,6 +310,7 @@ class ParquetWriter:
                             node_id=product_node,
                             library=policy.library,
                             scope="",
+                            compartments="",
                             scoped_name=False,
                             scoped_symbol=False,
                             reference_entity_key=product_reference,
@@ -350,6 +351,7 @@ class ParquetWriter:
                         node_id=info.node_id,
                         library=info.reference_library or policy.library,
                         scope=raw.identity_scope or "",
+                        compartments=raw.compartments or "",
                         scoped_name=not info.matched and ns in {"name", "synonym"},
                         scoped_symbol=bool(taxon)
                         and not info.matched
@@ -414,9 +416,14 @@ class ParquetWriter:
         self._db.execute("""CREATE OR REPLACE TEMP TABLE entity_map AS
             WITH base AS (SELECT *, sha256(lower(trim(entity_type)) || chr(0) || lower(trim(namespace)) || chr(0) ||
                                trim(identifier) || chr(0)) AS base_key FROM input_entities)
-            SELECT *, CASE WHEN scoped_name THEN sha256(base_key || chr(0) || scope || chr(0) || taxon || chr(0))
+            , scoped AS (SELECT *, CASE WHEN scoped_name THEN sha256(base_key || chr(0) || scope || chr(0) || taxon || chr(0))
                       WHEN scoped_symbol THEN sha256(base_key || chr(0) || taxon || chr(0))
-                      ELSE base_key END AS entity_key FROM base""")
+                      ELSE base_key END AS scoped_key FROM base)
+            -- A reaction's compartments split one resolved reaction into its variants;
+            -- the reference key still groups them.
+            SELECT * EXCLUDE (scoped_key), CASE WHEN coalesce(compartments, '') = '' THEN scoped_key
+                      ELSE sha256(scoped_key || chr(0) || 'compartments' || chr(0) || compartments) END AS entity_key
+            FROM scoped""")
         self._append(
             "entities",
             "SELECT entity_key, entity_type, namespace, identifier, taxon, label, reference_entity_key, gene_reference_keys FROM entity_map",
@@ -835,8 +842,13 @@ class ParquetWriter:
                     pq.write_table(schema.empty_table(), self.paths[name])
         else:
             from .complexes import resolve_complexes
+            from .projections import project_transport
 
             resolve_complexes(self._db, self.payload_path, self.metrics)
+            # After complexes: a catalyst complex has its final key by now.
+            added = project_transport(self._db, self._event_id)
+            self._event_id += added
+            self.metrics["transport_projections"] = added
             self._reference_identifiers()
             self._prepare_display()
             self._write_tables()

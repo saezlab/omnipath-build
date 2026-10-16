@@ -130,9 +130,9 @@ def _availability(conn, schema):
         },
         {
             "capability": "transport_event_type",
-            "available": False,
+            "available": True,
             "provider": "published Biolink statements",
-            "reason": "Transport and reaction event types both publish molecular_activity",
+            "reason": "A molecular_activity states its SBO reaction type (Biolink type slot)",
         },
         {
             "capability": "ontology_definition_comment_distinction",

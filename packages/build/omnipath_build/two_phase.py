@@ -273,9 +273,11 @@ def build_two_phase(
                     else ds.call()
                 )
                 handle = None
+                dataset_rows = 0
                 try:
                     for index, row in enumerate(islice(iterator, max_records)):
                         check_cancel(should_cancel)
+                        dataset_rows += 1
                         if handle is None:
                             path = root / f"input-{batch_id}.pickle"
                             handle = path.open("wb")
@@ -300,6 +302,18 @@ def build_two_phase(
                         handle = None
                         submit((str(path), ds.qualified_module, ds.dataset_name, raw is not None))
                         batch_id += 1
+                    if (
+                        not dataset_rows
+                        and raw is not None
+                        and max_records != 0
+                        and not getattr(raw, "allow_empty", False)
+                    ):
+                        # An empty dataset is almost always a failed download or
+                        # a parser that no longer matches its input.
+                        raise RuntimeError(
+                            f"{source}:{ds.dataset_name} yielded no rows; check its "
+                            "download, or declare the dataset allow_empty"
+                        )
                 finally:
                     if handle:
                         handle.close()

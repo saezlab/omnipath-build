@@ -22,6 +22,7 @@ from omnipath_core.molecular_forms import (
 
 
 from omnipath_core.keys import canonical_json, stable_hash, entity_key, relation_key
+from omnipath_core.reactions import COMPARTMENT, compartment_context
 from omnipath_core.biolink import (
     entity_type as biolink_entity_type,
     predicate as biolink_predicate,
@@ -156,6 +157,8 @@ def _extract_taxon(entity: Any, ids: Sequence[tuple[str, str]]) -> str | None:
 
 # Annotation text that stands for a missing value.
 _NO_VALUE = frozenset({"", "nan", "none", "null"})
+# Events whose identity includes the compartments they take place in.
+_COMPARTMENTALIZED_TYPES = frozenset({"molecular_activity", "biological_process"})
 
 
 class SilverExtractor:
@@ -239,13 +242,26 @@ class SilverExtractor:
         # Labels are identifiers, but not globally unique accession systems.
         # Keep unresolved label identities local to their resource and taxon.
         identity_scope = self.source if namespace in {"name", "synonym"} else None
+        # A reaction resolves to compartment-free Rhea or MetaNetX ids; the
+        # compartments it states keep its variants apart.
+        compartments = (
+            compartment_context(
+                annotation_value(COMPARTMENT, _field(ann, "value"))
+                for ann in _field(entity, "annotations", ()) or ()
+                if annotation_term(_field(ann, "term")) == COMPARTMENT
+            )
+            if entity_type in _COMPARTMENTALIZED_TYPES
+            else ""
+        )
         # Keep complete contextual requests apart until resolution. Combining
         # alternative identifiers first can change consensus with batch size.
         primary_key = entity_key(entity_type, namespace, identifier)
         context = (taxon, sorted(set(ids)), identity_scope, molecular_form)
+        if compartments:
+            context = (*context, compartments)
         key = (
             stable_hash(primary_key, context)
-            if taxon or identity_scope or len(set(ids)) > 1 or molecular_form
+            if taxon or identity_scope or len(set(ids)) > 1 or molecular_form or compartments
             else primary_key
         )
 
@@ -258,6 +274,7 @@ class SilverExtractor:
                 taxon=taxon,
                 identity_scope=identity_scope,
                 molecular_form=molecular_form,
+                compartments=compartments or None,
             )
 
         ent_record = self.entities[key]
@@ -468,11 +485,17 @@ class SilverExtractor:
             predicate = biolink_predicate(pred_raw)
 
             # Extract relation annotations
-            # Participant annotations attach to relation scope.
+            # Participant annotations attach to relation scope. An event's
+            # compartments are its identity, already in its key, and not a
+            # claim of this relation.
             rel_anns = [
                 *self._annotations(record, "relation"),
-                *self._annotations(subj_raw, "subject"),
-                *self._annotations(obj_raw, "object"),
+                *(
+                    annotation
+                    for side, raw in (("subject", subj_raw), ("object", obj_raw))
+                    for annotation in self._annotations(raw, side)
+                    if annotation["term"] != COMPARTMENT
+                ),
             ]
 
             rel_k = relation_key(subj_key, predicate, obj_key, rel_anns)

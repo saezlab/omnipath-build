@@ -156,7 +156,7 @@ def test_human_gem_compartments_and_directions_follow_recon3d():
 
 
 def test_rhea_in_and_out_are_transport_sides():
-    record = rhea.transport_reactions_schema(
+    record = rhea.reactions_schema(
         {
             "rhea_id": "29523",
             "participant_chebi": "15378||29101||15378||29101",

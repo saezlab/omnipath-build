@@ -24,6 +24,7 @@ from pathlib import Path
 import psycopg2.extensions
 from psycopg2 import sql
 
+from omnipath_core import reactions
 from omnipath_subsets.cosmos.translate import (
     UTILS_SCHEMA,
     drop_label_translation,
@@ -43,10 +44,11 @@ TABLE = "cosmos_edge"
 REACTION_ENTITY_TYPES = ("molecular_activity",)
 
 # A transport event moves a molecule rather than transforming it, and COSMOS
-# distinguishes the two.
-# Biolink erases the old separate Transport class; only explicit movement
-# evidence can recover it in the query, never the shared event type.
-TRANSPORT_ENTITY_TYPE = "omnipath:unavailable_transport_type"
+# distinguishes the two. Biolink has no Transport class: the reaction states its
+# SBO type in the Biolink ``type`` slot, and where it states none the movement
+# of a participant between compartments still says so.
+REACTION_TYPE_TERM = reactions.REACTION_TYPE
+TRANSPORT_TYPES = sorted(reactions.TRANSPORT_TYPES)
 
 # The annotation that says which way a reaction runs. It sits on the event
 # entity rather than on any of its participant relations, and both the
@@ -333,7 +335,8 @@ def build_cosmos_projection(
                 "build_id": stamp,
                 "reaction_entity_types": list(REACTION_ENTITY_TYPES),
                 "reaction_sources": list(reaction_sources),
-                "transport_entity_type": TRANSPORT_ENTITY_TYPE,
+                "reaction_type_term": REACTION_TYPE_TERM,
+                "transport_types": TRANSPORT_TYPES,
                 "direction_term": DIRECTION_TERM,
             },
         )

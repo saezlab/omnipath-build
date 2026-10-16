@@ -216,7 +216,8 @@ def test_published_geneid_labels_and_connectors_preserve_reaction_participants(p
             "reaction_entity_types": list(build.REACTION_ENTITY_TYPES),
             "reaction_sources": list(build.REACTION_SOURCES),
             "direction_term": build.DIRECTION_TERM,
-            "transport_entity_type": build.TRANSPORT_ENTITY_TYPE,
+            "reaction_type_term": build.REACTION_TYPE_TERM,
+            "transport_types": build.TRANSPORT_TYPES,
         },
     )
     cur.execute(build._sql_text("project_connectors.sql"), {"build_id": "fixture"})

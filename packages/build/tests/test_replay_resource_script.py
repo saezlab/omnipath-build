@@ -185,49 +185,50 @@ def test_real_native_mapper_worker_preserves_original_ids_hashes_and_zero_datase
     tmp_path, monkeypatch
 ):
     from omnipath_build import two_phase
-    from pypath.inputs_v2 import rhea
+    from pypath.inputs_v2 import tcdb
 
     raw = {
-        "rhea_id": "123",
-        "participant_chebi": "1||2",
-        "participant_role": "reactant||product",
-        "participant_compartment": "cytosol||outside",
-        "conversion_direction": "REVERSIBLE",
+        "transporter_uniprot": "P11166",
+        "substrate_id": "CHEBI:4167",
+        "substrate_name": "glucose",
+        "tcid": "2.A.1.1.28",
     }
     texts = [json.dumps(raw, ensure_ascii=False, indent=2), json.dumps({**raw, "note": "μ"})]
-    records = [payload(f"reactions:{i}", text) for i, text in zip((2, 9), texts)]
+    records = [payload(f"transports:{i}", text, source="tcdb") for i, text in zip((2, 9), texts)]
     directory, _ = published(
         tmp_path,
         records,
-        origins={"reactions": "parsed_record", "transport_reactions": "parsed_record"},
+        origins={"transporters": "parsed_record", "transports": "parsed_record"},
+        source="tcdb",
     )
     original = replay.read_input(directory)
     output = tmp_path / "output"
     output.mkdir()
-    native_raw = rhea.resource.datasets()["reactions"].raw
-    native_mapper = rhea.resource.datasets()["reactions"].mapper
+    native_raw = tcdb.resource.datasets()["transports"].raw
+    native_mapper = tcdb.resource.datasets()["transports"].mapper
     native_pickle, native_worker = two_phase.pickle, two_phase.prepare_worker
     monkeypatch.setenv("OMNIPATH_BUILD_DUCKDB_THREADS", "1")
     report = replay.replay_resource(
         original, output, "2026.09.2", None, resource_ram_bytes=1024**3, min_free_disk_bytes=0
     )
     assert report["replayed_source_records"] == 2
-    assert report["datasets"]["transport_reactions"]["replayed_records"] == 0
-    assert rhea.resource.datasets()["reactions"].raw == native_raw
-    assert rhea.resource.datasets()["reactions"].mapper is native_mapper
+    assert report["datasets"]["transporters"]["replayed_records"] == 0
+    assert tcdb.resource.datasets()["transports"].raw == native_raw
+    assert tcdb.resource.datasets()["transports"].mapper is native_mapper
+    assert not tcdb.resource.datasets()["transporters"].allow_empty
     assert two_phase.pickle is native_pickle
     assert two_phase.prepare_worker is native_worker
-    compiled = output / "resources" / "rhea" / "2026.09.2"
+    compiled = output / "resources" / "tcdb" / "2026.09.2"
     evidence = pq.read_table(compiled / "relation_evidence.parquet").to_pylist()
-    assert {ev["row_id"] for ev in evidence} == {"reactions:2", "reactions:9"}
+    assert {ev["row_id"] for ev in evidence} == {"transports:2", "transports:9"}
     expected = {
-        f"reactions:{i}": hashlib.sha256(text.encode()).hexdigest()
+        f"transports:{i}": hashlib.sha256(text.encode()).hexdigest()
         for i, text in zip((2, 9), texts)
     }
     index = pq.read_table(report["source_record_index"]["path"]).to_pylist()
     assert {(row["row_id"], row["source_record_sha256"]) for row in index} == set(expected.items())
     manifest = json.loads((compiled / "build_manifest.json").read_text())
-    assert manifest["datasets"] == ["reactions", "transport_reactions"]
+    assert sorted(manifest["datasets"]) == ["transporters", "transports"]
     assert manifest["max_records"] is None
 
 
@@ -259,10 +260,12 @@ def test_native_parent_bindings_restore_when_build_raises(tmp_path, monkeypatch)
 def test_legacy_empty_scope_replays_published_rows_and_infers_current_zero_datasets(
     tmp_path, monkeypatch
 ):
-    from pypath.inputs_v2 import rhea
+    from pypath.inputs_v2 import tcdb
 
-    raw = {"rhea_id": "123", "participant_chebi": "1||2", "participant_role": "reactant||product"}
-    directory, _ = published(tmp_path, [payload("reactions:8", json.dumps(raw))], origins={})
+    raw = {"transporter_uniprot": "P11166", "substrate_id": "CHEBI:4167", "tcid": "2.A.1.1.28"}
+    directory, _ = published(
+        tmp_path, [payload("transports:8", json.dumps(raw), source="tcdb")], origins={}, source="tcdb"
+    )
     original = replay.read_input(directory)
     assert original["datasets"] == []
     assert original["dataset_scope_origin"] == "published_row_ids_plus_current_discovery"
@@ -273,11 +276,10 @@ def test_legacy_empty_scope_replays_published_rows_and_infers_current_zero_datas
         original, output, "2", None, resource_ram_bytes=1024**3, min_free_disk_bytes=0
     )
     assert report["replayed_source_records"] == 1
-    assert report["published_datasets"] == ["reactions"]
+    assert report["published_datasets"] == ["transports"]
     assert report["dataset_scope_origin"] == "published_row_ids_plus_current_discovery"
-    assert set(report["datasets"]) == set(rhea.resource.datasets())
-    assert report["datasets"]["metabolic_reactions"]["replayed_records"] == 0
-    assert report["datasets"]["transport_reactions"]["replayed_records"] == 0
+    assert set(report["datasets"]) == set(tcdb.resource.datasets())
+    assert report["datasets"]["transporters"]["replayed_records"] == 0
 
 
 def test_mixed_valid_and_null_output_payloads_are_rejected(tmp_path):
