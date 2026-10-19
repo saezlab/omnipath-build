@@ -59,6 +59,7 @@ SELECT
   coalesce(
     enzyme_label.identifier,
     enzyme.canonical_identifier,
+    event_accession.identifier,
     event.canonical_identifier
   ),
   gene_node.label,
@@ -85,8 +86,11 @@ FROM gene_node
 LEFT JOIN entity enzyme ON enzyme.entity_id = gene_node.entity_id
 LEFT JOIN _cos_label enzyme_label ON enzyme_label.entity_id = gene_node.entity_id
 LEFT JOIN entity event ON event.entity_id = gene_node.reaction_entity_id
+LEFT JOIN _cos_reaction_identifier event_accession
+  ON event_accession.entity_id = gene_node.reaction_entity_id
 WHERE coalesce(
         enzyme_label.identifier,
         enzyme.canonical_identifier,
+        event_accession.identifier,
         event.canonical_identifier
       ) IS NOT NULL

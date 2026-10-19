@@ -144,12 +144,14 @@ indexed_reaction AS (
     reaction.interaction_id,
     reaction.sources,
     reaction.reaction_entity_id,
-    event.canonical_identifier AS reaction_identifier,
+    -- A compartment variant's canonical identifier is its published key; its
+    -- accession is staged beside it.
+    coalesce(event_accession.identifier, event.canonical_identifier) AS reaction_identifier,
     -- The pseudo-enzyme's label is the reaction's own identifier, which no
     -- translation touches: a reaction is neither a protein nor a metabolite,
     -- and neither namespace has anything to say about it. Its namespace is
     -- still reported in the same vocabulary as every other endpoint's.
-    coalesce(event_namespace.namespace, 'unknown') AS reaction_id_type,
+    coalesce(event_accession.namespace, event_namespace.namespace, 'unknown') AS reaction_id_type,
     -- The event's own type decides the edge kind. The header's interaction
     -- class would be the other candidate and is the worse one: the class
     -- derivation resolves every reaction to `other` on the current build, so
@@ -190,6 +192,8 @@ indexed_reaction AS (
   LEFT JOIN _cos_namespace event_namespace
     ON event_namespace.identifier_type_id
        = event.canonical_identifier_type_id
+  LEFT JOIN _cos_reaction_identifier event_accession
+    ON event_accession.entity_id = event.entity_id
 ),
 party AS (
   -- `_cos_label` is the translation stage's answer for this entity: the

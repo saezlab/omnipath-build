@@ -77,6 +77,9 @@ def _inputs(connection):
         "INSERT INTO ap_dataset SELECT id,id,? FROM ap_data_source", [ENTITY_DATASET]
     )
     connection.execute("CREATE TABLE ap_identifier_raw(item STRUCT(ns VARCHAR,id VARCHAR))")
+    connection.execute(
+        "CREATE TABLE ap_annotation_raw(owner_kind VARCHAR,owner_key VARCHAR,term VARCHAR,value VARCHAR)"
+    )
 
 
 def _complete_rows(connection):

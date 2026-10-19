@@ -57,6 +57,7 @@ UTILS_SCHEMA = "omnipath_utils"
 # buffer pool and a temporary one exhausts a backend's local buffers.
 LABEL_TABLE = "_cos_label"
 NAMESPACE_TABLE = "_cos_namespace"
+REACTION_IDENTIFIER_TABLE = "_cos_reaction_identifier"
 
 # How many identifiers go down the wire in one statement. Each batch is an
 # index scan per identifier on the utils side, so the size trades round trips
@@ -729,6 +730,35 @@ def open_mappings(
     return conn, IdentifierMappings(conn, schema=utils_schema)
 
 
+def _stage_reaction_identifiers(cur: psycopg2.extensions.cursor) -> None:
+    """The accession of every event whose canonical identifier is its published key.
+
+    A reaction stated in several compartments is one entity per compartment
+    set, all sharing the accession, so the load gives each its published key as
+    canonical identifier. The label of the reaction is still its accession:
+    the reference the publisher gave it, ``metanetx_reaction:MNXR100050``.
+    """
+    cur.execute(f"DROP TABLE IF EXISTS {REACTION_IDENTIFIER_TABLE}")
+    cur.execute(
+        f"""
+        CREATE UNLOGGED TABLE {REACTION_IDENTIFIER_TABLE} AS
+        SELECT DISTINCT ON (e.entity_id)
+          e.entity_id,
+          substr(r.reference_entity_key, strpos(r.reference_entity_key, ':') + 1) AS identifier,
+          split_part(r.reference_entity_key, ':', 1) AS namespace
+        FROM entity e
+        JOIN vocab_identifier_type t ON t.identifier_type_id = e.canonical_identifier_type_id
+        JOIN entity_reference_context r ON r.entity_id = e.entity_id
+        WHERE t.name = ANY(%s)
+          AND strpos(coalesce(r.reference_entity_key, ''), ':') > 1
+        ORDER BY e.entity_id, r.reference_entity_key
+        """,
+        [list(UNRESOLVED_TYPES)],
+    )
+    cur.execute(f"ALTER TABLE {REACTION_IDENTIFIER_TABLE} ADD PRIMARY KEY (entity_id)")
+    cur.execute(f"ANALYZE {REACTION_IDENTIFIER_TABLE}")
+
+
 def _stage_namespaces(cur: psycopg2.extensions.cursor) -> None:
     """The plain namespace name behind every identifier type in the build.
 
@@ -814,6 +844,7 @@ def stage_label_translation(
     """
     started = time.monotonic()
     _stage_namespaces(cur)
+    _stage_reaction_identifiers(cur)
     entities = collect_label_entities(cur)
 
     if use_published_identifiers:
@@ -890,3 +921,4 @@ def drop_label_translation(cur: psycopg2.extensions.cursor) -> None:
     """Drop the staging tables, as the interaction derive drops its own."""
     cur.execute(f"DROP TABLE IF EXISTS {LABEL_TABLE}")
     cur.execute(f"DROP TABLE IF EXISTS {NAMESPACE_TABLE}")
+    cur.execute(f"DROP TABLE IF EXISTS {REACTION_IDENTIFIER_TABLE}")

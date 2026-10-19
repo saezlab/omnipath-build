@@ -19,6 +19,8 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from omnipath_core.reactions import COMPARTMENT
+
 from omnipath_postgres.parquet_queries import _literal, _scan, quantity_sql, validate_inputs
 from omnipath_postgres.releases import PinnedRelease, ResourceSelection
 
@@ -27,6 +29,9 @@ PUBLISHED_STATUS_ID = 5
 ENTITY_DATASET = "omnipath:published_entities"
 CLAIM_DATASET = "omnipath:published_statement"
 PUBLISHED_FALLBACK_NAMESPACE = "omnipath:unresolved_entity_key"
+# The entity type of a reaction event; its compartments are the entity
+# annotation omnipath_core.reactions.COMPARTMENT.
+REACTION_ENTITY_TYPE = "molecular_activity"
 ONTOLOGY_CV_NAMESPACE = "Cv Term Accession:OM:0204"
 ONTOLOGY_NAME_NAMESPACE = "Name:OM:0202"
 ONTOLOGY_SYNONYM_NAMESPACE = "Synonym:OM:0203"
@@ -533,10 +538,28 @@ def _create_entity_projection(con: Any) -> None:
         CASE WHEN min(try_cast(taxon AS BIGINT))=max(try_cast(taxon AS BIGINT))
              THEN min(try_cast(taxon AS BIGINT)) ELSE NULL END taxonomy_id
         FROM ap_entity_raw GROUP BY entity_key,entity_type,namespace,identifier""")
-    con.execute("""CREATE OR REPLACE TABLE ap_entity_natural_conflict AS
-        SELECT e.entity_type,e.taxonomy_id,coalesce(a.name,e.namespace) namespace_name,e.identifier
+    # A reaction is published once per set of compartments it takes place in:
+    # the same MetaNetX or Rhea reaction in the cytosol and in the lysosome are
+    # two events, two entities that share the accession. They are told apart by
+    # the compartments each one states.
+    con.execute(f"""CREATE OR REPLACE TABLE ap_entity_compartments AS
+        SELECT owner_key entity_key,
+            array_to_string(list(DISTINCT "value" ORDER BY "value"),',') compartments
+        FROM ap_annotation_raw
+        WHERE owner_kind='entity' AND term={_literal(COMPARTMENT)}
+        GROUP BY owner_key""")
+    con.execute(f"""CREATE OR REPLACE TABLE ap_entity_natural_conflict AS
+        SELECT e.entity_type,e.taxonomy_id,coalesce(a.name,e.namespace) namespace_name,e.identifier,
+            bool_and(e.entity_type={_literal(REACTION_ENTITY_TYPE)})
+            AND count(DISTINCT coalesce(p.compartments,''))=count(*) compartment_variants
         FROM ap_entity_canonical_input e LEFT JOIN ap_namespace_alias a ON a.raw=e.namespace
-        GROUP BY ALL HAVING count(*)>1""")
+        LEFT JOIN ap_entity_compartments p ON p.entity_key=e.entity_key
+        GROUP BY e.entity_type,e.taxonomy_id,coalesce(a.name,e.namespace),e.identifier
+        HAVING count(*)>1""")
+    # Entities sharing a natural key take their published key as canonical
+    # identifier (below) when the key is a name, or when they are compartment
+    # variants of one reaction, each with compartments of its own. Any other
+    # shared accession is two identities the publisher should have merged.
     _checked(
         con,
         """SELECT e.entity_key FROM ap_entity_canonical_input e
@@ -544,7 +567,8 @@ def _create_entity_projection(con: Any) -> None:
             AND c.taxonomy_id IS NOT DISTINCT FROM e.taxonomy_id AND c.identifier=e.identifier
         LEFT JOIN ap_namespace_alias a ON a.raw=e.namespace
         WHERE c.namespace_name=coalesce(a.name,e.namespace)
-          AND e.namespace NOT IN ('name','synonym')""",
+          AND e.namespace NOT IN ('name','synonym')
+          AND NOT c.compartment_variants""",
         "Distinct published entities violate main canonical natural-key uniqueness",
     )
     con.execute(f"""CREATE OR REPLACE TABLE ap_entity AS SELECT
