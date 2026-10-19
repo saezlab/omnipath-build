@@ -60,11 +60,18 @@ def _modules():
     )
 
 
+# The partner and predicate gates are this port's own: one chemical end let a
+# resource's annotation links of its chemicals into the dataset (2026-10-19).
+_PORT_ONLY_FILTERS = {"partner_types", "predicates"}
+
+
 def _normalize(value):
     """Only the declared concrete chemical type gate may differ."""
     if isinstance(value, dict):
         result = {}
         for key, item in value.items():
+            if key in _PORT_ONLY_FILTERS:
+                continue
             if key == "entity_types" and item in (
                 ["Chemical:OM:0037"],
                 ["chemical_entity", "small_molecule"],

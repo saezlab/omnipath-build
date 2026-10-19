@@ -1519,12 +1519,14 @@ _COMPARTMENT_TERMS = (
 # Interaction-level annotation, the second tier: what the resource says the
 # interaction *is*. The precedence column orders the tier internally, so a
 # relation annotated both allosteric and orthosteric resolves to `allosteric`.
+# Guide to Pharmacology states what a ligand is at its target; the CV-based
+# inputs wrote the same as `Agonist:OM:1001` and the like.
 _ANNOTATION_CLASS_TERMS = (
-    ("Allosteric Modulator:OM:1005", "allosteric", 1),
-    ("Agonist:OM:1001", "orthosteric", 2),
-    ("Antagonist:OM:1002", "orthosteric", 2),
-    ("Activator:OM:1003", "orthosteric", 2),
-    ("Inhibitor:OM:1004", "orthosteric", 2),
+    ("guidetopharma:type", "Allosteric modulator", "allosteric", 1),
+    ("guidetopharma:type", "Agonist", "orthosteric", 2),
+    ("guidetopharma:type", "Antagonist", "orthosteric", 2),
+    ("guidetopharma:type", "Activator", "orthosteric", 2),
+    ("guidetopharma:type", "Inhibitor", "orthosteric", 2),
 )
 
 # The third tier is the predicate, read from
@@ -1591,7 +1593,8 @@ _DOI_TERM = "publications"
 _AFFINITY_TERMS = ("BAO:0000192", "BAO:0000190", "BAO:0000034", "BAO:0000188")
 _PCHEMBL_TERM = "has_quantitative_value"
 _SCORE_TERM = "has_confidence_score"
-_CURATION_TERM = "Interaction Directness:OM:1216"
+# ConnectomeDB's "Direct" or "Inferred" evidence of a pair; its values are the flags.
+_CURATION_TERM = "connectomedb:evidence"
 
 # Curation terms whose *presence* is the statement, and whose value is not.
 # ChEMBL publishes a mechanism id, and no query wants the id: what separates
@@ -2574,9 +2577,9 @@ def _stage_interaction_class_evidence(
               ))[1] AS class_name
             FROM {}.relation_evidence_annotation rea
             JOIN {}.annotation a ON a.annotation_key = rea.annotation_key
-            JOIN unnest(%s::text[], %s::text[], %s::int[])
-              AS term_class(term, class_name, precedence)
-              ON term_class.term = a.term
+            JOIN unnest(%s::text[], %s::text[], %s::text[], %s::int[])
+              AS term_class(term, value, class_name, precedence)
+              ON term_class.term = a.term AND term_class.value = a.value
             JOIN {}.relation_evidence_relation rer
               ON rer.source_id = rea.source_id
              AND rer.relation_evidence_id = rea.relation_evidence_id
@@ -2584,9 +2587,10 @@ def _stage_interaction_class_evidence(
             """
         ).format(schema_id, schema_id, schema_id),
         [
-            [term for term, _name, _precedence in _ANNOTATION_CLASS_TERMS],
-            [name for _term, name, _precedence in _ANNOTATION_CLASS_TERMS],
-            [precedence for _term, _name, precedence in _ANNOTATION_CLASS_TERMS],
+            [term for term, _value, _name, _precedence in _ANNOTATION_CLASS_TERMS],
+            [value for _term, value, _name, _precedence in _ANNOTATION_CLASS_TERMS],
+            [name for _term, _value, name, _precedence in _ANNOTATION_CLASS_TERMS],
+            [precedence for _term, _value, _name, precedence in _ANNOTATION_CLASS_TERMS],
         ],
     )
     cur.execute("CREATE INDEX _if_annotation_class_idx ON _if_annotation_class (relation_id)")

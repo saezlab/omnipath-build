@@ -83,7 +83,35 @@ _TRANSPORT_CLASSES = ("transport", "ligand_receptor")
 # A dataset gated on that inherits both. The entity type asserts only what the
 # record holds — this end is a small molecule — and leaves metabolite-or-not
 # to the caller, who can still pass `chemical_classes` on any request.
-_GATE = {"entity_types": ["chemical_entity", "small_molecule"]}
+#
+# **The other end is a molecule, and the statement is an interaction.** One
+# chemical end alone also admits a resource's annotations of its chemicals:
+# CellPhoneDB's "secreted" role terms, MRClinksDB's ClassyFire classes (ChemOnt
+# terms), Guide to Pharmacology's antibacterial role (``has_chemical_role`` to a
+# ChEBI role, which the ChEBI load types as a chemical). So the partner is one
+# of the molecular types — untyped targets (``named_thing``) and chemicals
+# included, ontology terms and organisms not — and the predicate is one of the
+# three the dataset's pairs are stated with.
+_PARTNER_TYPES = [
+    "protein",
+    "gene",
+    "polypeptide",
+    "macromolecular_complex",
+    "protein_family",
+    "gene_family",
+    "nucleic_acid_entity",
+    "rna_product",
+    "molecular_entity",
+    "molecular_activity",
+    "named_thing",
+    "chemical_entity",
+    "small_molecule",
+]
+_GATE = {
+    "entity_types": ["chemical_entity", "small_molecule"],
+    "partner_types": _PARTNER_TYPES,
+    "predicates": ["interacts_with", "affects", "associated_with"],
+}
 
 # **Three filters the retiring views applied and this recipe does not**, the
 # first two measured on the dev4 build 2026-08-25. None loses a row the views
