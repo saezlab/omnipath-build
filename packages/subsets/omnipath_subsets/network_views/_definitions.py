@@ -13,13 +13,14 @@ combined relation and the curated SQL that fills them. No definition here uses
 it any more, and the ``schema`` / ``combined_relation`` fields retire with the
 registry columns behind them once the standing views are dropped.
 
-**Both datasets' old views are still on disk, and both are unmanaged.**
-Converting a dataset stops the framework *managing* its views and does not drop
-them: ``apply_network`` returns early for a preset, and the only ``DROP`` for
-each relation sits inside the SQL file the derive has stopped executing. So
+**A database built before the conversion still holds both datasets' old
+views, unmanaged.** Converting a dataset stops the framework *managing* its
+views and does not drop them: ``apply_network`` returns early for a preset. So
 they survive, frozen at their last refresh, serving data the build has since
-corrected. They are a rollback path and not a live contract — a fresh
-``init-db --drop-existing`` takes them and nothing recreates them.
+corrected — they are not a live contract, and a fresh ``init-db
+--drop-existing`` takes them. The SQL that built the MetalinksDB views is
+deleted: it read annotation terms of the CV-based inputs that no build writes.
+The copy under ``legacy/postgres`` stays as the parity reference.
 
 Adding a dataset stays a declarative change: a definition here, served by the
 same uniform API.

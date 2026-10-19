@@ -1,12 +1,11 @@
 """Metabolic-domain classification for ``chemical_entity`` entities.
 
 Coarse, flat, single-valued grouping that primarily subdivides metabolites. A
-chemical's domain is read from its taxonomy/pathway annotations (HMDB ClassyFire
-super/class, KEGG pathway, Recon3D subsystem) via the curated keyword rules in
-``metabolic_domain.yaml``: the first source (in priority order) that yields a
-matching bucket wins, ties broken by bucket precedence. Runs during ``derive``
-(no reload). Annotations reach the canonical entity through
-``entity_evidence_annotation`` -> ``entity_evidence_resolution``.
+chemical's domain is read from the labels of the classes and pathways it is
+linked to (ChemOnt, LIPID MAPS and RefMet classes, pathways) via the curated
+keyword rules in ``metabolic_domain.yaml``: the first source (in priority
+order) that yields a matching bucket wins, ties broken by bucket precedence.
+Runs during ``derive`` (no reload), on the canonical ``relation`` table.
 """
 
 from __future__ import annotations
@@ -73,15 +72,18 @@ def classify_metabolic_domain(
             domain_rows,
         )
 
-        # Materialise the consulted annotation terms (with priority).
+        # Materialise the consulted sources (with priority).
         cur.execute(
-            "CREATE TEMP TABLE _metabolic_domain_term "
-            "(term text PRIMARY KEY, priority integer NOT NULL) ON COMMIT DROP"
+            "CREATE TEMP TABLE _metabolic_domain_source "
+            "(namespace text, entity_type text, priority integer NOT NULL) ON COMMIT DROP"
         )
         cur.executemany(
-            "INSERT INTO _metabolic_domain_term (term, priority) VALUES (%s, %s) "
-            "ON CONFLICT (term) DO NOTHING",
-            [(entry["term"], entry["priority"]) for entry in rules["source_terms"]],
+            "INSERT INTO _metabolic_domain_source (namespace, entity_type, priority) "
+            "VALUES (%s, %s, %s)",
+            [
+                (entry.get("namespace"), entry.get("entity_type"), entry["priority"])
+                for entry in rules["sources"]
+            ],
         )
 
         # Materialise the domain -> keyword map (keywords lowercased once).
@@ -116,17 +118,20 @@ def classify_metabolic_domain(
                 ),
                 ann AS (
                   SELECT
-                    eer.entity_id,
-                    t.priority AS term_priority,
-                    lower(a.value) AS val
-                  FROM {schema}.entity_evidence_annotation eea
-                  JOIN {schema}.annotation a
-                    ON a.annotation_key = eea.annotation_key
-                  JOIN {schema}.entity_evidence_resolution eer
-                    ON eer.entity_evidence_id = eea.entity_evidence_id
-                  JOIN chem ON chem.entity_id = eer.entity_id
-                  JOIN _metabolic_domain_term t ON t.term = a.term
-                  WHERE a.value IS NOT NULL
+                    r.subject_entity_id AS entity_id,
+                    min(src.priority) AS term_priority,
+                    lower(o.label) AS val
+                  FROM {schema}.relation r
+                  JOIN chem ON chem.entity_id = r.subject_entity_id
+                  JOIN {schema}.entity o ON o.entity_id = r.object_entity_id
+                  JOIN {schema}.vocab_entity_type ot
+                    ON ot.entity_type_id = o.entity_type_id
+                  LEFT JOIN {schema}.vocab_identifier_type it
+                    ON it.identifier_type_id = o.canonical_identifier_type_id
+                  JOIN _metabolic_domain_source src
+                    ON src.namespace = it.name OR src.entity_type = ot.name
+                  WHERE o.label IS NOT NULL
+                  GROUP BY r.subject_entity_id, lower(o.label)
                 ),
                 matched AS (
                   SELECT

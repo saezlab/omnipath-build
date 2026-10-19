@@ -1,11 +1,11 @@
 # Curated metabolic-domain rules for chemical_entity entities.
 #
 # Coarse, flat, single-valued functional grouping that primarily subdivides
-# metabolites. A chemical's domain is decided from its taxonomy/pathway
-# annotations, consulted in source priority order (HMDB ClassyFire -> KEGG ->
-# Recon3D); the first source that yields a matching bucket wins, ties broken by
-# bucket precedence. Fine taxonomies stay as annotations (not duplicated here).
-# See omnipath_build/classify/metabolic_domain.py.
+# metabolites. A chemical's domain is decided from the labels of the classes
+# and pathways it is linked to, consulted in priority order (ChemOnt, LIPID
+# MAPS, RefMet, pathways); the first source that yields a matching bucket wins,
+# ties broken by bucket precedence. Fine taxonomies stay as the links
+# themselves (not duplicated here). See classify/metabolic_domain.py.
 
 # The controlled vocabulary (seeded into vocab_metabolic_domain). `precedence`
 # breaks ties when several buckets match within the same source (most specific
@@ -21,18 +21,21 @@ domains:
 # Any chemical with no matching annotation falls back to this bucket.
 default: other
 
-# annotation.term values consulted, in priority order (lower = consulted first).
-# HMDB ClassyFire (super/class) -> KEGG Pathway -> Recon3D Subsystem.
-source_terms:
-  - {term: 'Compound Superclass:OM:0668', priority: 1}
-  - {term: 'Compound Class:OM:0662',      priority: 2}
-  - {term: 'Pathway:OM:0874',             priority: 3}
-  - {term: 'Subsystem:OM:0873',           priority: 4}
+# The linked entities consulted, by the namespace of a class or the type of the
+# entity, in priority order (lower = consulted first): the ClassyFire classes
+# (ChemOnt) that HMDB, FooDB, MRClinksDB and RaMP give, the LIPID MAPS and
+# RefMet classifications, then the pathways a chemical participates in.
+sources:
+  - {namespace: chemont,            priority: 1}
+  - {namespace: lipidmaps_class,    priority: 2}
+  - {namespace: refmet_super_class, priority: 3}
+  - {namespace: refmet_main_class,  priority: 3}
+  - {entity_type: pathway,          priority: 4}
 
-# domain -> case-insensitive substrings matched against annotation.value.
-# Keywords are deliberately broad so they generalise across the three sources
-# (e.g. `lipid` matches HMDB "Lipids and lipid-like molecules" and Recon3D
-# "Glycerophospholipid metabolism" alike).
+# domain -> case-insensitive substrings matched against the linked labels.
+# Keywords are deliberately broad so they generalise across the sources
+# (e.g. `lipid` matches ChemOnt "Lipids and lipid-like molecules" and the
+# pathway "Glycerophospholipid metabolism" alike).
 keywords:
   lipid:
     [lipid, 'fatty acid', 'fatty acyl', cholesterol, sphingo, glycerophospho,
