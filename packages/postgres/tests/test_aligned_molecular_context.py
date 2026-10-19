@@ -141,8 +141,8 @@ def test_molecular_context_preserves_exact_pairings_standalone_and_virtual_keys(
         assert "gene_protein_representative" not in plan.counts
 
 
-def test_context_is_mandatory_and_resettable_for_serving_four():
-    assert SERVING_SCHEMA_VERSION == 5
+def test_context_is_mandatory_and_resettable():
+    assert SERVING_SCHEMA_VERSION == 6
     assert CONTEXT_TABLES <= set(CONTENT_TABLES)
     ddl = companion_ddl("fixture")
     for table in CONTEXT_TABLES:

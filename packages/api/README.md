@@ -69,27 +69,35 @@ Open interactive API docs from the web app (**API Docs** in the sidebar) or dire
 
 ## Serving tables
 
-Each resource version is served from its published tables and three serving
+Each resource version is served from its published tables and four serving
 tables written by the build: `entity_term` (search), `relation_endpoint` (a key's
-relations) and `entity_group` (gene, product and chemical groups). They are part
-of the resource version, so the API needs no separate index build; downloads
-contain only the published tables. Lookups by key read each resource's files
-separately, so only the matching row groups are read.
+relations), `entity_group` (gene, product and chemical groups) and `relation_facet`
+(each distinct combination of the relation filter columns). They are part of the
+resource version, so the API needs no separate index build; downloads contain only
+the published tables. Lookups by key read each resource's files separately, so only
+the matching row groups are read.
 
 Facet results share concurrent identical requests and use an LRU cache limited to
 128 entries and 32 MiB of encoded results. Cache keys include normalized parameters,
 resource inventory, pinned release and taxonomy references. This encoded-size bound
-is not a process RAM limit. Counts retain the existing scope and qualifier exclusion
-semantics. Equal-ranked entity labels now use a deterministic tie-breaker.
+is not a process RAM limit. Equal-ranked entity labels now use a deterministic
+tie-breaker.
 
-`POST /relations/scoped-facets` accepts optional `taxonomyLimit` (1–10,000) and
-`taxonomyQuery` (case-insensitive name/ID substring). Other facets and selected
-taxonomy values remain included, with zero counts for selected absent values.
-Omitting the limit retains the full legacy response. The UI requests one extra
-option to determine whether to show **Load more**, then increases its limit in tens.
-Requests with different taxonomy pages reuse the same cached counts. JSON responses
-support gzip at both the direct API and the public web proxy; the proxy avoids
-forwarding compressed-body headers after Node has decompressed a response.
+`POST /relations/scoped-facets` returns the relation filter options a selection
+leaves, without counts: for each filter group, the values of the relations that the
+scope (an entity selection, molecular forms) and the other groups' filters keep, most
+relations first. A group's own filters do not narrow it, so choosing a value keeps
+the others of its group listed. Without an entity selection the options come from the
+resource versions' `relation_facet` tables (about 37,000 rows for the full release);
+with one, from the selected relations grouped the same way.
+
+It accepts optional `taxonomyLimit` (1–10,000) and `taxonomyQuery` (case-insensitive
+name/ID substring). Other facets and selected taxonomy values remain included, also
+selected values that no relation has. Omitting the limit returns every option. The UI
+requests one extra option to determine whether to show **Load more**, then increases
+its limit. Requests with different taxonomy pages reuse the same cached options. JSON
+responses support gzip at both the direct API and the public web proxy; the proxy
+avoids forwarding compressed-body headers after Node has decompressed a response.
 
 ## Explorer starting examples
 

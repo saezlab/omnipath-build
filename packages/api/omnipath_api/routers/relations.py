@@ -4,7 +4,7 @@ from fastapi import HTTPException, Request, Query
 from fastapi.responses import Response
 
 from omnipath_api.models import (
-    FacetCount,
+    FacetOption,
     RelationEvidenceResponse,
     RelationFilterOptions,
     RelationPayloadsResponse,
@@ -45,14 +45,14 @@ def search_relations(
 
 @router.post(
     "/relations/scoped-facets",
-    response_model=list[FacetCount],
+    response_model=list[FacetOption],
     tags=["relations"],
     response_model_exclude_none=False,
 )
 def scoped_relation_facets(
     request: Request, payload: ScopedRelationFacetsRequest
 ) -> list[dict[str, Any]]:
-    """Facet counts for the current relation selection."""
+    """The relation filter options the selection and the other groups' filters leave."""
     body = _dump(payload)
     return _call(request, "get_scoped_relation_facets", body, resources=body.get("resources"))
 

@@ -205,6 +205,28 @@ ENTITY_TERM_TABLE = pa.schema(
     [("term", pa.string()), ("kind", pa.string()), ("entity_id", pa.int32())]
 )
 
+# Each distinct combination of the relation filter columns, with the largest evidence count
+# and the number of its relations: which filter options a selection leaves, without reading
+# the relations. ``sources`` is the resource's own name, as in ``relation``.
+RELATION_FACET_COLUMNS = (
+    "category",
+    "predicate",
+    "subject_type",
+    "object_type",
+    "taxon",
+    "sign",
+    "is_directed",
+    "sources",
+    *RELATION_QUALIFIERS,
+)
+RELATION_FACET_TABLE = pa.schema(
+    [
+        *[RELATION_TABLE.field(name) for name in RELATION_FACET_COLUMNS],
+        ("evidence_count", pa.int64()),
+        ("relation_count", pa.int64()),
+    ]
+)
+
 PUBLISHED_TABLES = {
     "entity": ENTITY_TABLE,
     "entity_identifier": ENTITY_IDENTIFIER_TABLE,
@@ -220,4 +242,5 @@ SERVING_TABLES = {
     "relation_endpoint": RELATION_ENDPOINT_TABLE,
     "entity_group": ENTITY_GROUP_TABLE,
     "entity_term": ENTITY_TERM_TABLE,
+    "relation_facet": RELATION_FACET_TABLE,
 }

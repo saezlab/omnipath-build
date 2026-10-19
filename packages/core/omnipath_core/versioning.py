@@ -15,7 +15,7 @@ from typing import Any
 from .schema import PUBLISHED_TABLES, SERVING_TABLES
 
 BUILD_SCHEMA_VERSION = 1
-SERVING_SCHEMA_VERSION = 5
+SERVING_SCHEMA_VERSION = 6
 RELEASE_SCHEMA_VERSION = 1
 # Published tables are the resource download; serving tables are derived lookup indexes.
 RESOURCE_FILES = tuple(f"{table}.parquet" for table in PUBLISHED_TABLES)
@@ -94,7 +94,7 @@ class ManifestFile:
 
 @dataclass(frozen=True)
 class BuildManifest:
-    """Current resource publication: schema 1, serving schema 4, three file entries.
+    """Current resource publication: schema 1, serving schema 6, one entry per table file.
 
     Additional publisher metadata is retained verbatim in ``metadata`` and emitted
     at the JSON root. It does not introduce a nested ``metadata`` output field.

@@ -37,7 +37,7 @@ def test_public_models_round_trip_current_filename_keyed_manifest():
     parsed = validate_build_manifest(data)
     assert isinstance(parsed, BuildManifest)
     assert parsed.schema_version == BUILD_SCHEMA_VERSION == 1
-    assert parsed.serving_schema_version == SERVING_SCHEMA_VERSION == 5
+    assert parsed.serving_schema_version == SERVING_SCHEMA_VERSION == 6
     assert parsed.files["entity.parquet"] == ManifestFile(size_bytes=123, rows=0, sha256="a" * 64)
     assert parsed.to_dict() == data
     assert BuildManifest.from_dict(data, strict_fields=True) == parsed

@@ -710,7 +710,7 @@ export interface paths {
         put?: never;
         /**
          * Scoped Relation Facets
-         * @description Facet counts for the current relation selection.
+         * @description The relation filter options the selection and the other groups' filters leave.
          */
         post: operations["scoped_relation_facets_relations_scoped_facets_post"];
         delete?: never;
@@ -1633,6 +1633,22 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /**
+         * FacetOption
+         * @description A filter option the current selection leaves.
+         */
+        FacetOption: {
+            /** Facetcategory */
+            facetCategory?: string | null;
+            /** Facetlabel */
+            facetLabel?: string | null;
+            /** Facetname */
+            facetName: string;
+            /** Facetvalue */
+            facetValue: string;
+        } & {
+            [key: string]: unknown;
+        };
         /** GroupRelationshipsRequest */
         GroupRelationshipsRequest: {
             filters?: components["schemas"]["SearchFilters"];
@@ -2277,6 +2293,8 @@ export interface components {
             object_aspect_qualifier?: string[];
             /** Object Direction Qualifier */
             object_direction_qualifier?: string[];
+            /** Partnertypes */
+            partnerTypes?: string[];
             /** Predicates */
             predicates?: string[];
             /** Relation Categories */
@@ -4142,7 +4160,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["FacetCount"][];
+                    "application/json": components["schemas"]["FacetOption"][];
                 };
             };
             /** @description Validation Error */

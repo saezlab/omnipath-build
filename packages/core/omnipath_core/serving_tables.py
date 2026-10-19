@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pyarrow.parquet as pq
 
-from omnipath_core.schema import ROW_GROUP_SIZE
+from omnipath_core.schema import RELATION_FACET_COLUMNS, ROW_GROUP_SIZE, SERVING_TABLES
 
 _COPY_OPTIONS = f"(FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE {ROW_GROUP_SIZE})"
 
@@ -19,8 +19,8 @@ def _sql_path(path) -> str:
     return str(path).replace("'", "''")
 
 
-def write_serving_tables(db, directory, work) -> None:
-    """Write ``relation_endpoint``, ``entity_group`` and ``entity_term`` into
+def write_serving_tables(db, directory, work, tables=tuple(SERVING_TABLES)) -> None:
+    """Write the serving ``tables`` (by default all of ``SERVING_TABLES``) into
     ``directory`` from its ``relation``, ``entity`` and ``entity_identifier`` tables.
 
     ``db`` is a DuckDB connection; ``work`` an existing directory for temporary files.
@@ -38,35 +38,37 @@ def write_serving_tables(db, directory, work) -> None:
             ("reference", f"{side}_reference_entity_key"),
         )
     )
-    _sorted_copy(
-        db,
-        f"SELECT * FROM ({endpoints}) WHERE key IS NOT NULL",
-        "key, relation_id",
-        directory / "relation_endpoint.parquet",
-        work,
-    )
-    _sorted_copy(
-        db,
-        f"""SELECT * FROM (
+    facet_columns = ", ".join(RELATION_FACET_COLUMNS)
+    queries = {
+        "relation_endpoint": (
+            f"SELECT * FROM ({endpoints}) WHERE key IS NOT NULL",
+            "key, relation_id",
+        ),
+        "entity_group": (
+            f"""SELECT * FROM (
             SELECT reference_entity_key AS group_key, 'reference' AS kind, entity_id FROM {entities}
             UNION ALL SELECT unnest(gene_reference_keys), 'gene', entity_id FROM {entities}
             UNION ALL SELECT group_connectivity, 'connectivity', entity_id FROM {entities}
         ) WHERE group_key IS NOT NULL""",
-        "group_key, entity_id",
-        directory / "entity_group.parquet",
-        work,
-    )
-    _sorted_copy(
-        db,
-        f"""SELECT DISTINCT term, kind, entity_id FROM (
+            "group_key, entity_id",
+        ),
+        "entity_term": (
+            f"""SELECT DISTINCT term, kind, entity_id FROM (
             SELECT lower(label) AS term, 'label' AS kind, entity_id FROM {entities}
             UNION ALL SELECT lower(identifier), 'identifier', entity_id FROM {entities}
             UNION ALL SELECT lower(id), 'identifier', entity_id FROM {identifiers}
         ) WHERE term IS NOT NULL AND term <> ''""",
-        "term, entity_id",
-        directory / "entity_term.parquet",
-        work,
-    )
+            "term, entity_id",
+        ),
+        "relation_facet": (
+            f"""SELECT {facet_columns}, max(evidence_count) AS evidence_count,
+            count(*) AS relation_count FROM {relations} GROUP BY ALL""",
+            "category, predicate",
+        ),
+    }
+    for name in tables:
+        query, order = queries[name]
+        _sorted_copy(db, query, order, directory / f"{name}.parquet", work)
 
 
 def _sorted_copy(db, query, order, target, work, max_rows=2_000_000):

@@ -116,8 +116,8 @@ Aggregation remains necessary because observations and aliases repeat across
 batches. Doing it once over flat tables avoids repeatedly building, unpacking and
 merging nested Python objects. Bucketing limits aggregate working sets but
 cannot make an exceptionally large single entity or relation cost-free. The
-serving tables (`relation_endpoint`, `entity_group`, `entity_term`) are written
-last, each sorted by its lookup key.
+serving tables (`relation_endpoint`, `entity_group`, `entity_term`,
+`relation_facet`) are written last, each sorted by its lookup key.
 
 ## Output and publication
 
@@ -127,7 +127,8 @@ resources/<source>/<numeric-version>/
 │   entity_evidence.parquet
 ├── relation.parquet, relation_annotation.parquet, relation_evidence.parquet
 ├── evidence_payloads.parquet
-├── relation_endpoint.parquet, entity_group.parquet, entity_term.parquet
+├── relation_endpoint.parquet, entity_group.parquet, entity_term.parquet,
+│   relation_facet.parquet
 ├── resolution_stats.json
 └── build_manifest.json
 ```

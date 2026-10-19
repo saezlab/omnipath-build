@@ -1560,6 +1560,48 @@
         "title": "FacetCount",
         "type": "object"
       },
+      "FacetOption": {
+        "additionalProperties": true,
+        "description": "A filter option the current selection leaves.",
+        "properties": {
+          "facetCategory": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Facetcategory"
+          },
+          "facetLabel": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Facetlabel"
+          },
+          "facetName": {
+            "title": "Facetname",
+            "type": "string"
+          },
+          "facetValue": {
+            "title": "Facetvalue",
+            "type": "string"
+          }
+        },
+        "required": [
+          "facetName",
+          "facetValue"
+        ],
+        "title": "FacetOption",
+        "type": "object"
+      },
       "GroupRelationshipsRequest": {
         "additionalProperties": true,
         "properties": {
@@ -3442,6 +3484,13 @@
               "type": "string"
             },
             "title": "Object Direction Qualifier",
+            "type": "array"
+          },
+          "partnerTypes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Partnertypes",
             "type": "array"
           },
           "predicates": {
@@ -6311,7 +6360,7 @@
     },
     "/relations/scoped-facets": {
       "post": {
-        "description": "Facet counts for the current relation selection.",
+        "description": "The relation filter options the selection and the other groups' filters leave.",
         "operationId": "scoped_relation_facets_relations_scoped_facets_post",
         "requestBody": {
           "content": {
@@ -6329,7 +6378,7 @@
               "application/json": {
                 "schema": {
                   "items": {
-                    "$ref": "#/components/schemas/FacetCount"
+                    "$ref": "#/components/schemas/FacetOption"
                   },
                   "title": "Response Scoped Relation Facets Relations Scoped Facets Post",
                   "type": "array"

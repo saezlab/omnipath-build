@@ -11,8 +11,12 @@ from typing import Any
 from omnipath_engine.store.query_cache import normalized
 
 
+import pyarrow as pa
+from omnipath_core.schema import RELATION_FACET_COLUMNS, RELATION_FACET_TABLE
+
 from omnipath_engine.queries.constants import RELATION_QUALIFIER_FILTERS
 from omnipath_engine.filters import normalize_filters
+from omnipath_engine.molecular import has_form_filters
 
 logger = logging.getLogger(__name__)
 
@@ -83,17 +87,14 @@ class FacetsQueries:
         return self._cached_facets("entities", payload, resources, self._compute_entity_facets)
 
     def get_scoped_relation_facets(self, payload=None, resources=None):
+        """The relation filter options a selection leaves: for each filter group, the values
+        of the relations that the scope (an entity selection, molecular forms) and the
+        other groups' filters keep, most relations first. A group's own filters do not
+        narrow it, so its other values stay listed (choosing one adds it)."""
         payload = dict(payload or {})
         limit = payload.pop("taxonomyLimit", None)
         query = str(payload.pop("taxonomyQuery", "") or "").strip().casefold()
-        # The counts are those of the scope (an entity selection, annotation terms) without the
-        # filters of the panels: what each option holds, not what it would add to the current
-        # filters. Counting under every filter combination took 2 to 17 s on the full release
-        # and held a query slot each time; these are computed once per scope and kept (the
-        # unfiltered ones are warmed at startup). The results show the live count.
-        items = self._cached_facets(
-            "relations", _without(payload, RELATION_FILTER_KEYS), resources, self._compute_relation_facets
-        )
+        items = self._cached_facets("relations", payload, resources, self._compute_relation_facets)
         if limit is None:
             return items  # Existing API callers can still request the complete list.
         limit = max(1, min(int(limit), 10000))
@@ -102,7 +103,7 @@ class FacetsQueries:
         present = {i["facetValue"] for i in taxa}
         missing = self._label_taxonomy_facets(
             [
-                dict(facetName="taxonomy_id", facetValue=value, scopedCount=0, facetCategory=None)
+                dict(facetName="taxonomy_id", facetValue=value, facetCategory=None)
                 for value in sorted(selected - present)
             ]
         )
@@ -118,126 +119,76 @@ class FacetsQueries:
         visible = {i["facetValue"] for i in matching[:limit]} | selected
         return [i for i in items if i["facetName"] != "taxonomy_id" or i["facetValue"] in visible]
 
+    def _selected_combinations(self, scope_payload, resources):
+        """The ``relation_facet`` rows (with ``resource``) of the relations an endpoint or
+        molecular form scope selects, as columns of plain values."""
+        scope = normalize_filters(_flattened(scope_payload))
+        selection, params = self._relation_selection(scope, resources, qualifiers=())
+        return (
+            self._db.execute(
+                f"""SELECT {", ".join(SELECTED_COMBINATIONS.names)}
+                FROM (SELECT {", ".join(RELATION_FACET_COLUMNS)}, resource,
+                      max(evidence_count) AS evidence_count, count(*) AS relation_count
+                      FROM ({selection}) GROUP BY ALL)""",
+                params,
+            )
+            .fetch_arrow_table()
+            .to_pydict()
+        )
+
     def _compute_relation_facets(
         self,
         payload: dict[str, Any] | None = None,
         resources: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         payload = payload or {}
-        filter_payload = dict(payload)
-        nested = filter_payload.pop("filters", None) or {}
-        for key, value in nested.items():
-            outer = filter_payload.get(key)
-            if isinstance(value, list) and isinstance(outer, list):
-                filter_payload[key] = outer + value
-            elif outer is None:
-                filter_payload[key] = value
-        filters = normalize_filters(filter_payload)
-        if not self._selected_resource_infos(resources or filters.get("sources") or None):
+        filters = normalize_filters(_flattened(payload))
+        scope_payload = _without(payload, RELATION_FILTER_KEYS)
+        scope = normalize_filters(_flattened(scope_payload))
+        if not self._selected_resource_infos(resources):
             return []
-        # Each qualifier facet counts under the other qualifier filters, not its own.
-        matched, common_params = self._relation_selection(filters, resources, qualifiers=())
-        where_sql, params = self._relation_where(
-            {term: filters[term] for term in RELATION_QUALIFIER_FILTERS}
-        )
-        queries = [
-            (
-                f"""SELECT 'base' kind, to_json(struct_pack(
-            category:=category, predicate:=predicate, subject_type:=subject_type, object_type:=object_type,
-            taxon:=taxon, sign:=sign, sources:=sources, n:=count(*))) payload
-            FROM matched WHERE {where_sql}
-            GROUP BY category, predicate, subject_type, object_type, taxon, sign, sources""",
-                list(params),
+        if any(scope[key] for key in _ENDPOINT_SCOPE) or has_form_filters(scope):
+            # The selection's combinations are kept: a filter change reads no relations.
+            columns = self._cached_facets(
+                "relation-combinations", scope_payload, resources, self._selected_combinations
             )
-        ]
-        for term in RELATION_QUALIFIER_FILTERS:
-            qualifier_where, qualifier_params = self._relation_where(
-                {other: filters[other] for other in RELATION_QUALIFIER_FILTERS if other != term}
-            )
-            queries.append(
-                (
-                    f"""SELECT 'qualifier' kind,
-                to_json(struct_pack(term:='{term}', value:=value, n:=count(DISTINCT relation_key))) payload
-                FROM (SELECT relation_key, unnest({term}) AS value FROM matched WHERE {qualifier_where})
-                GROUP BY value""",
-                    qualifier_params,
-                )
-            )
-        materialization = "MATERIALIZED" if filters["entity_ids"] else "NOT MATERIALIZED"
-        # One statement per part. Sent as one UNION ALL over the shared selection, the
-        # unfiltered counts of release 2026.10.14.1 (170 resources, 32.7 million relations)
-        # never finished in DuckDB 1.5.6: its executor waited for a task that never came,
-        # while each part alone took about 2 s.
-        combined = [
-            row
-            for query, query_params in queries
-            for row in self._db.execute(
-                f"WITH matched AS {materialization} ({matched}) {query}",
-                [*common_params, *query_params],
-            ).fetchall()
-        ]
-        grouped = [
-            tuple(
-                json.loads(raw)[key]
-                for key in (
-                    "category",
-                    "predicate",
-                    "subject_type",
-                    "object_type",
-                    "taxon",
-                    "sign",
-                    "sources",
-                    "n",
-                )
-            )
-            for kind, raw in combined
-            if kind == "base"
-        ]
-
-        counts: dict[tuple[str, str, str | None], int] = {}
-
-        def add(name: str, value: Any, count: int, category: str | None = None) -> None:
-            if value is None or str(value).strip() == "":
-                return
-            key = (name, str(value), category)
-            counts[key] = counts.get(key, 0) + int(count)
-
-        for row in grouped:
-            category, predicate, subject_type, object_type, taxon, sign, sources, n = row
-            add("predicate", predicate, n, category)
-            # A relation counts once for each type at its ends: what choosing the type keeps.
-            for participant in {subject_type, object_type}:
-                add("participant_type", participant, n)
-            # And once for its pair of types, in either direction ("chemical_entity|protein"):
-            # what choosing both types keeps, "protein|protein" for a type chosen twice.
-            if subject_type and object_type:
-                add("participant_pair", "|".join(sorted((subject_type, object_type))), n)
-            add("taxonomy_id", taxon, n)
-            add("sign", sign, n)
-            add("category", category, n)
-            if isinstance(sources, list):
-                for source in dict.fromkeys(sources):
-                    add("source", source, n)
-            elif sources:
-                add("source", sources, n)
-
-        for kind, raw in combined:
-            if kind == "qualifier":
-                item = json.loads(raw)
-                add(item["term"], item["value"], item["n"])
-
+            selected = pa.Table.from_pydict(columns, schema=SELECTED_COMBINATIONS)
+            self._db.register("selected_combinations", selected)
+            try:
+                rows = self._facet_rows("SELECT * FROM selected_combinations", [], filters)
+            finally:
+                self._db.unregister("selected_combinations")
+        else:
+            where, params = self._relation_where(scope, qualifiers=())
+            table = self._table("relation_facet", resources)
+            rows = self._facet_rows(f"SELECT * FROM {table} WHERE {where}", params, filters)
         out = [
-            {
-                "facetName": name,
-                "facetValue": value,
-                "facetCategory": category,
-                "scopedCount": count,
-            }
-            for (name, value, category), count in sorted(
-                counts.items(), key=lambda item: (-item[1], item[0][0], item[0][1])
+            {"facetName": name, "facetValue": value, "facetCategory": category}
+            for name, value, category, _ in sorted(
+                rows, key=lambda row: (-row[3], row[0], row[1], row[2] or "")
             )
         ]
         return self._label_taxonomy_facets(out)
+
+    def _facet_rows(self, combinations, params, filters):
+        """(facet, value, category, relations) of each option over the ``combinations``
+        SQL, each facet under the filters of the other groups."""
+        parts, params = [], list(params)
+        for name, (keys, value, category) in RELATION_FACETS.items():
+            where, values = self._relation_where(
+                {key: item for key, item in filters.items() if key not in keys}
+            )
+            parts.append(
+                f"""SELECT '{name}' AS facet, value, category, sum(relation_count) AS n
+                FROM (SELECT {value} AS value, {category} AS category, relation_count
+                      FROM combinations WHERE {where})
+                WHERE value IS NOT NULL AND value <> '' GROUP BY ALL"""
+            )
+            params += values
+        return self._db.execute(
+            f"WITH combinations AS MATERIALIZED ({combinations}) {' UNION ALL '.join(parts)}",
+            params,
+        ).fetchall()
 
     def _entity_scoped_facet_where(
         self,
@@ -369,6 +320,54 @@ RELATION_FILTER_KEYS = (
     "signs",
     "min_evidence_count",
 )
+
+
+# The filters that select relations by their endpoints rather than by their columns.
+_ENDPOINT_SCOPE = ("entity_ids", "entity_pks", "scope_entity_ids", "reference_entity_keys")
+# The combinations of selected relations, with the resource of each.
+SELECTED_COMBINATIONS = RELATION_FACET_TABLE.append(pa.field("resource", pa.string()))
+
+# Each relation facet: the filters of its group (normalized names), which do not narrow
+# it, and the SQL of its value and category over a ``relation_facet`` row. A relation
+# counts once for each type at its ends (what choosing the type keeps) and once for its
+# pair of types in either direction ("chemical_entity|protein": what choosing both
+# keeps, "protein|protein" for a type chosen twice).
+_RELATION_TYPE = ("relation_categories", "predicates")
+_PARTICIPANT = ("interaction_types", "partner_types")
+RELATION_FACETS = {
+    "category": (_RELATION_TYPE, "category", "NULL"),
+    "predicate": (_RELATION_TYPE, "predicate", "category"),
+    "participant_type": (
+        _PARTICIPANT,
+        "unnest(list_distinct([subject_type, object_type]))",
+        "NULL",
+    ),
+    "participant_pair": (
+        _PARTICIPANT,
+        "CASE WHEN subject_type <> '' AND object_type <> '' "
+        "THEN array_to_string(list_sort([subject_type, object_type]), '|') END",
+        "NULL",
+    ),
+    "source": (("sources",), "unnest(list_distinct(sources))", "NULL"),
+    "taxonomy_id": (("taxonomy_ids",), "taxon", "NULL"),
+    "sign": (("signs", "sign"), "sign::VARCHAR", "NULL"),
+    **{
+        term: ((term,), f"unnest(list_distinct({term}))", "NULL")
+        for term in RELATION_QUALIFIER_FILTERS
+    },
+}
+
+
+def _flattened(payload: dict[str, Any]) -> dict[str, Any]:
+    """The payload with its nested ``filters`` merged into the top level."""
+    out = dict(payload)
+    for key, value in (out.pop("filters", None) or {}).items():
+        outer = out.get(key)
+        if isinstance(value, list) and isinstance(outer, list):
+            out[key] = outer + value
+        elif outer is None:
+            out[key] = value
+    return out
 
 
 def _without(payload: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:

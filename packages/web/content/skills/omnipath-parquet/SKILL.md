@@ -200,6 +200,11 @@ Lookup tables `init` derives, for fast filtering without scanning:
   `category`): endpoint keys of relations, to find relations by endpoint
 - `entity_group` (`group_key`, `kind`, `entity_id`): gene, reference and
   structure (`connectivity`) groups of entities
+- `relation_facet` (`category`, `predicate`, `subject_type`, `object_type`,
+  `taxon`, `sign`, `is_directed`, `sources`, the three qualifiers,
+  `evidence_count`, `relation_count`): each distinct combination of the
+  relation filter columns, with the largest evidence count and the number of
+  relations, to see which values occur together without scanning `relation`
 
 The database is read-only. Make your own tables with `CREATE TEMP TABLE`, or
 write results to Parquet.

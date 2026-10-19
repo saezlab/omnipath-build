@@ -8,7 +8,7 @@ Shared contracts for the OmniPath Parquet pipeline:
 - Quantitative measurements and units (`measurements.py`)
 - Resource metadata, versioning and layout paths (`resource_metadata.py`, `versioning.py`)
 
-Resource manifests use integer `schema_version: 1` and `serving_schema_version: 5`.
+Resource manifests use integer `schema_version: 1` and `serving_schema_version: 6`.
 `BuildManifest.files` maps every table file (the published tables in
 `PUBLISHED_TABLES` and the serving tables in `SERVING_TABLES`) to `ManifestFile`
 values with `size_bytes`, `rows` and `sha256`. `to_dict()` and `from_dict()` preserve the

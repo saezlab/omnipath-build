@@ -156,14 +156,16 @@ Each resource version has these tables:
 | `relation_endpoint` | endpoint key of a relation, sorted by key | `relation_id` |
 | `entity_group` | gene, reference or connectivity group of an entity | `entity_id` |
 | `entity_term` | lowercase label or identifier of an entity, sorted | `entity_id` |
+| `relation_facet` | each distinct combination of the relation filter columns, with its relation count | |
 
 `entity_id` and `relation_id` number the rows of `entity` and `relation` within one
 resource version; join child tables on them together with `_resource`. The 64-character
 `entity_key` and `relation_key` identify the same entity or relation across resources.
 In the tables over every resource, shared entities and relations are **not
-deduplicated**: there is one row per resource that has them. The last three tables
+deduplicated**: there is one row per resource that has them. The last four tables
 are lookup tables `init` derives from the others; use them to find entities by name
-(`entity_term`) and relations by endpoint (`relation_endpoint`) without scanning.
+(`entity_term`) and relations by endpoint (`relation_endpoint`) without scanning, and
+which predicates, types, taxa or qualifiers occur together (`relation_facet`).
 
 ## Prebuilt queries
 

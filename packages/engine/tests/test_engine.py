@@ -120,7 +120,9 @@ class TestParquetServingEngine(unittest.TestCase):
 
     def test_a_source_filter_reads_only_that_resources_relations(self):
         # The same relations and counts as a filter over every file, from that file alone.
-        resources = sorted({info["resource"] for info in self.engine._selected_resource_infos(None)})
+        resources = sorted(
+            {info["resource"] for info in self.engine._selected_resource_infos(None)}
+        )
         self.assertGreater(len(resources), 1)
         for resource in resources:
             filters = {"sources": [resource]}
@@ -143,20 +145,45 @@ class TestParquetServingEngine(unittest.TestCase):
         rows = self.engine.search_relations(limit=1000)["rows"]
         pairs = {(r["subject_type"], r["object_type"]) for r in rows}
         self.assertTrue(pairs)
-        facets = self.engine.get_scoped_relation_facets({})
-        counts = {(f["facetName"], f["facetValue"]): f["scopedCount"] for f in facets}
+        options = {
+            (f["facetName"], f["facetValue"]) for f in self.engine.get_scoped_relation_facets({})
+        }
         for first, second in sorted(pairs):
             filters = {"interaction_types": [first], "partner_types": [second]}
             found = self.engine.search_relations(filters=filters, limit=1000)
             # Either direction, never another type at either end.
             self.assertTrue(found["rows"])
             for row in found["rows"]:
-                self.assertIn((row["subject_type"], row["object_type"]), {(first, second), (second, first)})
-            # The pair count is what choosing both types keeps; a type alone, what choosing it keeps.
-            pair = "|".join(sorted((first, second)))
-            self.assertEqual(counts["participant_pair", pair], found["total"])
-            alone = self.engine.search_relations(filters={"interaction_types": [first]}, limit=1000)
-            self.assertEqual(counts["participant_type", first], alone["total"])
+                self.assertIn(
+                    (row["subject_type"], row["object_type"]), {(first, second), (second, first)}
+                )
+            # Both types are options, and so is their pair: what choosing both keeps.
+            self.assertIn(("participant_pair", "|".join(sorted((first, second)))), options)
+            self.assertIn(("participant_type", first), options)
+        # The pair options under another group's filter are the pairs of its relations.
+        some = sorted(pairs)[0]
+        predicate = self.engine.search_relations(
+            filters={"interaction_types": [some[0]], "partner_types": [some[1]]}, limit=1
+        )["rows"][0]["predicate"]
+        kept = {
+            tuple(sorted((r["subject_type"], r["object_type"])))
+            for r in self.engine.search_relations(filters={"predicates": [predicate]}, limit=1000)[
+                "rows"
+            ]
+            if r["subject_type"] and r["object_type"]
+        }
+        offered = {
+            tuple(f["facetValue"].split("|"))
+            for f in self.engine.get_scoped_relation_facets(
+                {
+                    "predicates": [predicate],
+                    "interactionTypes": [some[0]],
+                    "partnerTypes": [some[1]],
+                }
+            )
+            if f["facetName"] == "participant_pair"
+        }
+        self.assertEqual(offered, kept)
 
     def test_entity_key_lookup_skips_identifier_scan(self):
         fake = "a" * 64
@@ -195,6 +222,31 @@ class TestParquetServingEngine(unittest.TestCase):
         entity_id = sample_rel["rows"][0]["subject_label"]
         counts = self.engine.get_scoped_relation_facets({"entityIds": [entity_id]})
         self.assertTrue(any(item["facetName"] == "predicate" for item in counts))
+
+    def test_selection_options_follow_filters_from_kept_combinations(self):
+        self.engine._facet_cache.clear()
+        key = self.engine.search_relations(limit=1)["rows"][0]["subject_entity_key"]
+        scope = {"entityIds": [key]}
+        options = self.engine.get_scoped_relation_facets(scope)
+        predicates = [o["facetValue"] for o in options if o["facetName"] == "predicate"]
+        self.assertTrue(predicates)
+        for predicate in predicates:
+            filters = {"entity_pks": [key], "predicates": [predicate]}
+            rows = self.engine.search_relations(filters=filters, limit=1000)["rows"]
+            self.assertTrue(rows)
+            narrowed = self.engine.get_scoped_relation_facets({**scope, "predicates": [predicate]})
+            self.assertEqual(
+                {o["facetValue"] for o in narrowed if o["facetName"] == "source"},
+                {source for row in rows for source in row["sources"]},
+            )
+            # The relation types stay listed: choosing another one adds it.
+            self.assertEqual(
+                {o["facetValue"] for o in narrowed if o["facetName"] == "predicate"},
+                set(predicates),
+            )
+        # The selection's combinations were read once and kept.
+        kept = [k for k in self.engine._facet_cache.entries if k[0] == "relation-combinations"]
+        self.assertEqual(len(kept), 1)
 
     def test_10_relation_evidence(self):
         result = self.engine.search_relations(limit=1, include_details=True)
@@ -278,7 +330,9 @@ class TestInventoryHotReload(unittest.TestCase):
             self.assertTrue(expected, "the fixture resources have topics")
             topics = engine.list_resource_topics()
             self.assertEqual({t["id"]: set(t["resources"]) for t in topics}, expected)
-            self.assertTrue(all(t["label"] and t["resources"] == sorted(t["resources"]) for t in topics))
+            self.assertTrue(
+                all(t["label"] and t["resources"] == sorted(t["resources"]) for t in topics)
+            )
             sizes = [len(t["resources"]) for t in topics]
             self.assertEqual(sizes, sorted(sizes, reverse=True))
 

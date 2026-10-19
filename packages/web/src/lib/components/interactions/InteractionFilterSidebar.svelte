@@ -9,12 +9,11 @@
   import { Checkbox } from '$lib/components/ui/checkbox/index.js';
   import { Label } from '$lib/components/ui/label/index.js';
   import type { SearchFilters } from '$lib/types/search';
-  import { fetchScopedRelationFacetCounts } from '$lib/api/client';
+  import { fetchScopedRelationFacetOptions } from '$lib/api/client';
   import { getIdentifierTypeLabel, getRelationPredicateLabel } from '$lib/domain/display';
   import { getEntityTypeEmoji } from '$lib/utils/entity-types';
-  import { selectedFirst, splitEmptyOptions } from '$lib/utils/facets';
+  import { selectedFirst } from '$lib/utils/facets';
   import { truncateTitle } from '$lib/actions/truncate-title';
-  import { formatNumber } from '$lib/utils/format';
 
   interface Props {
     filters: SearchFilters;
@@ -68,15 +67,17 @@
     return () => clearTimeout(timer);
   });
   let taxonomyHasMore = $state(false);
-  let scopedFacetCounts = $state<Map<string, { count: number; category?: string | null }>>(
-    new Map(),
-  );
+  // The options with relations under the current scope and filters, as "name:value".
+  let availableOptions = $state<Set<string>>(new Set());
+  // Each predicate's category, kept across requests so a chosen predicate stays listed.
+  let predicateCategories = $state<Record<string, string>>({});
   let loading = $state(true);
-  // The option whose click is being applied, until the new counts arrive.
+  // The option whose click is being applied, until the new options arrive.
   let pendingKey = $state<string | null>(null);
 
-  // Fetch facet counts (scoped when selection present, global otherwise) and build filter options.
-  // Counts reflect the current scope AND all OTHER active filters (cross-facet filtering).
+  // The options each filter group leaves: those of the relations that the scope (scoped
+  // when a selection is present, global otherwise) and the other groups' filters keep. A
+  // group's own filters do not narrow it, so its other values stay listed.
   const scopeKey = $derived(
     JSON.stringify([
       currentPage.data.selectedRelease,
@@ -85,56 +86,76 @@
         endpointMode: scopeEndpointMode,
         mode: scopeMode,
         annotationTermIds: scopedAnnotationIds?.length ? scopedAnnotationIds : undefined,
-        // The counts are those of the scope without the filters of the panels (the results
-        // show the live count), so a filter change asks for nothing new; the chosen taxa are
-        // sent so that they stay listed.
-        taxonomyIds: filters.taxonomy_ids,
       },
     ]),
+  );
+  const filterKey = $derived(
+    JSON.stringify({
+      predicates: filters.predicates,
+      relation_categories: filters.relation_categories,
+      object_aspect_qualifier: filters.object_aspect_qualifier,
+      object_direction_qualifier: filters.object_direction_qualifier,
+      causal_mechanism_qualifier: filters.causal_mechanism_qualifier,
+      interactionTypes: filters.interaction_types,
+      partnerTypes: filters.partner_types,
+      sources: filters.sources,
+      taxonomyIds: filters.taxonomy_ids,
+    }),
   );
   $effect(() => {
     void scopeKey;
     taxonomyFacetLimit = TAXONOMY_PAGE_SIZE;
   });
-  const requestKey = $derived(JSON.stringify([scopeKey, taxonomyFacetLimit, taxonomyQuery]));
+  const requestKey = $derived(
+    JSON.stringify([scopeKey, filterKey, taxonomyFacetLimit, taxonomyQuery]),
+  );
   $effect(() => {
-    const [key, visibleLimit, search] = JSON.parse(requestKey);
+    const [key, panelFilters, visibleLimit, search] = JSON.parse(requestKey);
     const [, scope] = JSON.parse(key);
+    const chosen = JSON.parse(panelFilters);
     const controller = new AbortController();
 
     let cancelled = false;
     loading = true;
     untrack(() =>
-      fetchScopedRelationFacetCounts(
-        { ...scope, taxonomyLimit: visibleLimit + 1, taxonomyQuery: search },
+      fetchScopedRelationFacetOptions(
+        { ...scope, ...chosen, taxonomyLimit: visibleLimit + 1, taxonomyQuery: search },
         controller.signal,
       ),
     )
-      .then((counts) => {
+      .then((options) => {
         if (cancelled) return;
-        const map = new Map<string, { count: number; category?: string | null }>();
+        const available = new Set<string>();
+        const known = { ...untrack(() => predicateCategories) };
         const categories: Record<string, string[]> = {};
         const types: string[] = [];
         const sources: string[] = [];
         const taxonomies: string[] = [];
 
         const names: Record<string, string> = {};
-        for (const c of counts) {
-          map.set(`${c.facetName}:${c.facetValue}`, {
-            count: c.scopedCount,
-            category: c.facetCategory,
-          });
-          if (c.facetName === 'predicate' && c.facetCategory) {
-            if (!categories[c.facetCategory]) categories[c.facetCategory] = [];
-            categories[c.facetCategory].push(c.facetValue);
-          } else if (c.facetName === 'participant_type') {
-            types.push(c.facetValue);
-          } else if (c.facetName === 'source') {
-            sources.push(c.facetValue);
-          } else if (c.facetName === 'taxonomy_id') {
-            taxonomies.push(c.facetValue);
-            if (c.facetLabel) names[c.facetValue] = c.facetLabel;
+        for (const option of options) {
+          available.add(`${option.facetName}:${option.facetValue}`);
+          if (option.facetName === 'predicate' && option.facetCategory) {
+            known[option.facetValue] = option.facetCategory;
+            (categories[option.facetCategory] ||= []).push(option.facetValue);
+          } else if (option.facetName === 'participant_type') {
+            types.push(option.facetValue);
+          } else if (option.facetName === 'source') {
+            sources.push(option.facetValue);
+          } else if (option.facetName === 'taxonomy_id') {
+            taxonomies.push(option.facetValue);
+            if (option.facetLabel) names[option.facetValue] = option.facetLabel;
           }
+        }
+        // Chosen values stay listed, so that they can be cleared.
+        for (const category of chosen.relation_categories || []) categories[category] ||= [];
+        for (const predicate of chosen.predicates || []) {
+          const category = known[predicate];
+          if (category && !categories[category]?.includes(predicate))
+            (categories[category] ||= []).push(predicate);
+        }
+        for (const source of chosen.sources || []) {
+          if (!sources.includes(source)) sources.push(source);
         }
 
         qualifierOptions = Object.fromEntries(
@@ -142,17 +163,18 @@
             key,
             [
               ...new Set([
-                ...counts.filter((c) => c.facetName === key).map((c) => c.facetValue),
-                ...(filters[key] || []),
+                ...options.filter((o) => o.facetName === key).map((o) => o.facetValue),
+                ...(chosen[key] || []),
               ]),
             ],
           ]),
         );
-        scopedFacetCounts = map;
+        availableOptions = available;
+        predicateCategories = known;
         predicatesByCategory = categories;
         interactionTypeOptions = types;
         sourceOptions = sources;
-        const selected = scope.taxonomyIds || [];
+        const selected = chosen.taxonomyIds || [];
         const matching = taxonomies.filter(
           (id) =>
             !search ||
@@ -168,7 +190,7 @@
       .catch(() => {
         if (!cancelled) {
           qualifierOptions = {};
-          scopedFacetCounts = new Map();
+          availableOptions = new Set();
           predicatesByCategory = {};
           interactionTypeOptions = [];
           sourceOptions = [];
@@ -200,20 +222,19 @@
   // second row of it appears under it, for the pair of that type with itself (protein-protein).
   const firstType = $derived(filters.interaction_types?.[0]);
   const secondType = $derived(firstType ? filters.partner_types?.[0] : undefined);
+  // A second type is listed when the chosen one has relations with it (or it is chosen).
   const participantRows = $derived.by(() => {
     const rest = interactionTypeOptions.filter((type) => type !== firstType && type !== secondType);
     if (!firstType) return interactionTypeOptions.map((type) => ({ type, second: false }));
+    const paired = (type: string) =>
+      isAvailable('participant_pair', [firstType, type].sort().join('|'));
     return [
       { type: firstType, second: false },
-      { type: firstType, second: true },
+      ...(secondType === firstType || paired(firstType) ? [{ type: firstType, second: true }] : []),
       ...(secondType && secondType !== firstType ? [{ type: secondType, second: true }] : []),
-      ...rest.map((type) => ({ type, second: true })),
+      ...rest.filter(paired).map((type) => ({ type, second: true })),
     ];
   });
-  function participantCount(type: string, second: boolean): number | undefined {
-    if (!firstType || !second) return getCount('participant_type', type);
-    return getCount('participant_pair', [firstType, type].sort().join('|')) ?? 0;
-  }
   function toggleParticipant(type: string, second: boolean) {
     let first = firstType;
     let partner = secondType;
@@ -271,22 +292,14 @@
     };
   }
 
-  function getCount(filterName: string, value: string): number | undefined {
-    return scopedFacetCounts.get(`${filterName}:${value}`)?.count;
+  function isAvailable(filterName: string, value: string): boolean {
+    return availableOptions.has(`${filterName}:${value}`);
   }
 
-  /** Qualifier values with results, most frequent first; selected values always stay. */
+  /** Qualifier values with results, most relations first; selected values always stay. */
   function qualifierValues(key: QualifierKey): string[] {
     const selected = filters[key] || [];
-    return splitEmptyOptions(
-      qualifierOptions[key] || [],
-      (value) => getCount(key, value) ?? 0,
-      (value) => selected.includes(value),
-    ).shown.sort(
-      (a, b) =>
-        Number(selected.includes(b)) - Number(selected.includes(a)) ||
-        (getCount(key, b) ?? 0) - (getCount(key, a) ?? 0),
-    );
+    return selectedFirst(qualifierOptions[key] || [], (value) => selected.includes(value));
   }
   const directionValues = $derived(qualifierValues('object_direction_qualifier'));
   const aspectValues = $derived(qualifierValues('object_aspect_qualifier'));
@@ -303,13 +316,9 @@
     directionValues.length + aspectValues.length + mechanismValues.length > 0,
   );
 
-  // Sources with no relations for the current filters are hidden.
-  const sourceSplit = $derived(
-    splitEmptyOptions(
-      sourceOptions,
-      (option) => getCount('source', option),
-      (option) => (filters.sources || []).includes(option),
-    ),
+  // Sources with no relations for the current filters are not listed.
+  const sourceList = $derived(
+    selectedFirst(sourceOptions, (option) => (filters.sources || []).includes(option)),
   );
 
   function formatPredicate(value: string): string {
@@ -329,7 +338,6 @@
   selectedValues: string[],
   onToggle: () => void,
   icon?: string,
-  count?: number,
 )}
   <div class="flex items-center justify-between py-0.5 gap-2">
     <Label
@@ -356,10 +364,6 @@
     </Label>
     {#if loading && pendingKey === `${filterKey}:${value}`}
       <span class="pending-spinner text-muted-foreground" aria-hidden="true"></span>
-    {:else if count != null}
-      <span class="text-xs text-muted-foreground tabular-nums flex-shrink-0">
-        {formatNumber(count)}
-      </span>
     {/if}
   </div>
 {/snippet}
@@ -412,8 +416,6 @@
                         formatPredicate(predicate),
                         filters.predicates || [],
                         () => handlePredicateToggle(category, predicate),
-                        undefined,
-                        getCount('predicate', predicate),
                       )}
                     {/each}
                   </div>
@@ -449,10 +451,6 @@
                     {formatCategory(value)}
                     {#if loading && pendingKey === `object_direction_qualifier:${value}`}
                       <span class="pending-spinner text-muted-foreground" aria-hidden="true"></span>
-                    {:else}
-                      <span class="tabular-nums text-muted-foreground"
-                        >{formatNumber(getCount('object_direction_qualifier', value) ?? 0)}</span
-                      >
                     {/if}
                   </Button>
                 {/each}
@@ -470,8 +468,6 @@
                     formatCategory(value),
                     filters.object_aspect_qualifier || [],
                     () => handleArrayToggle('object_aspect_qualifier', value),
-                    undefined,
-                    getCount('object_aspect_qualifier', value) ?? 0,
                   )}
                 {/each}
               </div>
@@ -488,8 +484,6 @@
                     formatCategory(value),
                     filters.causal_mechanism_qualifier || [],
                     () => handleArrayToggle('causal_mechanism_qualifier', value),
-                    undefined,
-                    getCount('causal_mechanism_qualifier', value) ?? 0,
                   )}
                 {/each}
               </div>
@@ -533,7 +527,6 @@
                   row.second ? (secondType ? [secondType] : []) : firstType ? [firstType] : [],
                   () => toggleParticipant(row.type, row.second),
                   participantType.icon,
-                  participantCount(row.type, row.second),
                 )}
               </div>
             {/each}
@@ -555,15 +548,9 @@
             onFilterChange({ ...filters, sources: sources.length ? sources : undefined })}
         />
         <div class="space-y-1 max-h-64 overflow-y-auto pr-2">
-          {#each sourceSplit.shown as option (option)}
-            {@render filterOptionRow(
-              'sources',
-              option,
-              option,
-              filters.sources || [],
-              () => handleArrayToggle('sources', option),
-              undefined,
-              getCount('source', option),
+          {#each sourceList as option (option)}
+            {@render filterOptionRow('sources', option, option, filters.sources || [], () =>
+              handleArrayToggle('sources', option),
             )}
           {/each}
         </div>
@@ -592,8 +579,6 @@
                 formatTaxonomy(option, taxonomyNames[option]) || option,
                 filters.taxonomy_ids || [],
                 () => handleArrayToggle('taxonomy_ids', option),
-                undefined,
-                getCount('taxonomy_id', option),
               )}
             {/each}
             {#if taxonomyHasMore}

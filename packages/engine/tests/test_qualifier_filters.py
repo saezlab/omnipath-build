@@ -72,35 +72,46 @@ def test_combined_filters_and_multi_select(engine):
         engine.search_relations(filters={"object_direction_qualifier": ["activation"]})
 
 
-def test_filtered_counts_ignore_own_selection_but_keep_other_filters(engine):
-    # The computation under filters (the panels show the counts without them, below).
-    facets = engine._compute_relation_facets(
-        {
-            "object_aspect_qualifier": ["activity"],
-            "object_direction_qualifier": ["increased"],
-        }
+def _options(facets):
+    options = {}
+    for facet in facets:
+        options.setdefault(facet["facetName"], set()).add(facet["facetValue"])
+    return options
+
+
+def test_options_ignore_own_selection_but_keep_other_filters(engine):
+    options = _options(
+        engine.get_scoped_relation_facets(
+            {"object_aspect_qualifier": ["activity"], "object_direction_qualifier": ["increased"]}
+        )
     )
-    counts = {(f["facetName"], f["facetValue"]): f["scopedCount"] for f in facets}
-    assert counts["object_aspect_qualifier", "expression"] == 1
-    assert counts["object_aspect_qualifier", "activity"] == 1
-    assert counts["object_direction_qualifier", "decreased"] == 1
-    assert counts["object_direction_qualifier", "increased"] == 1
-    assert engine._compute_relation_facets({"relation_categories": ["ontology"]}) == []
+    # Each group under the other's filter: increased relations have both aspects, activity
+    # relations both directions; only the relation with both has a mechanism.
+    assert options["object_aspect_qualifier"] == {"activity", "expression"}
+    assert options["object_direction_qualifier"] == {"increased", "decreased"}
+    assert options["causal_mechanism_qualifier"] == {"binding"}
+    assert all("scopedCount" not in facet for facet in engine.get_scoped_relation_facets({}))
 
 
-def test_panel_counts_are_the_counts_without_the_panel_filters(engine):
-    # Each option shows what it holds, whatever else is chosen; the results show the live
-    # count. The same counts, from the cache, for every combination of panel filters.
-    everything = engine.get_scoped_relation_facets({})
-    assert everything
-    for payload in (
-        {"sources": ["test"]},
-        {"filters": {"sources": ["test"]}},
-        {"object_direction_qualifier": ["decreased"], "predicates": ["affects"]},
-        {"interactionTypes": ["protein"], "partnerTypes": ["protein"], "taxonomyIds": ["9606"]},
-        {"relation_categories": ["ontology"]},
-    ):
-        assert engine.get_scoped_relation_facets(payload) == everything
+def test_options_follow_the_other_groups_filters(engine):
+    everything = _options(engine.get_scoped_relation_facets({}))
+    assert everything["object_aspect_qualifier"] == {"activity", "expression"}
+    decreased = _options(
+        engine.get_scoped_relation_facets({"object_direction_qualifier": ["decreased"]})
+    )
+    assert decreased["object_aspect_qualifier"] == {"activity"}
+    assert "causal_mechanism_qualifier" not in decreased
+    assert decreased["object_direction_qualifier"] == everything["object_direction_qualifier"]
+    # The same filters nested under ``filters``, as other API callers send them.
+    nested = engine.get_scoped_relation_facets(
+        {"filters": {"object_direction_qualifier": ["decreased"]}}
+    )
+    assert _options(nested) == decreased
+    # A category no relation has leaves only the relation types to choose from.
+    none = _options(engine.get_scoped_relation_facets({"relation_categories": ["ontology"]}))
+    assert none == {"category": {"interaction"}, "predicate": {"affects"}}
+    # A selected source keeps the other sources listed.
+    assert _options(engine.get_scoped_relation_facets({"sources": ["test"]}))["source"] == {"test"}
 
 
 def test_export_uses_same_qualifier_filter(engine):
@@ -125,30 +136,29 @@ def test_export_uses_same_qualifier_filter(engine):
         },
     ],
 )
-def test_batched_qualifier_counts_match_independent_scans(engine, payload):
+def test_qualifier_options_match_independent_scans(engine, payload):
     from omnipath_engine.queries.constants import RELATION_QUALIFIER_FILTERS
 
-    # Repeat the same keys in another resource: DISTINCT must span files too.
+    # The same relations in another resource version: its own combination table.
     source = engine.data_root / "resources/test/1"
     shutil.copytree(source, engine.data_root / "resources/duplicate/1")
     engine._refresh_inventory_if_stale()
-    expected = {}
+    expected = set()
     for term in RELATION_QUALIFIER_FILTERS:
         selection, params = engine._relation_selection({**payload, term: []})
         rows = engine._db.execute(
             f"""
-            SELECT a.value, count(DISTINCT r.relation_key)
+            SELECT DISTINCT a.value
             FROM ({selection}) r JOIN {engine._table("relation_annotation")} a
               USING (resource, relation_id)
             WHERE a.scope = 'relation' AND a.term = ?
-            GROUP BY a.value
         """,
             [*params, term],
         ).fetchall()
-        expected.update({(term, value): count for value, count in rows})
+        expected.update((term, value) for (value,) in rows)
     actual = {
-        (f["facetName"], f["facetValue"]): f["scopedCount"]
-        for f in engine._compute_relation_facets(payload)
+        (f["facetName"], f["facetValue"])
+        for f in engine.get_scoped_relation_facets(payload)
         if f["facetName"] in RELATION_QUALIFIER_FILTERS
     }
     assert actual == expected

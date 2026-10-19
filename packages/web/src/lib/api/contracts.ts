@@ -12,6 +12,7 @@ export type WireRelationSearch = components['schemas']['RelationSearchResponse']
 export type WireEntities = components['schemas']['EntitiesResponse'];
 export type WireFilters = components['schemas']['SearchFilters'];
 export type WireFacet = components['schemas']['FacetCount'];
+export type WireFacetOption = components['schemas']['FacetOption'];
 export type WireCursor = components['schemas']['EntitySearchCursor'];
 
 export type WireOntologyTerm = components['schemas']['OntologyTerm'];

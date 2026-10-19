@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import tempfile
 from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 from omnipath_core.measurements import QUANTITY_STRUCT
 from omnipath_core.schema import PUBLISHED_TABLES, RELATION_QUALIFIERS, SERVING_TABLES
+from omnipath_core.serving_tables import write_serving_tables
 
 _QUANTITY = [field.name for field in QUANTITY_STRUCT]
 
@@ -185,10 +187,17 @@ def write_resource(folder, entities=(), relations=(), payloads=None):
         "entity_term": ("term", "entity_id"),
     }
     for name, schema in {**PUBLISHED_TABLES, **SERVING_TABLES}.items():
+        if name == "relation_facet":
+            continue
         rows = tables[name]
         if name in order:
             rows = sorted(rows, key=lambda r: tuple(r[c] for c in order[name]))
         pq.write_table(pa.Table.from_pylist(rows, schema=schema), folder / f"{name}.parquet")
+    # The relation combinations are aggregates: written by the build's own query.
+    import duckdb
+
+    with tempfile.TemporaryDirectory() as work, duckdb.connect() as db:
+        write_serving_tables(db, folder, work, tables=("relation_facet",))
     return folder
 
 

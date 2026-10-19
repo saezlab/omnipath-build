@@ -15,6 +15,7 @@ import type {
   WireEntitySearch,
   WireRelationSearch,
   WireFacet,
+  WireFacetOption,
   WireCursor,
   WireOntologyTerm,
 } from './contracts';
@@ -345,7 +346,8 @@ export async function fetchScopedEntityFacetCounts(
   return res.json() as Promise<WireFacet[]>;
 }
 
-export async function fetchScopedRelationFacetCounts(
+/** The relation filter options the scope and the other groups' filters leave. */
+export async function fetchScopedRelationFacetOptions(
   params: {
     entityIds?: Array<string | number>;
     endpointMode?: 'any' | 'both';
@@ -371,8 +373,8 @@ export async function fetchScopedRelationFacetCounts(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(params),
   });
-  if (!res.ok) throw new Error('Failed to fetch scoped relation facet counts');
-  return res.json() as Promise<WireFacet[]>;
+  if (!res.ok) throw new Error('Failed to fetch relation filter options');
+  return res.json() as Promise<WireFacetOption[]>;
 }
 
 // Statistics transport aliases come from generated OpenAPI schemas.

@@ -15,7 +15,7 @@ from urllib.parse import quote
 import duckdb
 import httpx
 from omnipath_core.serving_tables import write_serving_tables
-from omnipath_core.versioning import SERVING_FILES
+from omnipath_core.schema import SERVING_TABLES
 import platformdirs
 
 from .contracts import (
@@ -199,8 +199,16 @@ def _install(http, db, root: Path, record: ResourceRecord) -> bool:
     target = parent / record["version"]
     published = [f for f in record["files"] if f["name"] != EVIDENCE]
     evidence = [f for f in record["files"] if f["name"] == EVIDENCE]
-    if _present(target, published) and all((target / name).is_file() for name in SERVING_FILES):
-        # Only raw evidence can be missing from a complete version.
+    if _present(target, published):
+        # A serving table added by a newer serving schema is derived in place; otherwise
+        # only raw evidence can be missing from a complete version.
+        missing = [name for name in SERVING_TABLES if not (target / f"{name}.parquet").is_file()]
+        if missing:
+            work = Path(tempfile.mkdtemp(dir=target, prefix=".work-"))
+            try:
+                write_serving_tables(db, target, work, tables=missing)
+            finally:
+                shutil.rmtree(work, ignore_errors=True)
         for artifact in evidence:
             if not _present(target, [artifact]):
                 fd, staging = tempfile.mkstemp(dir=target, prefix=".download-")

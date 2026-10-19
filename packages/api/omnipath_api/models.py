@@ -317,11 +317,16 @@ class RelationFilterOptions(APIModel):
     interactionTypes: list[str] = Field(default_factory=list)
 
 
-class FacetCount(APIModel):
+class FacetOption(APIModel):
+    """A filter option the current selection leaves."""
+
     facetName: str
     facetValue: str
     facetLabel: str | None = None
     facetCategory: str | None = None
+
+
+class FacetCount(FacetOption):
     scopedCount: int = 0
 
 
@@ -349,6 +354,7 @@ class ScopedRelationFacetsRequest(APIModel):
     object_direction_qualifier: list[str] = Field(default_factory=list)
     causal_mechanism_qualifier: list[str] = Field(default_factory=list)
     interactionTypes: list[str] = Field(default_factory=list)
+    partnerTypes: list[str] = Field(default_factory=list)
     sources: list[str] = Field(default_factory=list)
     taxonomyIds: list[str] = Field(default_factory=list)
     filters: SearchFilters | None = None
