@@ -56,45 +56,44 @@ CHEMICAL_IDENTIFIER_RULE = "chemical_identifier"
 INCHIKEY_RE = r"^[A-Z]{14}-[A-Z]{10}-[A-Z]$"
 
 # Name-bearing identifier types, tiered by recognisability (lower = preferred).
-# Tier 6 (systematic IUPAC) is the last-resort *name* and is recorded under a
-# distinct rule so QA can see how many chemicals fell that far.
+# The inputs write a source's own name as Name and everything else -- INN,
+# abbreviation, IUPAC and traditional names -- as Synonym, so the systematic
+# last-resort tier (recorded under a distinct rule) has no type of its own.
 _NAME_TIERS = (
     ("Name:OM:0202", 1),
-    ("Inn:OM:0120", 2),
-    ("Abbreviated Name:OM:0208", 3),
-    ("Iupac Traditional Name:OM:0211", 4),
     ("Synonym:OM:0203", 5),
-    ("Iupac Name:OM:0210", 6),
 )
 _IUPAC_LAST_RESORT_TIER = 6
 
 # Real external identifiers for the no-name fallback (lower = preferred). Bare
 # numeric namespaces get a readable prefix; self-identifying ids pass through.
+# The main namespaces keep their vocabulary names (``Chebi:MI:0474``), the
+# others are named by namespace. A formula is no identifier since the move to
+# Biolink.
 # The ``unresolved_entity_key`` hash is deliberately absent — it is excluded.
 _ID_TIERS = (
     ("Chebi:MI:0474", 1, "CHEBI:"),
     ("Kegg Compound:MI:2012", 2, ""),
     ("Pubchem Compound:OM:0002", 3, "CID:"),
-    ("Pubchem:MI:0730", 4, "CID:"),
     ("Hmdb:OM:0004", 5, ""),
     ("Chembl Compound:MI:0967", 6, ""),
     ("Lipidmaps:OM:0003", 7, ""),
     ("Swisslipids:OM:0009", 8, ""),
     ("Drugbank:MI:2002", 9, ""),
-    ("Metanetx:OM:0005", 10, ""),
-    ("Bigg Metabolite:OM:0233", 11, "BiGG:"),
+    ("metanetx", 10, ""),
+    ("bigg_metabolite", 11, "BiGG:"),
+    ("bigg", 11, "BiGG:"),
     ("Refmet:OM:0137", 12, ""),
     ("Ramp Id:OM:0132", 13, ""),
-    ("Human Gem Metabolite:OM:0243", 14, ""),
+    ("human_gem_metabolite", 14, ""),
     ("Cas:MI:2011", 15, "CAS:"),
     ("Reactome Stable Id:OM:0130", 16, ""),
-    ("Guidetopharma:OM:0008", 17, "GtoPdb:"),
-    ("Bindingdb:OM:0006", 18, "BindingDB:"),
-    ("Drugcentral:OM:0242", 19, "DrugCentral:"),
-    ("Foodb:OM:0213", 20, ""),
-    ("Phenol Explorer:OM:0247", 21, "PhenolExplorer:"),
-    ("Ptfi:OM:0214", 22, ""),
-    ("Molecular Formula:OM:0212", 55, ""),
+    ("guidetopharma", 17, "GtoPdb:"),
+    ("bindingdb", 18, "BindingDB:"),
+    ("drugcentral", 19, "DrugCentral:"),
+    ("foodb", 20, ""),
+    ("phenol_explorer_compound", 21, "PhenolExplorer:"),
+    ("ptfi", 22, ""),
     ("Smiles:MI:0239", 60, "SMILES:"),
     ("Standard Inchi Key:MI:1101", 99, ""),
 )

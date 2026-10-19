@@ -96,13 +96,14 @@ UNIPROT_ACCESSION = re.compile(
 # so a numeral is prefixed only where the utils database confirms it.
 BARE_NUMERAL = re.compile(r"^[0-9]+$")
 
-# The build's vocabulary names the identifier types after the controlled-
-# vocabulary term they came from; the edge columns carry a plain namespace
-# name. Most translate by stripping the accession and lowering the rest, and
-# these are the ones that do not.
+# The build's vocabulary names the main identifier types after the controlled-
+# vocabulary term they came from (`Uniprot:MI:1097`) and the others by their
+# namespace (`uniprot_trembl`); the edge columns carry a plain namespace name.
+# Most translate by stripping the accession and lowering the rest, and these
+# are the ones that do not.
 NAMESPACE_NAMES = {
     "Uniprot:MI:1097": "uniprot",
-    "Uniprot Trembl:MI:1099": "uniprot",
+    "uniprot_trembl": "uniprot",
     "Entrez:MI:0477": "entrez",
     "Chebi:MI:0474": "chebi",
     "Standard Inchi Key:MI:1101": "inchikey",
@@ -119,23 +120,23 @@ NAMESPACE_NAMES = {
 UTILS_ID_TYPES = {
     # The gene side.
     "Uniprot:MI:1097": "uniprot",
-    "Uniprot Trembl:MI:1099": "uniprot",
+    "uniprot_trembl": "uniprot",
     "Entrez:MI:0477": "entrez",
     "Hgnc:MI:1095": "hgnc",
     "Gene Name Primary:OM:0200": "genesymbol",
     "Gene Name Synonym:OM:0201": "genesymbol-syn",
     "Ensembl:MI:0476": "ensg",
-    "Refseq Protein:OM:0001": "refseqp",
+    "refseq_protein": "refseqp",
     # The chemical side.
     "Chebi:MI:0474": "chebi",
     "Standard Inchi Key:MI:1101": "inchikey",
     "Pubchem Compound:OM:0002": "pubchem",
-    "Pubchem:MI:0730": "pubchem",
     "Hmdb:OM:0004": "hmdb",
     "Kegg Compound:MI:2012": "kegg",
     "Lipidmaps:OM:0003": "lipidmaps",
     "Swisslipids:OM:0009": "swisslipids",
-    "Bigg Metabolite:OM:0233": "bigg",
+    "bigg_metabolite": "bigg",
+    "bigg": "bigg",
     "Cas:MI:2011": "cas",
     "Drugbank:MI:2002": "drugbank",
     "Chembl Compound:MI:0967": "chembl",
@@ -775,7 +776,7 @@ def _published_labels(cur, entities):
                JOIN vocab_identifier_type v ON v.identifier_type_id=i.identifier_type_id
                WHERE l.entity_id=ANY(%s::uuid[]) AND v.name=ANY(%s)
                ORDER BY l.entity_id, i.value""",
-            [ids, ["Uniprot:MI:1097", "Uniprot Trembl:MI:1099", "Chebi:MI:0474"]],
+            [ids, ["Uniprot:MI:1097", "uniprot_trembl", "Chebi:MI:0474"]],
         )
         chosen = set()
         for entity_id, id_type, value in cur.fetchall():

@@ -31,13 +31,11 @@ from omnipath_postgres.relational.labels.chemical_labels import (
 #: cascade reads), classified by preference and kind. A name is preferred
 #: when it is the minting resource's own recommended name (FR-016) -- the
 #: ``Name`` type specifically, not a systematic IUPAC form or a synonym.
+#: INN, abbreviations and IUPAC names arrive as synonyms since the move to
+#: Biolink, so their kinds are no longer told apart.
 _NAME_KIND: tuple[tuple[str, bool, str], ...] = (
     ("Name:OM:0202", True, "trivial"),
-    ("Inn:OM:0120", False, "trivial"),
-    ("Abbreviated Name:OM:0208", False, "abbreviation"),
-    ("Iupac Traditional Name:OM:0211", False, "systematic"),
     ("Synonym:OM:0203", False, "trivial"),
-    ("Iupac Name:OM:0210", False, "systematic"),
 )
 
 
