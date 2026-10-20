@@ -36,11 +36,16 @@ default: other
 # chemical stays `other`.
 #
 # A catalog source names a resource whose every entry is of one domain: a
-# chemical it has is of that domain, whatever its links say. SwissLipids
-# catalogs lipids only (its classes are entries of its own, not linked
-# classes), and its curation outranks ClassyFire's computed classes.
+# chemical it has is of that domain, whatever its links say. SwissLipids and
+# the LIPID MAPS Structure Database catalog lipids only (SwissLipids' classes
+# are entries of its own, not linked classes), and their curation outranks
+# ClassyFire's computed classes. `names: goslin` does the same for a chemical
+# any source names in lipid shorthand (a chain such as 16:0) that Goslin parses
+# at species level or finer: "PC 34:1" from HMDB or RaMP, not "PS-341".
 sources:
   - {data_source: swisslipids,      priority: 1, domain: lipid}
+  - {data_source: lipidmaps,        priority: 1, domain: lipid}
+  - {names: goslin,                 priority: 1, domain: lipid}
   - {namespace: chemont,            priority: 2}
   - {namespace: lipidmaps_class,    priority: 3}
   - {namespace: refmet_super_class, priority: 4}

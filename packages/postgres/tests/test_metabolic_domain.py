@@ -28,8 +28,14 @@ CHEMICALS = {
     # link, and its curation outranks a computed class.
     "cardiolipin": [("swisslipids", None)],
     "laccer": [("swisslipids", None), ("chemont", "Purine nucleotides")],
+    "lmsd lipid": [("lipidmaps", None)],
     # Any other resource says nothing about the domain.
     "imatinib": [("chembl", None)],
+    # A name in lipid shorthand, from any source; a drug code or a trivial
+    # name that Goslin would read as a lipid is not one.
+    "hmdb species": [("name", "PC(16:0/18:1(9Z))"), ("chemont", "Amino acids")],
+    "bortezomib": [("name", "PS-341")],
+    "ethanol": [("name", "Ethanol")],
     # The class is the subject: an `associated_with` link has no direction.
     "lysine": [("chemont<", "Amino acids, peptides, and analogues")],
     # A currency metabolite: a few lipid and sugar pathways among many.
@@ -46,7 +52,7 @@ CHEMICALS = {
 }
 
 
-SOURCES = {"swisslipids": 1, "chembl": 2}
+SOURCES = {"swisslipids": 1, "chembl": 2, "lipidmaps": 3}
 
 
 @pytest.fixture
@@ -82,6 +88,7 @@ def domain_database(postgres_dsn):
             cursor.execute(
                 query("CREATE TABLE {s}.entity_evidence_resolution (source_id bigint, entity_id bigint)")
             )
+            cursor.execute(query("CREATE TABLE {s}.entity_name (entity_id bigint, name text)"))
             cursor.executemany(
                 query("INSERT INTO {s}.data_source VALUES (%s, %s)"),
                 [(source_id, name) for name, source_id in SOURCES.items()],
@@ -100,6 +107,11 @@ def domain_database(postgres_dsn):
                     query("INSERT INTO {s}.entity VALUES (%s, 1, NULL, %s, NULL)"), (chemical, label)
                 )
                 for kind, target in links:
+                    if kind == "name":
+                        cursor.execute(
+                            query("INSERT INTO {s}.entity_name VALUES (%s, %s)"), (chemical, target)
+                        )
+                        continue
                     if kind in SOURCES:
                         cursor.execute(
                             query("INSERT INTO {s}.entity_evidence_resolution VALUES (%s, %s)"),
@@ -140,6 +152,10 @@ def test_classes_decide_and_pathways_only_by_majority(domain_database):
         "cardiolipin": "lipid",
         "laccer": "lipid",
         "imatinib": "other",
+        "lmsd lipid": "lipid",
+        "hmdb species": "lipid",
+        "bortezomib": "other",
+        "ethanol": "other",
         "ser-gln": "amino_acid",
         "phosphatidylserine": "lipid",
         "atp": "other",

@@ -9,7 +9,9 @@ the chemical's labels match wins, ties broken by bucket precedence. A source
 marked ``majority`` (the pathways) yields a bucket only when it matches
 more than half of the chemical's links of that source, and the chemical has at
 least ``min_links`` of them. A catalog source (``data_source`` + ``domain``)
-gives its domain to every chemical that resource has.
+gives its domain to every chemical that resource has; a ``names: goslin``
+source gives it to every chemical with a name in lipid shorthand that Goslin
+parses at species level or finer.
 Runs during ``derive`` (no reload), on the canonical ``relation`` table.
 """
 
@@ -20,11 +22,15 @@ from pathlib import Path
 
 from psycopg2 import sql
 import psycopg2.extensions
+from psycopg2.extras import execute_values
 import yaml
 
 
 CHEMICAL_ENTITY_TYPE = "chemical_entity"
 _RULES_PATH = Path(__file__).with_name("metabolic_domain.yaml")
+# Names worth handing to Goslin: shorthand carries a chain such as 16:0. Trivial
+# names stay out ("Ethanol" parses as the fatty alcohol FOH 2:0).
+_SHORTHAND_NAME = "[0-9]:[0-9]"
 
 
 @dataclass(frozen=True)
@@ -101,6 +107,8 @@ def classify_metabolic_domain(
                 for entry in rules["sources"]
             ],
         )
+
+        _assert_domains(cur, schema_id, chemical_type_id, rules["sources"])
 
         # Materialise the domain -> keyword map (keywords lowercased once).
         cur.execute(
@@ -183,18 +191,15 @@ def classify_metabolic_domain(
                     ON d.name = k.domain_name
                   GROUP BY ann.entity_id, d.metabolic_domain_id, ann.term_priority, d.precedence
                   UNION ALL
-                  -- Catalog sources: every chemical the resource has.
+                  -- Catalogs and lipid names: the domain is asserted.
                   SELECT DISTINCT
-                    r.entity_id,
+                    a.entity_id,
                     d.metabolic_domain_id,
-                    src.priority,
+                    a.priority,
                     d.precedence,
                     1
-                  FROM _metabolic_domain_source src
-                  JOIN {schema}.data_source ds ON ds.name = src.data_source
-                  JOIN {schema}.entity_evidence_resolution r ON r.source_id = ds.source_id
-                  JOIN chem ON chem.entity_id = r.entity_id
-                  JOIN {schema}.vocab_metabolic_domain d ON d.name = src.domain
+                  FROM _metabolic_domain_asserted a
+                  JOIN {schema}.vocab_metabolic_domain d ON d.name = a.domain
                 ),
                 eligible AS (
                   SELECT matched.*
@@ -243,3 +248,74 @@ def classify_metabolic_domain(
         by_default = int(cur.rowcount)
     conn.commit()
     return MetabolicDomainStats(classified=classified, by_default=by_default)
+
+
+def _assert_domains(cur, schema_id, chemical_type_id, sources) -> None:
+    """Stage the chemicals whose domain a catalog or a lipid name asserts.
+
+    Catalogs first: a chemical a catalog has needs no name parsed.
+    """
+    cur.execute(
+        sql.SQL(
+            "CREATE TEMP TABLE _metabolic_domain_asserted ON COMMIT DROP AS "
+            "SELECT entity_id, ''::text AS domain, 0 AS priority FROM {}.entity WITH NO DATA"
+        ).format(schema_id)
+    )
+    for entry in sources:
+        if entry.get("data_source"):
+            cur.execute(
+                sql.SQL(
+                    """
+                    INSERT INTO _metabolic_domain_asserted
+                    SELECT DISTINCT r.entity_id, %(domain)s, %(priority)s
+                    FROM {schema}.entity_evidence_resolution r
+                    JOIN {schema}.data_source ds ON ds.source_id = r.source_id
+                    JOIN {schema}.entity e ON e.entity_id = r.entity_id
+                    WHERE ds.name = %(source)s AND e.entity_type_id = ANY(%(chem)s)
+                    """
+                ).format(schema=schema_id),
+                {
+                    "domain": entry["domain"],
+                    "priority": entry["priority"],
+                    "source": entry["data_source"],
+                    "chem": chemical_type_id,
+                },
+            )
+    cur.execute("ANALYZE _metabolic_domain_asserted")
+    for entry in sources:
+        if entry.get("names") == "goslin":
+            _assert_lipid_names(cur, schema_id, chemical_type_id, entry)
+
+
+def _assert_lipid_names(cur, schema_id, chemical_type_id, entry) -> None:
+    """Chemicals with a name Goslin parses as a lipid at species level or finer."""
+    from omnipath_resolver.goslin import normalize
+
+    cur.execute(
+        sql.SQL(
+            """
+            SELECT DISTINCT n.entity_id, n.name
+            FROM {schema}.entity_name n
+            JOIN {schema}.entity e ON e.entity_id = n.entity_id
+            WHERE e.entity_type_id = ANY(%(chem)s)
+              AND n.name ~ %(shorthand)s
+              AND NOT EXISTS (
+                SELECT 1 FROM _metabolic_domain_asserted a WHERE a.entity_id = n.entity_id
+              )
+            """
+        ).format(schema=schema_id),
+        {"chem": chemical_type_id, "shorthand": _SHORTHAND_NAME},
+    )
+    parsed: dict[str, bool] = {}
+    lipids = set()
+    for entity_id, name in cur.fetchall():
+        if name not in parsed:
+            parsed[name] = normalize(name)["status"] == "parsed"
+        if parsed[name]:
+            lipids.add(entity_id)
+    execute_values(
+        cur,
+        "INSERT INTO _metabolic_domain_asserted (entity_id, domain, priority) VALUES %s",
+        [(entity_id, entry["domain"], entry["priority"]) for entity_id in lipids],
+        page_size=10000,
+    )

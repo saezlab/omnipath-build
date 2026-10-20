@@ -11,6 +11,7 @@ requires-python = ">=3.11"
 dependencies = [
     "certifi>=2023.7.22",
     "omnipath-core>=0.1.0,<0.2.0",
+    "omnipath-resolver>=0.1.0,<0.2.0",
     "omnipath-subsets>=0.1.0,<0.2.0",
     "duckdb>=1.5,<2",
     "pyarrow>=14",
@@ -28,6 +29,7 @@ include = ["omnipath_postgres*"]
 
 [tool.uv.sources]
 omnipath-core = { workspace = true }
+omnipath-resolver = { workspace = true }
 omnipath-subsets = { workspace = true }
 
 [tool.setuptools.package-data]
