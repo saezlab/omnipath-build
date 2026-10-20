@@ -8,6 +8,7 @@ from psycopg2 import sql
 import pytest
 
 from omnipath_postgres.relational.classify import classify_metabolic_domain
+from omnipath_postgres.relational.classify import metabolic_domain
 
 
 CHEMICALS = {
@@ -134,8 +135,10 @@ def domain_database(postgres_dsn):
             connection.commit()
 
 
-def test_classes_decide_and_pathways_only_by_majority(domain_database):
+@pytest.mark.parametrize("chunk", [5000, 1], ids=["inline", "process pool"])
+def test_classes_decide_and_pathways_only_by_majority(domain_database, monkeypatch, chunk):
     connection, schema = domain_database
+    monkeypatch.setattr(metabolic_domain, "_PARSE_CHUNK", chunk)
     classify_metabolic_domain(connection, schema=schema)
     with connection.cursor() as cursor:
         cursor.execute(

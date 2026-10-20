@@ -17,7 +17,9 @@ Runs during ``derive`` (no reload), on the canonical ``relation`` table.
 
 from __future__ import annotations
 
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
+import os
 from pathlib import Path
 
 from psycopg2 import sql
@@ -31,6 +33,10 @@ _RULES_PATH = Path(__file__).with_name("metabolic_domain.yaml")
 # Names worth handing to Goslin: shorthand carries a chain such as 16:0. Trivial
 # names stay out ("Ethanol" parses as the fatty alcohol FOH 2:0).
 _SHORTHAND_NAME = "[0-9]:[0-9]"
+# Goslin takes milliseconds on a long name, and a build has some 500,000: the
+# names are parsed in chunks by a pool of processes.
+_PARSE_CHUNK = 5000
+_PARSE_WORKERS = 16
 
 
 @dataclass(frozen=True)
@@ -289,8 +295,6 @@ def _assert_domains(cur, schema_id, chemical_type_id, sources) -> None:
 
 def _assert_lipid_names(cur, schema_id, chemical_type_id, entry) -> None:
     """Chemicals with a name Goslin parses as a lipid at species level or finer."""
-    from omnipath_resolver.goslin import normalize
-
     cur.execute(
         sql.SQL(
             """
@@ -306,16 +310,27 @@ def _assert_lipid_names(cur, schema_id, chemical_type_id, entry) -> None:
         ).format(schema=schema_id),
         {"chem": chemical_type_id, "shorthand": _SHORTHAND_NAME},
     )
-    parsed: dict[str, bool] = {}
-    lipids = set()
-    for entity_id, name in cur.fetchall():
-        if name not in parsed:
-            parsed[name] = normalize(name)["status"] == "parsed"
-        if parsed[name]:
-            lipids.add(entity_id)
+    rows = cur.fetchall()
+    names = sorted({name for _, name in rows})
+    chunks = [names[i : i + _PARSE_CHUNK] for i in range(0, len(names), _PARSE_CHUNK)]
+    if len(chunks) > 1:
+        workers = min(_PARSE_WORKERS, len(chunks), os.cpu_count() or 1)
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            results = list(pool.map(_parse_lipid_names, chunks))
+    else:
+        results = [_parse_lipid_names(chunk) for chunk in chunks]
+    lipid_names = {name for chunk, ok in zip(chunks, results) for name, hit in zip(chunk, ok) if hit}
+    lipids = {entity_id for entity_id, name in rows if name in lipid_names}
     execute_values(
         cur,
         "INSERT INTO _metabolic_domain_asserted (entity_id, domain, priority) VALUES %s",
         [(entity_id, entry["domain"], entry["priority"]) for entity_id in lipids],
         page_size=10000,
     )
+
+
+def _parse_lipid_names(names: list[str]) -> list[bool]:
+    """Whether Goslin parses each name as a lipid at species level or finer."""
+    from omnipath_resolver.goslin import normalize
+
+    return [normalize(name)["status"] == "parsed" for name in names]
