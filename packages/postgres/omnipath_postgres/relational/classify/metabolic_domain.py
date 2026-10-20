@@ -4,7 +4,10 @@ Coarse, flat, single-valued grouping that primarily subdivides metabolites. A
 chemical's domain is read from the labels of the classes and pathways it is
 linked to (ChemOnt, LIPID MAPS and RefMet classes, pathways) via the curated
 keyword rules in ``metabolic_domain.yaml``: the first source (in priority
-order) that yields a matching bucket wins, ties broken by bucket precedence.
+order) that yields a matching bucket wins, ties broken by bucket precedence. A
+source marked ``majority`` (the pathways) yields a bucket only when it matches
+more than half of the chemical's links of that source, and the chemical has at
+least ``min_links`` of them.
 Runs during ``derive`` (no reload), on the canonical ``relation`` table.
 """
 
@@ -75,13 +78,21 @@ def classify_metabolic_domain(
         # Materialise the consulted sources (with priority).
         cur.execute(
             "CREATE TEMP TABLE _metabolic_domain_source "
-            "(namespace text, entity_type text, priority integer NOT NULL) ON COMMIT DROP"
+            "(namespace text, entity_type text, priority integer NOT NULL, "
+            "majority boolean NOT NULL, min_links integer NOT NULL) ON COMMIT DROP"
         )
         cur.executemany(
-            "INSERT INTO _metabolic_domain_source (namespace, entity_type, priority) "
-            "VALUES (%s, %s, %s)",
+            "INSERT INTO _metabolic_domain_source "
+            "(namespace, entity_type, priority, majority, min_links) "
+            "VALUES (%s, %s, %s, %s, %s)",
             [
-                (entry.get("namespace"), entry.get("entity_type"), entry["priority"])
+                (
+                    entry.get("namespace"),
+                    entry.get("entity_type"),
+                    entry["priority"],
+                    bool(entry.get("majority", False)),
+                    int(entry.get("min_links", 1)),
+                )
                 for entry in rules["sources"]
             ],
         )
@@ -133,17 +144,37 @@ def classify_metabolic_domain(
                   WHERE o.label IS NOT NULL
                   GROUP BY r.subject_entity_id, lower(o.label)
                 ),
+                links AS (
+                  SELECT entity_id, term_priority, count(*) AS n
+                  FROM ann
+                  GROUP BY entity_id, term_priority
+                ),
+                rule AS (
+                  SELECT priority, bool_or(majority) AS majority, max(min_links) AS min_links
+                  FROM _metabolic_domain_source
+                  GROUP BY priority
+                ),
                 matched AS (
                   SELECT
                     ann.entity_id,
                     d.metabolic_domain_id,
                     ann.term_priority,
-                    d.precedence AS bucket_precedence
+                    d.precedence AS bucket_precedence,
+                    count(DISTINCT ann.val) AS n
                   FROM ann
                   JOIN _metabolic_domain_keyword k
                     ON ann.val LIKE '%%' || k.keyword || '%%'
                   JOIN {schema}.vocab_metabolic_domain d
                     ON d.name = k.domain_name
+                  GROUP BY ann.entity_id, d.metabolic_domain_id, ann.term_priority, d.precedence
+                ),
+                eligible AS (
+                  SELECT matched.*
+                  FROM matched
+                  JOIN links USING (entity_id, term_priority)
+                  JOIN rule ON rule.priority = matched.term_priority
+                  WHERE NOT rule.majority
+                     OR (links.n >= rule.min_links AND 2 * matched.n > links.n)
                 ),
                 ranked AS (
                   SELECT
@@ -153,7 +184,7 @@ def classify_metabolic_domain(
                       PARTITION BY entity_id
                       ORDER BY term_priority ASC, bucket_precedence ASC
                     ) AS rn
-                  FROM matched
+                  FROM eligible
                 )
                 UPDATE {schema}.entity e
                 SET metabolic_domain_id = ranked.metabolic_domain_id

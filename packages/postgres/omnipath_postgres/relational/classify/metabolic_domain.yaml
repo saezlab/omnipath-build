@@ -25,12 +25,18 @@ default: other
 # entity, in priority order (lower = consulted first): the ClassyFire classes
 # (ChemOnt) that HMDB, FooDB, MRClinksDB and RaMP give, the LIPID MAPS and
 # RefMet classifications, then the pathways a chemical participates in.
+#
+# A class says what a chemical is; a pathway only where it takes part, and a
+# currency metabolite (ATP, NAD+, glucose) takes part in thousands. So the
+# pathways decide only with `majority`: one bucket matches more than half of
+# the chemical's pathways, of which it has at least `min_links`; otherwise the
+# chemical stays `other`.
 sources:
   - {namespace: chemont,            priority: 1}
   - {namespace: lipidmaps_class,    priority: 2}
   - {namespace: refmet_super_class, priority: 3}
   - {namespace: refmet_main_class,  priority: 3}
-  - {entity_type: pathway,          priority: 4}
+  - {entity_type: pathway,          priority: 4, majority: true, min_links: 3}
 
 # domain -> case-insensitive substrings matched against the linked labels.
 # Keywords are deliberately broad so they generalise across the sources
@@ -49,7 +55,7 @@ keywords:
      tryptophan, tyrosine, phenylalanine, glutamate, glutamine, aspartate,
      asparagine, 'urea cycle', taurine]
   carbohydrate:
-    [carbohydrate, glycolysis, gluconeogenesis, pentose, fructose, mannose,
+    [carbohydrate, saccharide, sugar, glycolysis, gluconeogenesis, pentose, fructose, mannose,
      galactose, starch, sucrose, glucuronate, aminosugar, glycan, hyaluronan,
      chondroitin, heparan, keratan, 'citric acid cycle',
      'oxidative phosphorylation', pyruvate]

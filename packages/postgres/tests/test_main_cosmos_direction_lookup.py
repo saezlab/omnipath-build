@@ -15,6 +15,7 @@ from psycopg2 import sql
 import pytest
 
 from omnipath_subsets.cosmos import build
+from omnipath_postgres import projection
 from omnipath_postgres.relational.db import derived_tables
 from omnipath_postgres.relational.db import schema as main_schema
 
@@ -225,6 +226,13 @@ def direction_fixture(postgres_dsn):
                 cur.execute(
                     "INSERT INTO relation_evidence_annotation VALUES (9002,%s,%s,1)",
                     [str(uuid.UUID(int=8100)), annotation("REVERSIBLE", "unrelated:term")],
+                )
+                # The loader creates it beside the main tables; COSMOS reads the
+                # source accession of a reaction from it.
+                cur.execute(
+                    "CREATE TABLE entity_reference_context("
+                    + projection.COMPANION_DDL["entity_reference_context"]
+                    + ")"
                 )
                 cur.execute("CREATE TABLE build_manifest(build_id text NOT NULL)")
                 cur.execute("INSERT INTO build_manifest VALUES ('direction_fixture_v1')")
