@@ -34,12 +34,18 @@ default: other
 # pathways decide only with `majority`: one bucket matches more than half of
 # the chemical's pathways, of which it has at least `min_links`; otherwise the
 # chemical stays `other`.
+#
+# A catalog source names a resource whose every entry is of one domain: a
+# chemical it has is of that domain, whatever its links say. SwissLipids
+# catalogs lipids only (its classes are entries of its own, not linked
+# classes), and its curation outranks ClassyFire's computed classes.
 sources:
-  - {namespace: chemont,            priority: 1}
-  - {namespace: lipidmaps_class,    priority: 2}
-  - {namespace: refmet_super_class, priority: 3}
-  - {namespace: refmet_main_class,  priority: 3}
-  - {entity_type: pathway,          priority: 4, majority: true, min_links: 3}
+  - {data_source: swisslipids,      priority: 1, domain: lipid}
+  - {namespace: chemont,            priority: 2}
+  - {namespace: lipidmaps_class,    priority: 3}
+  - {namespace: refmet_super_class, priority: 4}
+  - {namespace: refmet_main_class,  priority: 4}
+  - {entity_type: pathway,          priority: 5, majority: true, min_links: 3}
 
 # domain -> case-insensitive substrings matched against the linked labels.
 # Keywords are deliberately broad so they generalise across the sources

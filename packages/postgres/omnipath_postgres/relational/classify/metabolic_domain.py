@@ -8,7 +8,8 @@ order) that yields a matching bucket wins. Within it, the bucket that most of
 the chemical's labels match wins, ties broken by bucket precedence. A source
 marked ``majority`` (the pathways) yields a bucket only when it matches
 more than half of the chemical's links of that source, and the chemical has at
-least ``min_links`` of them.
+least ``min_links`` of them. A catalog source (``data_source`` + ``domain``)
+gives its domain to every chemical that resource has.
 Runs during ``derive`` (no reload), on the canonical ``relation`` table.
 """
 
@@ -79,17 +80,20 @@ def classify_metabolic_domain(
         # Materialise the consulted sources (with priority).
         cur.execute(
             "CREATE TEMP TABLE _metabolic_domain_source "
-            "(namespace text, entity_type text, priority integer NOT NULL, "
+            "(namespace text, entity_type text, data_source text, domain text, "
+            "priority integer NOT NULL, "
             "majority boolean NOT NULL, min_links integer NOT NULL) ON COMMIT DROP"
         )
         cur.executemany(
             "INSERT INTO _metabolic_domain_source "
-            "(namespace, entity_type, priority, majority, min_links) "
-            "VALUES (%s, %s, %s, %s, %s)",
+            "(namespace, entity_type, data_source, domain, priority, majority, min_links) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
             [
                 (
                     entry.get("namespace"),
                     entry.get("entity_type"),
+                    entry.get("data_source"),
+                    entry.get("domain"),
                     entry["priority"],
                     bool(entry.get("majority", False)),
                     int(entry.get("min_links", 1)),
@@ -178,11 +182,24 @@ def classify_metabolic_domain(
                   JOIN {schema}.vocab_metabolic_domain d
                     ON d.name = k.domain_name
                   GROUP BY ann.entity_id, d.metabolic_domain_id, ann.term_priority, d.precedence
+                  UNION ALL
+                  -- Catalog sources: every chemical the resource has.
+                  SELECT DISTINCT
+                    r.entity_id,
+                    d.metabolic_domain_id,
+                    src.priority,
+                    d.precedence,
+                    1
+                  FROM _metabolic_domain_source src
+                  JOIN {schema}.data_source ds ON ds.name = src.data_source
+                  JOIN {schema}.entity_evidence_resolution r ON r.source_id = ds.source_id
+                  JOIN chem ON chem.entity_id = r.entity_id
+                  JOIN {schema}.vocab_metabolic_domain d ON d.name = src.domain
                 ),
                 eligible AS (
                   SELECT matched.*
                   FROM matched
-                  JOIN links USING (entity_id, term_priority)
+                  LEFT JOIN links USING (entity_id, term_priority)
                   JOIN rule ON rule.priority = matched.term_priority
                   WHERE NOT rule.majority
                      OR (links.n >= rule.min_links AND 2 * matched.n > links.n)
