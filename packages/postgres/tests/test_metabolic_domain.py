@@ -15,6 +15,8 @@ CHEMICALS = {
     "palmitate": [("chemont", "Lipids and lipid-like molecules")]
     + [("pathway", f"Pentose phosphate pathway {i}") for i in range(5)],
     "sucrose": [("chemont", "Disaccharides"), ("chemont", "Ketals")],
+    # The class is the subject: an `associated_with` link has no direction.
+    "lysine": [("chemont<", "Amino acids, peptides, and analogues")],
     # A currency metabolite: a few lipid and sugar pathways among many.
     "atp": [("pathway", "Glycerophospholipid metabolism"), ("pathway", "Glycolysis")]
     + [("pathway", f"Signalling pathway {i}") for i in range(8)],
@@ -75,9 +77,10 @@ def domain_database(postgres_dsn):
                     linked = next(ids)
                     cursor.execute(
                         query("INSERT INTO {s}.entity VALUES (%s, %s, %s, %s, NULL)"),
-                        (linked, 2 if kind == "chemont" else 3, 1 if kind == "chemont" else None, target),
+                        (linked, 3 if kind == "pathway" else 2, None if kind == "pathway" else 1, target),
                     )
-                    cursor.execute(query("INSERT INTO {s}.relation VALUES (%s, %s)"), (chemical, linked))
+                    pair = (linked, chemical) if kind == "chemont<" else (chemical, linked)
+                    cursor.execute(query("INSERT INTO {s}.relation VALUES (%s, %s)"), pair)
         connection.commit()
         try:
             yield connection, schema
@@ -101,6 +104,7 @@ def test_classes_decide_and_pathways_only_by_majority(domain_database):
     assert domains == {
         "palmitate": "lipid",
         "sucrose": "carbohydrate",
+        "lysine": "amino_acid",
         "atp": "other",
         "serine": "amino_acid",
         "folate": "other",

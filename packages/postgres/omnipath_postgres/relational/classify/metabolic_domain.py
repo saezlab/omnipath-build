@@ -127,14 +127,24 @@ def classify_metabolic_domain(
                   SELECT entity_id FROM {schema}.entity
                   WHERE entity_type_id = ANY(%(chem)s)
                 ),
-                ann AS (
-                  SELECT
-                    r.subject_entity_id AS entity_id,
-                    min(src.priority) AS term_priority,
-                    lower(o.label) AS val
+                -- Either side: a class link is `associated_with`, which has
+                -- no direction, so the chemical is its subject or its object.
+                linked AS (
+                  SELECT r.subject_entity_id AS entity_id, r.object_entity_id AS other_id
                   FROM {schema}.relation r
                   JOIN chem ON chem.entity_id = r.subject_entity_id
-                  JOIN {schema}.entity o ON o.entity_id = r.object_entity_id
+                  UNION
+                  SELECT r.object_entity_id, r.subject_entity_id
+                  FROM {schema}.relation r
+                  JOIN chem ON chem.entity_id = r.object_entity_id
+                ),
+                ann AS (
+                  SELECT
+                    linked.entity_id,
+                    min(src.priority) AS term_priority,
+                    lower(o.label) AS val
+                  FROM linked
+                  JOIN {schema}.entity o ON o.entity_id = linked.other_id
                   JOIN {schema}.vocab_entity_type ot
                     ON ot.entity_type_id = o.entity_type_id
                   LEFT JOIN {schema}.vocab_identifier_type it
@@ -142,7 +152,7 @@ def classify_metabolic_domain(
                   JOIN _metabolic_domain_source src
                     ON src.namespace = it.name OR src.entity_type = ot.name
                   WHERE o.label IS NOT NULL
-                  GROUP BY r.subject_entity_id, lower(o.label)
+                  GROUP BY linked.entity_id, lower(o.label)
                 ),
                 links AS (
                   SELECT entity_id, term_priority, count(*) AS n
