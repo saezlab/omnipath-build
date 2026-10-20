@@ -215,7 +215,6 @@ def run_main_derivations(conn, *, schema="public", progress=False, published_met
         lambda: rebuild_chemical_ambiguous_name_candidates(conn, schema=schema, progress=progress),
     )
     run("chemical_class", lambda: classify_chemical_class(conn, schema=schema))
-    run("metabolic_domain", lambda: classify_metabolic_domain(conn, schema=schema))
     run("interaction_class", lambda: classify_interaction_class(conn, schema=schema))
     interaction = run(
         "interactions", lambda: rebuild_interaction_tables(conn, schema=schema, progress=progress)
@@ -223,6 +222,9 @@ def run_main_derivations(conn, *, schema="public", progress=False, published_met
     run("entity_labels", lambda: populate_entity_labels(conn, schema=schema))
     run("entity_name", lambda: populate_entity_name(conn, schema=schema))
     run("chemical_labels", lambda: populate_chemical_labels(conn, schema=schema))
+    # After the labels: the domain is read from the labels of the classes and
+    # pathways a chemical is linked to.
+    run("metabolic_domain", lambda: classify_metabolic_domain(conn, schema=schema))
     run("bitmaps", lambda: rebuild_bitmap_tables(conn, schema=schema, progress=progress))
     run(
         "resource_overlap",
