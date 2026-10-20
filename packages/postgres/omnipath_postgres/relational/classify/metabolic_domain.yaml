@@ -4,11 +4,14 @@
 # metabolites. A chemical's domain is decided from the labels of the classes
 # and pathways it is linked to, consulted in priority order (ChemOnt, LIPID
 # MAPS, RefMet, pathways); the first source that yields a matching bucket wins,
-# ties broken by bucket precedence. Fine taxonomies stay as the links
+# and within it the bucket most of the chemical's labels match, ties broken by
+# bucket precedence. Most labels, not the first match: ChemOnt links carry no
+# rank, so a dipeptide's alternative parent "Fatty acids and conjugates" sits
+# beside its "Amino acids, peptides, and analogues". Fine taxonomies stay as the links
 # themselves (not duplicated here). See classify/metabolic_domain.py.
 
 # The controlled vocabulary (seeded into vocab_metabolic_domain). `precedence`
-# breaks ties when several buckets match within the same source (most specific
+# breaks ties when several buckets match equally often within a source (most specific
 # structural class first: a phosphatidylserine is a lipid, not an amino acid).
 domains:
   - {name: lipid,            precedence: 1}

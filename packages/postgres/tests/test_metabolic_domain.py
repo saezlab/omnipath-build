@@ -15,6 +15,15 @@ CHEMICALS = {
     "palmitate": [("chemont", "Lipids and lipid-like molecules")]
     + [("pathway", f"Pentose phosphate pathway {i}") for i in range(5)],
     "sucrose": [("chemont", "Disaccharides"), ("chemont", "Ketals")],
+    # Most of its classes: an alternative parent does not outvote the lineage.
+    "ser-gln": [
+        ("chemont", "Amino acids, peptides, and analogues"),
+        ("chemont", "Dipeptides"),
+        ("chemont", "Serine and derivatives"),
+        ("chemont", "Fatty acids and conjugates"),
+    ],
+    # As many lipid as amino acid labels: precedence makes it a lipid.
+    "phosphatidylserine": [("chemont", "Glycerophosphoserines")],
     # The class is the subject: an `associated_with` link has no direction.
     "lysine": [("chemont<", "Amino acids, peptides, and analogues")],
     # A currency metabolite: a few lipid and sugar pathways among many.
@@ -105,6 +114,8 @@ def test_classes_decide_and_pathways_only_by_majority(domain_database):
         "palmitate": "lipid",
         "sucrose": "carbohydrate",
         "lysine": "amino_acid",
+        "ser-gln": "amino_acid",
+        "phosphatidylserine": "lipid",
         "atp": "other",
         "serine": "amino_acid",
         "folate": "other",

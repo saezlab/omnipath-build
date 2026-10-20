@@ -4,8 +4,9 @@ Coarse, flat, single-valued grouping that primarily subdivides metabolites. A
 chemical's domain is read from the labels of the classes and pathways it is
 linked to (ChemOnt, LIPID MAPS and RefMet classes, pathways) via the curated
 keyword rules in ``metabolic_domain.yaml``: the first source (in priority
-order) that yields a matching bucket wins, ties broken by bucket precedence. A
-source marked ``majority`` (the pathways) yields a bucket only when it matches
+order) that yields a matching bucket wins. Within it, the bucket that most of
+the chemical's labels match wins, ties broken by bucket precedence. A source
+marked ``majority`` (the pathways) yields a bucket only when it matches
 more than half of the chemical's links of that source, and the chemical has at
 least ``min_links`` of them.
 Runs during ``derive`` (no reload), on the canonical ``relation`` table.
@@ -192,7 +193,7 @@ def classify_metabolic_domain(
                     metabolic_domain_id,
                     row_number() OVER (
                       PARTITION BY entity_id
-                      ORDER BY term_priority ASC, bucket_precedence ASC
+                      ORDER BY term_priority ASC, n DESC, bucket_precedence ASC
                     ) AS rn
                   FROM eligible
                 )
