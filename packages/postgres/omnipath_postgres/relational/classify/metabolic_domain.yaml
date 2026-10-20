@@ -1,14 +1,9 @@
 # Curated metabolic-domain rules for chemical_entity entities.
 #
 # Coarse, flat, single-valued functional grouping that primarily subdivides
-# metabolites. A chemical's domain is decided from the labels of the classes
-# and pathways it is linked to, consulted in priority order (ChemOnt, LIPID
-# MAPS, RefMet, pathways); the first source that yields a matching bucket wins,
-# and within it the bucket most of the chemical's labels match, ties broken by
-# bucket precedence. Most labels, not the first match: ChemOnt links carry no
-# rank, so a dipeptide's alternative parent "Fatty acids and conjugates" sits
-# beside its "Amino acids, peptides, and analogues". Fine taxonomies stay as the links
-# themselves (not duplicated here). See classify/metabolic_domain.py.
+# metabolites. The sources below are consulted in priority order and the first
+# that yields a bucket wins. Fine taxonomies stay as the links themselves (not
+# duplicated here). See classify/metabolic_domain.py.
 
 # The controlled vocabulary (seeded into vocab_metabolic_domain). `precedence`
 # breaks ties when several buckets match equally often within a source (most specific
@@ -24,55 +19,58 @@ domains:
 # Any chemical with no matching annotation falls back to this bucket.
 default: other
 
-# The linked entities consulted, by the namespace of a class or the type of the
-# entity, in priority order (lower = consulted first): the ClassyFire classes
-# (ChemOnt) that HMDB, FooDB, MRClinksDB and RaMP give, the LIPID MAPS and
-# RefMet classifications, then the pathways a chemical participates in.
+# The sources, in priority order (lower = consulted first). A pathway only
+# says where a chemical takes part, not what it is, so pathways are not read.
 #
-# A class says what a chemical is; a pathway only where it takes part, and a
-# currency metabolite (ATP, NAD+, glucose) takes part in thousands. So the
-# pathways decide only with `majority`: one bucket matches more than half of
-# the chemical's pathways, of which it has at least `min_links`; otherwise the
-# chemical stays `other`.
-#
-# A catalog source names a resource whose every entry is of one domain: a
-# chemical it has is of that domain, whatever its links say. SwissLipids and
-# the LIPID MAPS Structure Database catalog lipids only (SwissLipids' classes
-# are entries of its own, not linked classes), and their curation outranks
-# ClassyFire's computed classes. `names: goslin` does the same for a chemical
-# any source names in lipid shorthand (a chain such as 16:0) that Goslin parses
-# at species level or finer: "PC 34:1" from HMDB or RaMP, not "PS-341".
+# 1. SwissLipids catalogs lipids only: every chemical it has is a lipid (its
+#    classes are entries of its own, not linked classes). So is a chemical any
+#    source names in lipid shorthand (a chain such as 16:0) that Goslin parses
+#    at species level or finer: "PC 34:1" from HMDB or RaMP, not "PS-341".
+# 2. ChEBI's curated hierarchy: a chemical that descends from a structural
+#    root through subclass_of. Vitamin and cofactor are roles in ChEBI, not
+#    classes, so they have no root here.
+# 3. The classes a chemical is linked to, read through their labels and the
+#    keywords below: the bucket most of the labels match wins. Most labels, not
+#    the first match: ChemOnt links carry no rank, so a dipeptide's alternative
+#    parent "Fatty acids and conjugates" sits beside its "Amino acids,
+#    peptides, and analogues".
+# 4. The LIPID MAPS Structure Database, last: it also lists simple amino and
+#    sugar acids (serine, valine and glucaric acid as "amino fatty acids" and
+#    "fatty acids"), so it decides only what nothing above places.
 sources:
   - {data_source: swisslipids,      priority: 1, domain: lipid}
-  - {data_source: lipidmaps,        priority: 1, domain: lipid}
   - {names: goslin,                 priority: 1, domain: lipid}
-  - {namespace: chemont,            priority: 2}
-  - {namespace: lipidmaps_class,    priority: 3}
-  - {namespace: refmet_super_class, priority: 4}
-  - {namespace: refmet_main_class,  priority: 4}
-  - {entity_type: pathway,          priority: 5, majority: true, min_links: 3}
+  - {chebi_root: 'CHEBI:18059',     priority: 2, domain: lipid}         # lipid
+  - {chebi_root: 'CHEBI:36976',     priority: 2, domain: nucleotide}    # nucleotide
+  - {chebi_root: 'CHEBI:33838',     priority: 2, domain: nucleotide}    # nucleoside
+  - {chebi_root: 'CHEBI:33709',     priority: 2, domain: amino_acid}    # amino acid
+  - {chebi_root: 'CHEBI:16646',     priority: 2, domain: carbohydrate}  # carbohydrate
+  - {namespace: chemont,            priority: 3}
+  - {namespace: lipidmaps_class,    priority: 4}
+  - {namespace: refmet_super_class, priority: 5}
+  - {namespace: refmet_main_class,  priority: 5}
+  - {data_source: lipidmaps,        priority: 6, domain: lipid}
 
-# domain -> case-insensitive substrings matched against the linked labels.
-# Keywords are deliberately broad so they generalise across the sources
-# (e.g. `lipid` matches ChemOnt "Lipids and lipid-like molecules" and the
-# pathway "Glycerophospholipid metabolism" alike).
+# domain -> case-insensitive substrings matched against the linked class labels.
+# Keywords are deliberately broad so they generalise across the class sources
+# (e.g. `lipid` matches ChemOnt "Lipids and lipid-like molecules" and RefMet
+# "Glycerolipids" alike).
 keywords:
   lipid:
     [lipid, 'fatty acid', 'fatty acyl', cholesterol, sphingo, glycerophospho,
      glycerolipid, steroid, sterol, 'bile acid', eicosanoid, triacylglycerol,
      phosphatidyl, prenol, ceramide]
   nucleotide:
-    [nucleotide, nucleoside, purine, pyrimidine, 'nad metabolism', inosine]
+    [nucleotide, nucleoside, purine, pyrimidine, inosine]
   amino_acid:
     ['amino acid', alanine, glycine, serine, threonine, cysteine, methionine,
      valine, leucine, isoleucine, proline, arginine, histidine, lysine,
      tryptophan, tyrosine, phenylalanine, glutamate, glutamine, aspartate,
-     asparagine, 'urea cycle', taurine]
+     asparagine, taurine]
   carbohydrate:
-    [carbohydrate, saccharide, sugar, glycolysis, gluconeogenesis, pentose, fructose, mannose,
-     galactose, starch, sucrose, glucuronate, aminosugar, glycan, hyaluronan,
-     chondroitin, heparan, keratan, 'citric acid cycle',
-     'oxidative phosphorylation', pyruvate]
+    [carbohydrate, saccharide, sugar, pentose, fructose, mannose, galactose,
+     starch, sucrose, glucuronate, aminosugar, glycan, hyaluronan, chondroitin,
+     heparan, keratan]
   cofactor_vitamin:
     [vitamin, folate, biotin, thiamine, riboflavin, cobalamin, pantothenate,
      heme, porphyrin, ubiquinone, coenzyme, cofactor, glutathione, retinol,

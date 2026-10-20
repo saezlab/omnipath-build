@@ -1,18 +1,20 @@
 """Metabolic-domain classification for ``chemical_entity`` entities.
 
-Coarse, flat, single-valued grouping that primarily subdivides metabolites. A
-chemical's domain is read from the labels of the classes and pathways it is
-linked to (ChemOnt, LIPID MAPS and RefMet classes, pathways) via the curated
-keyword rules in ``metabolic_domain.yaml``: the first source (in priority
-order) that yields a matching bucket wins. Within it, the bucket that most of
-the chemical's labels match wins, ties broken by bucket precedence. A source
-marked ``majority`` (the pathways) yields a bucket only when it matches
-more than half of the chemical's links of that source, and the chemical has at
-least ``min_links`` of them. A catalog source (``data_source`` + ``domain``)
-gives its domain to every chemical that resource has; a ``names: goslin``
-source gives it to every chemical with a name in lipid shorthand that Goslin
-parses at species level or finer.
-Runs during ``derive`` (no reload), on the canonical ``relation`` table.
+Coarse, flat, single-valued grouping that primarily subdivides metabolites,
+decided by the sources in ``metabolic_domain.yaml`` in priority order: the
+first source that yields a bucket wins. Four kinds of source:
+
+- a catalog (``data_source`` + ``domain``) gives its domain to every chemical
+  that resource has;
+- ``names: goslin`` gives its domain to every chemical with a name in lipid
+  shorthand that Goslin parses at species level or finer;
+- a ChEBI root (``chebi_root`` + ``domain``) gives its domain to every chemical
+  that descends from it in the ChEBI ``subclass_of`` hierarchy;
+- a class namespace (``namespace``) is read through the labels of the linked
+  classes and the curated keywords: the bucket that most of the chemical's
+  labels match wins, ties broken by bucket precedence.
+
+Runs during ``derive`` (no reload), on the canonical tables.
 """
 
 from __future__ import annotations
@@ -89,28 +91,17 @@ def classify_metabolic_domain(
             domain_rows,
         )
 
-        # Materialise the consulted sources (with priority).
+        # Materialise the class namespaces read through their labels.
         cur.execute(
             "CREATE TEMP TABLE _metabolic_domain_source "
-            "(namespace text, entity_type text, data_source text, domain text, "
-            "priority integer NOT NULL, "
-            "majority boolean NOT NULL, min_links integer NOT NULL) ON COMMIT DROP"
+            "(namespace text NOT NULL, priority integer NOT NULL) ON COMMIT DROP"
         )
         cur.executemany(
-            "INSERT INTO _metabolic_domain_source "
-            "(namespace, entity_type, data_source, domain, priority, majority, min_links) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            "INSERT INTO _metabolic_domain_source (namespace, priority) VALUES (%s, %s)",
             [
-                (
-                    entry.get("namespace"),
-                    entry.get("entity_type"),
-                    entry.get("data_source"),
-                    entry.get("domain"),
-                    entry["priority"],
-                    bool(entry.get("majority", False)),
-                    int(entry.get("min_links", 1)),
-                )
+                (entry["namespace"], entry["priority"])
                 for entry in rules["sources"]
+                if entry.get("namespace")
             ],
         )
 
@@ -164,24 +155,11 @@ def classify_metabolic_domain(
                     lower(o.label) AS val
                   FROM linked
                   JOIN {schema}.entity o ON o.entity_id = linked.other_id
-                  JOIN {schema}.vocab_entity_type ot
-                    ON ot.entity_type_id = o.entity_type_id
-                  LEFT JOIN {schema}.vocab_identifier_type it
+                  JOIN {schema}.vocab_identifier_type it
                     ON it.identifier_type_id = o.canonical_identifier_type_id
-                  JOIN _metabolic_domain_source src
-                    ON src.namespace = it.name OR src.entity_type = ot.name
+                  JOIN _metabolic_domain_source src ON src.namespace = it.name
                   WHERE o.label IS NOT NULL
                   GROUP BY linked.entity_id, lower(o.label)
-                ),
-                links AS (
-                  SELECT entity_id, term_priority, count(*) AS n
-                  FROM ann
-                  GROUP BY entity_id, term_priority
-                ),
-                rule AS (
-                  SELECT priority, bool_or(majority) AS majority, max(min_links) AS min_links
-                  FROM _metabolic_domain_source
-                  GROUP BY priority
                 ),
                 matched AS (
                   SELECT
@@ -197,7 +175,7 @@ def classify_metabolic_domain(
                     ON d.name = k.domain_name
                   GROUP BY ann.entity_id, d.metabolic_domain_id, ann.term_priority, d.precedence
                   UNION ALL
-                  -- Catalogs and lipid names: the domain is asserted.
+                  -- Catalogs, lipid names and ChEBI roots: the domain is asserted.
                   SELECT DISTINCT
                     a.entity_id,
                     d.metabolic_domain_id,
@@ -207,14 +185,6 @@ def classify_metabolic_domain(
                   FROM _metabolic_domain_asserted a
                   JOIN {schema}.vocab_metabolic_domain d ON d.name = a.domain
                 ),
-                eligible AS (
-                  SELECT matched.*
-                  FROM matched
-                  LEFT JOIN links USING (entity_id, term_priority)
-                  JOIN rule ON rule.priority = matched.term_priority
-                  WHERE NOT rule.majority
-                     OR (links.n >= rule.min_links AND 2 * matched.n > links.n)
-                ),
                 ranked AS (
                   SELECT
                     entity_id,
@@ -223,7 +193,7 @@ def classify_metabolic_domain(
                       PARTITION BY entity_id
                       ORDER BY term_priority ASC, n DESC, bucket_precedence ASC
                     ) AS rn
-                  FROM eligible
+                  FROM matched
                 )
                 UPDATE {schema}.entity e
                 SET metabolic_domain_id = ranked.metabolic_domain_id
@@ -257,9 +227,10 @@ def classify_metabolic_domain(
 
 
 def _assert_domains(cur, schema_id, chemical_type_id, sources) -> None:
-    """Stage the chemicals whose domain a catalog or a lipid name asserts.
+    """Stage the chemicals whose domain a catalog, a lipid name or ChEBI asserts.
 
-    Catalogs first: a chemical a catalog has needs no name parsed.
+    Catalogs and ChEBI first: a chemical they already place at a priority no
+    lower than the names' needs no name parsed.
     """
     cur.execute(
         sql.SQL(
@@ -287,10 +258,54 @@ def _assert_domains(cur, schema_id, chemical_type_id, sources) -> None:
                     "chem": chemical_type_id,
                 },
             )
+    chebi_roots = [entry for entry in sources if entry.get("chebi_root")]
+    if chebi_roots:
+        _assert_chebi_descendants(cur, schema_id, chemical_type_id, chebi_roots)
     cur.execute("ANALYZE _metabolic_domain_asserted")
     for entry in sources:
         if entry.get("names") == "goslin":
             _assert_lipid_names(cur, schema_id, chemical_type_id, entry)
+
+
+def _assert_chebi_descendants(cur, schema_id, chemical_type_id, roots) -> None:
+    """Chemicals that descend from a ChEBI root through ``subclass_of``."""
+    cur.execute(
+        "CREATE TEMP TABLE _metabolic_domain_chebi_root "
+        "(identifier text NOT NULL, domain text NOT NULL, priority integer NOT NULL) "
+        "ON COMMIT DROP"
+    )
+    cur.executemany(
+        "INSERT INTO _metabolic_domain_chebi_root VALUES (%s, %s, %s)",
+        [(entry["chebi_root"], entry["domain"], entry["priority"]) for entry in roots],
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            INSERT INTO _metabolic_domain_asserted
+            WITH RECURSIVE edge AS MATERIALIZED (
+              SELECT DISTINCT r.subject_entity_id AS child, r.object_entity_id AS parent
+              FROM {schema}.entity_ontology_relation r
+              JOIN {schema}.vocab_relation_predicate p
+                ON p.relation_predicate_id = r.predicate_id
+              WHERE r.ontology_id = 'chebi' AND p.name = 'subclass_of'
+            ),
+            descendant (entity_id, domain, priority) AS (
+              SELECT e.entity_id, root.domain, root.priority
+              FROM _metabolic_domain_chebi_root root
+              JOIN {schema}.entity e ON e.canonical_identifier = root.identifier
+              UNION
+              SELECT edge.child, descendant.domain, descendant.priority
+              FROM descendant
+              JOIN edge ON edge.parent = descendant.entity_id
+            )
+            SELECT DISTINCT d.entity_id, d.domain, d.priority
+            FROM descendant d
+            JOIN {schema}.entity e ON e.entity_id = d.entity_id
+            WHERE e.entity_type_id = ANY(%(chem)s)
+            """
+        ).format(schema=schema_id),
+        {"chem": chemical_type_id},
+    )
 
 
 def _assert_lipid_names(cur, schema_id, chemical_type_id, entry) -> None:
@@ -304,11 +319,12 @@ def _assert_lipid_names(cur, schema_id, chemical_type_id, entry) -> None:
             WHERE e.entity_type_id = ANY(%(chem)s)
               AND n.name ~ %(shorthand)s
               AND NOT EXISTS (
-                SELECT 1 FROM _metabolic_domain_asserted a WHERE a.entity_id = n.entity_id
+                SELECT 1 FROM _metabolic_domain_asserted a
+                WHERE a.entity_id = n.entity_id AND a.priority <= %(priority)s
               )
             """
         ).format(schema=schema_id),
-        {"chem": chemical_type_id, "shorthand": _SHORTHAND_NAME},
+        {"chem": chemical_type_id, "shorthand": _SHORTHAND_NAME, "priority": entry["priority"]},
     )
     rows = cur.fetchall()
     names = sorted({name for _, name in rows})
@@ -319,7 +335,9 @@ def _assert_lipid_names(cur, schema_id, chemical_type_id, entry) -> None:
             results = list(pool.map(_parse_lipid_names, chunks))
     else:
         results = [_parse_lipid_names(chunk) for chunk in chunks]
-    lipid_names = {name for chunk, ok in zip(chunks, results) for name, hit in zip(chunk, ok) if hit}
+    lipid_names = {
+        name for chunk, ok in zip(chunks, results) for name, hit in zip(chunk, ok) if hit
+    }
     lipids = {entity_id for entity_id, name in rows if name in lipid_names}
     execute_values(
         cur,

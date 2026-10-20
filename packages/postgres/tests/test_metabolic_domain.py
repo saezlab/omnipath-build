@@ -1,4 +1,4 @@
-"""Metabolic domain from the classes and pathways a chemical is linked to."""
+"""Metabolic domain from catalogs, lipid names, ChEBI and linked classes."""
 
 from contextlib import closing
 import uuid
@@ -12,9 +12,8 @@ from omnipath_postgres.relational.classify import metabolic_domain
 
 
 CHEMICALS = {
-    # A class decides, whatever the pathways say.
-    "palmitate": [("chemont", "Lipids and lipid-like molecules")]
-    + [("pathway", f"Pentose phosphate pathway {i}") for i in range(5)],
+    # A class decides.
+    "palmitate": [("chemont", "Lipids and lipid-like molecules")],
     "sucrose": [("chemont", "Disaccharides"), ("chemont", "Ketals")],
     # Most of its classes: an alternative parent does not outvote the lineage.
     "ser-gln": [
@@ -25,31 +24,28 @@ CHEMICALS = {
     ],
     # As many lipid as amino acid labels: precedence makes it a lipid.
     "phosphatidylserine": [("chemont", "Glycerophosphoserines")],
+    # The class is the subject: an `associated_with` link has no direction.
+    "lysine": [("chemont<", "Amino acids, peptides, and analogues")],
     # SwissLipids catalogs lipids only: its entries are lipids with no class
     # link, and its curation outranks a computed class.
     "cardiolipin": [("swisslipids", None)],
     "laccer": [("swisslipids", None), ("chemont", "Purine nucleotides")],
-    "lmsd lipid": [("lipidmaps", None)],
-    # Any other resource says nothing about the domain.
-    "imatinib": [("chembl", None)],
     # A name in lipid shorthand, from any source; a drug code or a trivial
     # name that Goslin would read as a lipid is not one.
     "hmdb species": [("name", "PC(16:0/18:1(9Z))"), ("chemont", "Amino acids")],
     "bortezomib": [("name", "PS-341")],
     "ethanol": [("name", "Ethanol")],
-    # The class is the subject: an `associated_with` link has no direction.
-    "lysine": [("chemont<", "Amino acids, peptides, and analogues")],
-    # A currency metabolite: a few lipid and sugar pathways among many.
-    "atp": [("pathway", "Glycerophospholipid metabolism"), ("pathway", "Glycolysis")]
-    + [("pathway", f"Signalling pathway {i}") for i in range(8)],
-    # Most of its pathways are amino acid pathways.
-    "serine": [
-        ("pathway", "Glycine, serine and threonine metabolism"),
-        ("pathway", "Cysteine and methionine metabolism"),
-        ("pathway", "Sphingolipid metabolism"),
-    ],
-    # A single pathway is too little to decide.
-    "folate": [("pathway", "Disorders of bile acid synthesis")],
+    # ChEBI's hierarchy, through an intermediate class, outranks ChemOnt; two
+    # roots tie, and precedence makes a glycolipid a lipid.
+    "ctp": [("chebi", "CHEBI:36976"), ("chemont", "Pentose phosphates")],
+    "glycolipid": [("chebi", "CHEBI:18059"), ("chebi", "CHEBI:16646")],
+    # LIPID MAPS decides only what nothing else places: it lists valine as an
+    # amino fatty acid.
+    "lmsd lipid": [("lipidmaps", None)],
+    "valine": [("lipidmaps", None), ("chemont", "Amino acids, peptides, and analogues")],
+    # Any other resource says nothing about the domain, and neither do pathways.
+    "imatinib": [("chembl", None)],
+    "atp": [("pathway", "Purine metabolism"), ("pathway", "Glycerophospholipid metabolism")],
 }
 
 
@@ -66,9 +62,13 @@ def domain_database(postgres_dsn):
 
         with connection.cursor() as cursor:
             cursor.execute(query("CREATE SCHEMA {s}"))
-            cursor.execute(query("CREATE TABLE {s}.vocab_entity_type (entity_type_id bigint, name text)"))
             cursor.execute(
-                query("CREATE TABLE {s}.vocab_identifier_type (identifier_type_id bigint, name text)")
+                query("CREATE TABLE {s}.vocab_entity_type (entity_type_id bigint, name text)")
+            )
+            cursor.execute(
+                query(
+                    "CREATE TABLE {s}.vocab_identifier_type (identifier_type_id bigint, name text)"
+                )
             )
             cursor.execute(
                 query(
@@ -79,17 +79,37 @@ def domain_database(postgres_dsn):
             cursor.execute(
                 query(
                     "CREATE TABLE {s}.entity (entity_id bigint, entity_type_id bigint, "
-                    "canonical_identifier_type_id bigint, label text, metabolic_domain_id smallint)"
+                    "canonical_identifier_type_id bigint, canonical_identifier text, "
+                    "label text, metabolic_domain_id smallint)"
                 )
             )
             cursor.execute(
-                query("CREATE TABLE {s}.relation (subject_entity_id bigint, object_entity_id bigint)")
+                query(
+                    "CREATE TABLE {s}.relation (subject_entity_id bigint, object_entity_id bigint)"
+                )
             )
             cursor.execute(query("CREATE TABLE {s}.data_source (source_id bigint, name text)"))
             cursor.execute(
-                query("CREATE TABLE {s}.entity_evidence_resolution (source_id bigint, entity_id bigint)")
+                query(
+                    "CREATE TABLE {s}.entity_evidence_resolution (source_id bigint, entity_id bigint)"
+                )
             )
             cursor.execute(query("CREATE TABLE {s}.entity_name (entity_id bigint, name text)"))
+            cursor.execute(
+                query(
+                    "CREATE TABLE {s}.vocab_relation_predicate (relation_predicate_id bigint, name text)"
+                )
+            )
+            cursor.execute(
+                query("INSERT INTO {s}.vocab_relation_predicate VALUES (48, 'subclass_of')")
+            )
+            cursor.execute(
+                query(
+                    "CREATE TABLE {s}.entity_ontology_relation (source_id bigint, "
+                    "subject_entity_id bigint, predicate_id bigint, object_entity_id bigint, "
+                    "ontology_id text)"
+                )
+            )
             cursor.executemany(
                 query("INSERT INTO {s}.data_source VALUES (%s, %s)"),
                 [(source_id, name) for name, source_id in SOURCES.items()],
@@ -102,12 +122,34 @@ def domain_database(postgres_dsn):
             )
             cursor.execute(query("INSERT INTO {s}.vocab_identifier_type VALUES (1, 'chemont')"))
             ids = iter(range(1, 1000))
-            for label, links in CHEMICALS.items():
-                chemical = next(ids)
+            roots = {}
+
+            def entity(type_id, namespace_id, identifier, label):
+                entity_id = next(ids)
                 cursor.execute(
-                    query("INSERT INTO {s}.entity VALUES (%s, 1, NULL, %s, NULL)"), (chemical, label)
+                    query("INSERT INTO {s}.entity VALUES (%s, %s, %s, %s, %s, NULL)"),
+                    (entity_id, type_id, namespace_id, identifier, label),
                 )
+                return entity_id
+
+            def subclass_of(child, parent):
+                cursor.execute(
+                    query(
+                        "INSERT INTO {s}.entity_ontology_relation VALUES (4, %s, 48, %s, 'chebi')"
+                    ),
+                    (child, parent),
+                )
+
+            for label, links in CHEMICALS.items():
+                chemical = entity(1, None, None, label)
                 for kind, target in links:
+                    if kind == "chebi":
+                        if target not in roots:
+                            roots[target] = entity(1, None, target, f"root {target}")
+                        intermediate = entity(1, None, None, f"class under {target}")
+                        subclass_of(intermediate, roots[target])
+                        subclass_of(chemical, intermediate)
+                        continue
                     if kind == "name":
                         cursor.execute(
                             query("INSERT INTO {s}.entity_name VALUES (%s, %s)"), (chemical, target)
@@ -119,10 +161,11 @@ def domain_database(postgres_dsn):
                             (SOURCES[kind], chemical),
                         )
                         continue
-                    linked = next(ids)
-                    cursor.execute(
-                        query("INSERT INTO {s}.entity VALUES (%s, %s, %s, %s, NULL)"),
-                        (linked, 3 if kind == "pathway" else 2, None if kind == "pathway" else 1, target),
+                    linked = entity(
+                        3 if kind == "pathway" else 2,
+                        None if kind == "pathway" else 1,
+                        None,
+                        target,
                     )
                     pair = (linked, chemical) if kind == "chemont<" else (chemical, linked)
                     cursor.execute(query("INSERT INTO {s}.relation VALUES (%s, %s)"), pair)
@@ -136,7 +179,7 @@ def domain_database(postgres_dsn):
 
 
 @pytest.mark.parametrize("chunk", [5000, 1], ids=["inline", "process pool"])
-def test_classes_decide_and_pathways_only_by_majority(domain_database, monkeypatch, chunk):
+def test_sources_decide_in_priority_order(domain_database, monkeypatch, chunk):
     connection, schema = domain_database
     monkeypatch.setattr(metabolic_domain, "_PARSE_CHUNK", chunk)
     classify_metabolic_domain(connection, schema=schema)
@@ -147,21 +190,22 @@ def test_classes_decide_and_pathways_only_by_majority(domain_database, monkeypat
                 "JOIN {s}.vocab_metabolic_domain d USING (metabolic_domain_id)"
             ).format(s=sql.Identifier(schema))
         )
-        domains = dict(cursor.fetchall())
+        domains = {label: name for label, name in cursor.fetchall() if label in CHEMICALS}
     assert domains == {
         "palmitate": "lipid",
         "sucrose": "carbohydrate",
+        "ser-gln": "amino_acid",
+        "phosphatidylserine": "lipid",
         "lysine": "amino_acid",
         "cardiolipin": "lipid",
         "laccer": "lipid",
-        "imatinib": "other",
-        "lmsd lipid": "lipid",
         "hmdb species": "lipid",
         "bortezomib": "other",
         "ethanol": "other",
-        "ser-gln": "amino_acid",
-        "phosphatidylserine": "lipid",
+        "ctp": "nucleotide",
+        "glycolipid": "lipid",
+        "lmsd lipid": "lipid",
+        "valine": "amino_acid",
+        "imatinib": "other",
         "atp": "other",
-        "serine": "amino_acid",
-        "folate": "other",
     }
