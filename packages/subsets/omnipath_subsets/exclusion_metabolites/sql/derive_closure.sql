@@ -5,14 +5,19 @@
 -- with each release, so the descendants are read here and not typed in. A member
 -- the seeds also name gets its own row for this source.
 --
--- The depth guard stops a cycle in the source from running away, as in the
--- ClassyFire extraction. The shortest path to each entity wins.
+-- The depth guard stops a cycle in the source from running away. The walk is
+-- a UNION, not a UNION ALL: a row already seen at the same depth is not walked
+-- again, so a densely connected cycle costs entities times depth and not the
+-- number of paths through it. The shortest path to each entity wins.
 
 DROP TABLE IF EXISTS exclusion_subclass_edge;
 
+-- Only ChEBI's own hierarchy: the roots are ChEBI terms, and a release holds
+-- about six times as many subclass_of rows from other ontologies.
 CREATE TEMP TABLE exclusion_subclass_edge AS
-SELECT r.subject_entity_id AS child, r.object_entity_id AS parent
+SELECT DISTINCT r.subject_entity_id AS child, r.object_entity_id AS parent
 FROM entity_ontology_relation r
+JOIN data_source s ON s.source_id = r.source_id AND s.name = 'chebi'
 JOIN vocab_relation_predicate p
   ON p.relation_predicate_id = r.predicate_id AND p.name = 'subclass_of';
 
@@ -27,7 +32,7 @@ WITH RECURSIVE root (exclusion_class, entity_id, curie) AS (
 ),
 walk (exclusion_class, entity_id, curie, depth) AS (
   SELECT exclusion_class, entity_id, curie, 0 FROM root
-  UNION ALL
+  UNION
   SELECT w.exclusion_class, e.child, w.curie, w.depth + 1
   FROM walk w
   JOIN exclusion_subclass_edge e ON e.parent = w.entity_id

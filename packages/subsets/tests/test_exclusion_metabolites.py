@@ -806,6 +806,37 @@ def test_every_descendant_of_a_root_is_in_its_class_and_the_roots_are_too(hierar
     }
 
 
+def test_only_the_chebi_hierarchy_derives_a_class(hierarchy):
+    """Another ontology's subclass_of edge under a ChEBI root adds nothing."""
+    connection, _ = hierarchy
+    cur = cursor_of(hierarchy)
+    outsider = ident(40)
+    add_entity(cur, outsider, "claimed by another ontology", [(1, "CHEBI:90011")])
+    cur.execute("INSERT INTO data_source VALUES (2, 'chemont')")
+    cur.execute(
+        "INSERT INTO entity_ontology_relation VALUES (2, %s, 1, %s, 'chemont')",
+        [outsider, ION_ROOT],
+    )
+    built(hierarchy)
+    assert outsider not in {r[1] for r in table_rows(hierarchy)}
+
+
+def test_a_dense_cycle_does_not_multiply_the_walk(hierarchy):
+    """Every pair of a ring of entities is an edge; the walk must stay small."""
+    connection, _ = hierarchy
+    cur = cursor_of(hierarchy)
+    ring = [ident(100 + i) for i in range(12)]
+    for number, entity in enumerate(ring):
+        add_entity(cur, entity, f"ring {number}", [(1, f"CHEBI:91{number:03d}")])
+    cur.executemany(
+        "INSERT INTO entity_ontology_relation VALUES (1, %s, 1, %s, 'chebi')",
+        [(a, b) for a in ring for b in ring if a != b] + [(ring[0], ION_ROOT)],
+    )
+    built(hierarchy)
+    listed = {r[1] for r in table_rows(hierarchy, "exclusion_class = 'ions'")}
+    assert set(ring) <= listed
+
+
 def test_a_protein_and_a_part_of_edge_do_not_enter_a_class(hierarchy):
     built(hierarchy)
     listed = {r[1] for r in table_rows(hierarchy)}
