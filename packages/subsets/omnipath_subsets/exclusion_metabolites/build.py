@@ -21,6 +21,10 @@ _SQL_DIR = Path(__file__).with_name("sql")
 
 logger = logging.getLogger(__name__)
 
+# The ChEBI term each derived class is the descendants of. The roots are named
+# here, so the size of a derived class is bounded by a term a person can read.
+ROOTS = {"ions": "CHEBI:24867", "atoms": "CHEBI:33250"}
+
 ORIGIN = {
     "metaproviz_seed": "curated",
     "project_seed": "curated",
@@ -79,6 +83,19 @@ def _coverage(resolutions: list[resolve.Resolution]) -> list[dict]:
     return rows
 
 
+def _resolve_roots(cur) -> list[tuple[str, str, str]]:
+    """The entity behind each ChEBI root, as (class, entity, term). A root the release lacks is left out."""
+    wanted = [
+        seeds.Seed(name, "chebi", curie, "metaproviz_seed", "roots")
+        for name, curie in ROOTS.items()
+    ]
+    return [
+        (r.seed.exclusion_class, entity_id, r.seed.identifier)
+        for r in resolve.resolve_seeds(cur, wanted)
+        for entity_id in r.entity_ids
+    ]
+
+
 def _curated_rows(resolutions, *, list_version: str, build_id: str) -> list[tuple]:
     """One row per entity, class and source; the first seed to name it keeps the row."""
     rows: dict[tuple, tuple] = {}
@@ -122,6 +139,8 @@ def build_exclusion_metabolites(
         rows = _curated_rows(resolutions, list_version=listed.value, build_id=build_id)
         coverage = _coverage(resolutions)
 
+        roots = _resolve_roots(cur)
+
         cur.execute("TRUNCATE exclusion_metabolite, exclusion_metabolite_report")
         execute_values(
             cur,
@@ -131,21 +150,40 @@ def build_exclusion_metabolites(
             rows,
         )
         cur.execute(
+            _sql_text("derive_closure.sql"),
+            {
+                "root_classes": [r[0] for r in roots],
+                "root_entities": [r[1] for r in roots],
+                "root_curies": [r[2] for r in roots],
+                "entity_types": list(resolve.CHEMICAL_ENTITY_TYPES),
+                "list_version": listed.value,
+                "build_id": build_id,
+            },
+        )
+        cur.execute(_sql_text("expand_structure_key.sql"))
+        cur.execute(
             _sql_text("report.sql"),
-            {"build_id": build_id, "coverage": json.dumps(coverage)},
+            {
+                "build_id": build_id,
+                "coverage": json.dumps(coverage),
+                "derived_classes": sorted({r[0] for r in roots}),
+            },
         )
         cur.execute("ANALYZE exclusion_metabolite")
         cur.execute("ANALYZE exclusion_metabolite_report")
+        cur.execute(
+            "SELECT exclusion_class, count(DISTINCT entity_id), count(*) "
+            "FROM exclusion_metabolite GROUP BY 1"
+        )
+        sizes = {name: (entities, total) for name, entities, total in cur.fetchall()}
 
-    classes = {name: 0 for name in seeds.CLASSES}
-    for exclusion_class in classes:
-        classes[exclusion_class] = len({r[0] for r in rows if r[1] == exclusion_class})
     stats = {
         "build_id": build_id,
         "list_version": listed.value,
         "uncommitted_inputs": listed.uncommitted,
-        "rows": len(rows),
-        "classes": classes,
+        "rows": sum(total for _, total in sizes.values()),
+        "classes": {name: sizes.get(name, (0, 0))[0] for name in seeds.CLASSES},
+        "unresolved_roots": sorted(set(ROOTS) - {r[0] for r in roots}),
         "resolved_seeds": sum(c["resolved"] for c in coverage),
         "fallback_only_seeds": sum(c["fallback_only"] for c in coverage),
         "unresolved_seeds": sum(c["unresolved"] for c in coverage),

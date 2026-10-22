@@ -689,3 +689,275 @@ def test_the_runner_dispatches_the_product_and_reports_its_counts(release):
     outcome = scientific.run_product(connection, "exclusion_metabolites", schema=schema)
     assert outcome["result"]["rows"] == 10
     assert outcome["result"]["build_id"] == FIXTURE_BUILD
+
+
+# ---------------------------------------------------------------------------
+# A release with a ChEBI hierarchy and structure keys
+
+ION_ROOT, ION_CHILD, ION_GRAND, ATOM_ROOT, ATOM_CHILD, PROTEIN_CHILD, PART_OF_ONLY, BOTH = (
+    ident(i) for i in range(20, 28)
+)
+VARIANT, OTHER_VARIANT, UNRELATED, LEVEL_TWO_ONLY = (ident(i) for i in range(30, 34))
+
+
+def add_entity(cur, entity_id, label, identifiers, *, entity_type=2, canonical=1):
+    """One entity with its identifiers, in the order of the release's tables."""
+    first = identifiers[0][1]
+    cur.execute(
+        "INSERT INTO entity VALUES (%s,%s,%s,%s,%s)",
+        [entity_id, entity_type, canonical, first, label],
+    )
+    for type_id, value in identifiers:
+        identifier = str(uuid.uuid4())
+        cur.execute(
+            "INSERT INTO identifier_evidence VALUES (%s,%s,%s,%s)",
+            [identifier, type_id, value, value],
+        )
+        cur.execute("INSERT INTO entity_identifier_lookup VALUES (%s,%s)", [entity_id, identifier])
+
+
+@pytest.fixture
+def hierarchy(release):
+    """The small release plus a ChEBI hierarchy and structure keys.
+
+    ion root <- ion child <- ion grand, and the root is also a child of the
+    grand child, a cycle a real hierarchy should not hold but the closure must
+    survive. The proton and the iron atom sit under the roots and are curated
+    seeds too. A protein under the ion root and an entity that is only `part_of`
+    it must not enter the class.
+    """
+    connection, schema = release
+    cur = cursor_of(release)
+    add_entity(cur, ION_ROOT, "ion", [(1, "CHEBI:24867")])
+    add_entity(cur, ION_CHILD, "a child ion", [(1, "CHEBI:90001")])
+    add_entity(cur, ION_GRAND, "a grandchild ion", [(1, "CHEBI:90002")])
+    add_entity(cur, ATOM_ROOT, "atom", [(1, "CHEBI:33250")])
+    add_entity(cur, ATOM_CHILD, "a child atom", [(1, "CHEBI:90003")])
+    add_entity(cur, PROTEIN_CHILD, "a protein", [(1, "CHEBI:90004")], entity_type=1)
+    add_entity(cur, PART_OF_ONLY, "a part of the ion root", [(1, "CHEBI:90005")])
+    add_entity(cur, BOTH, "an ion that is also an atom class", [(1, "CHEBI:90010")])
+    add_entity(cur, VARIANT, "a water variant", [(1, "CHEBI:90006")])
+    add_entity(cur, OTHER_VARIANT, "another water variant", [(1, "CHEBI:90007")])
+    add_entity(cur, UNRELATED, "an unrelated molecule", [(1, "CHEBI:90008")])
+    add_entity(cur, LEVEL_TWO_ONLY, "a coarser neighbour", [(1, "CHEBI:90009")])
+    cur.execute("INSERT INTO data_source VALUES (1, 'chebi')")
+    cur.execute("INSERT INTO vocab_relation_predicate VALUES (1,'subclass_of'),(2,'part_of')")
+    cur.executemany(
+        "INSERT INTO entity_ontology_relation VALUES (1,%s,%s,%s,'chebi')",
+        [
+            (ION_CHILD, 1, ION_ROOT),
+            (ION_GRAND, 1, ION_CHILD),
+            (ION_ROOT, 1, ION_GRAND),  # the cycle
+            (PROTON, 1, ION_ROOT),
+            (PROTEIN_CHILD, 1, ION_ROOT),
+            (PART_OF_ONLY, 2, ION_ROOT),
+            (ATOM_CHILD, 1, ATOM_ROOT),
+            (IRON, 1, ATOM_ROOT),
+            (BOTH, 1, ION_ROOT),  # one entity under both roots
+            (BOTH, 1, ATOM_ROOT),
+        ],
+    )
+    cur.executemany(
+        "INSERT INTO chemical_resolution_group_member VALUES (%s,%s,%s,%s)",
+        [
+            (1, "KEYWATER", WATER, "KEYWATER-AAAAAAAAAA-N"),
+            (1, "KEYWATER", CO2, "KEYWATER-BBBBBBBBBB-N"),
+            (1, "KEYWATER", VARIANT, "KEYWATER-CCCCCCCCCC-N"),
+            (1, "KEYWATER", OTHER_VARIANT, "KEYWATER-DDDDDDDDDD-N"),
+            (1, "KEYOTHER", UNRELATED, "KEYOTHER-AAAAAAAAAA-N"),
+            (2, "COARSE", WATER, "KEYWATER-AAAAAAAAAA-N"),
+            (2, "COARSE", LEVEL_TWO_ONLY, "COARSE-AAAAAAAAAA-N"),
+        ],
+    )
+    connection.commit()
+    return release
+
+
+def table_rows(release, where="true"):
+    cur = cursor_of(release)
+    cur.execute(
+        "SELECT exclusion_class, entity_id::text, assignment_source, origin, match_kind, "
+        f"via_entity_id::text FROM exclusion_metabolite WHERE {where} "
+        "ORDER BY 1, 2, 3"
+    )
+    return cur.fetchall()
+
+
+def test_every_descendant_of_a_root_is_in_its_class_and_the_roots_are_too(hierarchy):
+    built(hierarchy)
+    derived = {
+        (r[0], r[1])
+        for r in table_rows(hierarchy, "assignment_source = 'chebi_hierarchy'")
+        if r[4] == "entity"
+    }
+    assert derived == {
+        ("ions", ION_ROOT),
+        ("ions", ION_CHILD),
+        ("ions", ION_GRAND),
+        ("ions", PROTON),
+        ("ions", BOTH),
+        ("atoms", ATOM_ROOT),
+        ("atoms", ATOM_CHILD),
+        ("atoms", IRON),
+        ("atoms", BOTH),
+    }
+    assert {r[3] for r in table_rows(hierarchy, "assignment_source = 'chebi_hierarchy'")} == {
+        "derived"
+    }
+
+
+def test_a_protein_and_a_part_of_edge_do_not_enter_a_class(hierarchy):
+    built(hierarchy)
+    listed = {r[1] for r in table_rows(hierarchy)}
+    assert PROTEIN_CHILD not in listed
+    assert PART_OF_ONLY not in listed
+
+
+def test_a_seed_the_closure_also_finds_has_one_row_per_source(hierarchy):
+    built(hierarchy)
+    rows = table_rows(hierarchy, f"entity_id = '{IRON}' AND exclusion_class = 'atoms'")
+    assert [(r[2], r[3]) for r in rows] == [
+        ("chebi_hierarchy", "derived"),
+        ("metaproviz_seed", "curated"),
+    ]
+
+
+def test_a_cycle_in_the_hierarchy_stops_at_the_depth_guard(hierarchy):
+    stats, cur = built(hierarchy)
+    cur.execute(
+        "SELECT count(*) FROM exclusion_metabolite WHERE entity_id = %s AND exclusion_class = 'ions'",
+        [ION_ROOT],
+    )
+    assert cur.fetchone()[0] == 2  # the seed and the closure, once each
+    assert stats["classes"]["ions"] >= 4
+
+
+def test_an_unresolved_root_derives_nothing_and_says_so(release):
+    stats, cur = built(release)
+    assert stats["unresolved_roots"] == ["atoms", "ions"]
+    cur.execute("SELECT count(*) FROM exclusion_metabolite WHERE origin = 'derived'")
+    assert cur.fetchone()[0] == 0
+
+
+def test_a_variant_of_a_listed_member_is_listed_by_structure_key_in_that_class(hierarchy):
+    built(hierarchy)
+    keyed = table_rows(hierarchy, "match_kind = 'structure_key'")
+    assert {(r[0], r[1], r[5]) for r in keyed} == {
+        ("ions", VARIANT, WATER),
+        ("ions", OTHER_VARIANT, WATER),
+        ("small_molecules", VARIANT, WATER),
+        ("small_molecules", OTHER_VARIANT, WATER),
+    }
+    assert {r[2] for r in keyed} == {"metaproviz_seed"}
+
+
+def test_an_entity_that_matched_on_its_own_gets_no_key_row_and_nothing_is_merged(hierarchy):
+    built(hierarchy)
+    for exclusion_class in ("ions", "small_molecules"):
+        for entity in (WATER, CO2):
+            rows = table_rows(
+                hierarchy, f"entity_id = '{entity}' AND exclusion_class = '{exclusion_class}'"
+            )
+            assert {r[4] for r in rows} == {"entity"}
+    assert UNRELATED not in {r[1] for r in table_rows(hierarchy)}
+    assert LEVEL_TWO_ONLY not in {r[1] for r in table_rows(hierarchy)}
+
+
+def test_a_variant_is_not_listed_in_a_class_its_member_is_not_in(hierarchy):
+    built(hierarchy)
+    assert not table_rows(hierarchy, f"entity_id = '{VARIANT}' AND exclusion_class = 'atoms'")
+
+
+def report(release, kind):
+    cur = cursor_of(release)
+    cur.execute(
+        "SELECT exclusion_class, resolved, detail FROM exclusion_metabolite_report "
+        "WHERE kind = %s ORDER BY exclusion_class",
+        [kind],
+    )
+    return cur.fetchall()
+
+
+def test_the_report_gives_the_size_of_every_class(hierarchy):
+    built(hierarchy)
+    sizes = {r[0]: (r[1], r[2]) for r in report(hierarchy, "class_size")}
+    assert set(sizes) == set(CLASSES)
+    assert sizes["xenobiotics"][0] == 0
+    assert sizes["atoms"][0] == 4  # root, child, iron, and the entity under both roots
+    assert sizes["atoms"][1]["entity_matches"] == 4
+    assert sizes["ions"][1]["structure_key_matches"] == 2
+    assert sizes["ions"][0] == sizes["ions"][1]["entity_matches"] + 2
+
+
+def test_the_report_compares_the_closure_with_the_seeds(hierarchy):
+    built(hierarchy)
+    missed = {r[0]: r for r in report(hierarchy, "seed_not_derived")}
+    # CHEBI:17051 (fluoride) is an ion seed the fixture hierarchy does not reach.
+    assert FLUORIDE in missed["ions"][2]["entities"]
+    assert PROTON not in missed["ions"][2]["entities"]
+    assert missed["ions"][1] == len(missed["ions"][2]["entities"])
+    extra = {r[0]: r for r in report(hierarchy, "derived_not_seeded")}
+    # The ion root is itself an ion seed, so the closure does not add it.
+    assert ION_ROOT not in extra["ions"][2]["entities"]
+    assert "a child ion" in extra["ions"][2]["labels"]
+    assert "a child atom" in extra["atoms"][2]["labels"]
+    assert "iron atom" not in extra["atoms"][2]["labels"]
+
+
+def test_the_report_lists_keys_that_pulled_in_a_variant_with_the_variant_labels(hierarchy):
+    built(hierarchy)
+    rows = {r[0]: r for r in report(hierarchy, "shared_key")}
+    assert rows["ions"][1] == 1
+    [entry] = rows["ions"][2]["keys"]
+    assert entry["key"] == "KEYWATER"
+    assert entry["via"] == WATER or entry["via"] == CO2
+    assert sorted(entry["labels"]) == ["a water variant", "another water variant"]
+
+
+def test_the_report_counts_listed_members_that_have_no_structure_key(hierarchy):
+    built(hierarchy)
+    rows = {r[0]: r for r in report(hierarchy, "no_key")}
+    assert rows["ions"][1] >= 1
+    assert "hydron" in rows["ions"][2]["labels"]
+    assert rows["atoms"][1] >= 1
+
+
+def test_two_builds_over_the_same_release_and_inputs_give_identical_tables(hierarchy):
+    def snapshot():
+        cur = cursor_of(hierarchy)
+        cur.execute("SELECT * FROM exclusion_metabolite ORDER BY 1, 2, 3")
+        rows = cur.fetchall()
+        cur.execute(
+            "SELECT kind, exclusion_class, namespace, resolved, fallback_only, unresolved, "
+            "detail::text, build_id FROM exclusion_metabolite_report ORDER BY 1, 2, 3, 7"
+        )
+        return rows, cur.fetchall()
+
+    built(hierarchy)
+    first = snapshot()
+    built(hierarchy)
+    assert snapshot() == first
+    assert first[0] and first[1]
+
+
+def test_every_resolvable_curated_seed_has_a_row_and_each_other_is_only_in_the_report(hierarchy):
+    connection, _ = hierarchy
+    built(hierarchy)
+    cur = cursor_of(hierarchy)
+    loaded = seeds.read_seeds().seeds
+    found = {
+        (r.seed.exclusion_class, e)
+        for r in resolve.resolve_seeds(cur, loaded)
+        for e in r.entity_ids
+    }
+    cur.execute(
+        "SELECT exclusion_class, entity_id::text FROM exclusion_metabolite "
+        "WHERE assignment_source = 'metaproviz_seed' AND match_kind = 'entity'"
+    )
+    assert {(c, e) for c, e in cur.fetchall()} == found
+    unresolved = [r.seed for r in resolve.resolve_seeds(cur, loaded) if not r.resolved]
+    assert unresolved
+    cur.execute(
+        "SELECT sum(unresolved) FROM exclusion_metabolite_report WHERE kind = 'seed_coverage'"
+    )
+    assert cur.fetchone()[0] == len(unresolved)
