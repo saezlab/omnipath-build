@@ -162,3 +162,33 @@ SELECT 'no_key',
 FROM unnest(ARRAY['ions', 'atoms', 'small_molecules', 'xenobiotics', 'cofactors']) AS c(cls)
 LEFT JOIN numbered u ON u.exclusion_class = c.cls
 GROUP BY c.cls;
+
+-- Every veto, with what it removed. A veto that removed a derived or key-matched
+-- row is the case a reader needs to see; one that removed nothing is here too,
+-- because it may be stale.
+INSERT INTO exclusion_metabolite_report
+  (kind, exclusion_class, namespace, resolved, detail, build_id)
+SELECT 'veto_applied',
+       v.exclusion_class,
+       v.namespace,
+       count(r.entity_id),
+       jsonb_build_object(
+         'identifier', v.identifier,
+         'note', v.note,
+         'resolved', v.resolved,
+         'entities', v.entities,
+         'removed', coalesce(
+           jsonb_agg(jsonb_build_object('entity', r.entity_id,
+                                        'assignment_source', r.assignment_source,
+                                        'match_kind', r.match_kind)
+                     ORDER BY r.entity_id, r.assignment_source, r.match_kind)
+             FILTER (WHERE r.entity_id IS NOT NULL), '[]'::jsonb)
+       ),
+       %(build_id)s
+FROM jsonb_to_recordset(%(vetoes)s::jsonb)
+  AS v(exclusion_class text, namespace text, identifier text, note text, resolved boolean,
+       entities jsonb)
+LEFT JOIN exclusion_veto_removed r
+  ON r.veto_class = v.exclusion_class AND r.namespace = v.namespace
+ AND r.identifier = v.identifier
+GROUP BY v.exclusion_class, v.namespace, v.identifier, v.note, v.resolved, v.entities;

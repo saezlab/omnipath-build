@@ -1149,3 +1149,142 @@ def test_a_release_without_reaction_tables_still_builds(release):
 def test_an_unresolved_cofactor_role_leaves_the_core_list_and_says_so(release):
     stats, _ = built(release)
     assert "cofactors" in stats["unresolved_roots"]
+
+
+# ---------------------------------------------------------------------------
+# Curators: additions, vetoes and the version they are stamped with
+
+
+def override_directory(tmp_path, *, add="", veto=""):
+    """The shipped seeds with an overrides file of the test's own."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    shipped = seeds.SEED_DIR
+    for name in (seeds.METAPROVIZ_FILE, seeds.COFACTOR_FILE):
+        write(tmp_path / name, (shipped / name).read_text(encoding="utf-8"))
+    write(tmp_path / seeds.OVERRIDE_FILE, f"add: [{add}]\nveto: [{veto}]\n")
+    return tmp_path
+
+
+def entry(exclusion_class, curie, note="because"):
+    return f'{{class: {exclusion_class}, namespace: chebi, id: "{curie}", note: "{note}"}}'
+
+
+def test_an_added_identifier_is_a_curated_member_of_its_class(hierarchy, tmp_path):
+    directory = override_directory(tmp_path, add=entry("ions", "CHEBI:90008", "a curator adds it"))
+    built(hierarchy, directory)
+    rows = table_rows(hierarchy, f"entity_id = '{UNRELATED}'")
+    assert [(r[0], r[2], r[3], r[4]) for r in rows] == [
+        ("ions", "override_add", "curated", "entity")
+    ]
+
+
+def test_a_veto_removes_the_entity_from_the_class_whatever_added_it(hierarchy, tmp_path):
+    # The proton is an ion seed and a descendant of the ion root: two sources.
+    directory = override_directory(tmp_path, veto=entry("ions", "CHEBI:15378"))
+    built(hierarchy, directory)
+    assert not table_rows(hierarchy, f"entity_id = '{PROTON}' AND exclusion_class = 'ions'")
+
+
+def test_a_veto_removes_only_the_class_it_names(hierarchy, tmp_path):
+    # BOTH is an ion and an atom class member through the hierarchy.
+    directory = override_directory(tmp_path, veto=entry("ions", "CHEBI:90010"))
+    built(hierarchy, directory)
+    classes = {r[0] for r in table_rows(hierarchy, f"entity_id = '{BOTH}'")}
+    assert classes == {"atoms"}
+
+
+def test_a_vetoed_member_no_longer_pulls_in_its_variants(hierarchy, tmp_path):
+    # The water variants share their key with water and with carbon dioxide.
+    # Vetoing water alone leaves them listed through carbon dioxide; vetoing both
+    # leaves them out of the class, and out only of that class.
+    one = override_directory(
+        tmp_path / "one", veto=entry("ions", "C00001").replace("chebi", "kegg")
+    )
+    built(hierarchy, one)
+    kept = table_rows(hierarchy, f"entity_id = '{VARIANT}' AND exclusion_class = 'ions'")
+    assert [r[5] for r in kept] == [CO2]
+
+    both = override_directory(
+        tmp_path / "both",
+        veto=", ".join(
+            entry("ions", identifier).replace("chebi", "kegg")
+            for identifier in ("C00001", "C00011")
+        ),
+    )
+    built(hierarchy, both)
+    assert not table_rows(hierarchy, f"entity_id = '{VARIANT}' AND exclusion_class = 'ions'")
+    assert table_rows(hierarchy, f"entity_id = '{VARIANT}' AND exclusion_class = 'small_molecules'")
+
+
+def test_a_vetoed_variant_stays_out_even_though_its_key_matches(hierarchy, tmp_path):
+    directory = override_directory(tmp_path, veto=entry("ions", "CHEBI:90006"))
+    built(hierarchy, directory)
+    assert not table_rows(hierarchy, f"entity_id = '{VARIANT}' AND exclusion_class = 'ions'")
+    assert table_rows(hierarchy, f"entity_id = '{OTHER_VARIANT}' AND exclusion_class = 'ions'")
+
+
+def test_the_report_names_each_veto_that_removed_a_derived_or_key_row(hierarchy, tmp_path):
+    directory = override_directory(
+        tmp_path,
+        veto=", ".join(
+            [entry("ions", "CHEBI:15378"), entry("ions", "CHEBI:90006", "not a water form")]
+        ),
+    )
+    built(hierarchy, directory)
+    rows = {r[2]["identifier"]: r for r in report(hierarchy, "veto_applied")}
+    proton = rows["CHEBI:15378"]
+    assert proton[0] == "ions" and proton[1] == 2
+    assert {(x["assignment_source"], x["match_kind"]) for x in proton[2]["removed"]} == {
+        ("metaproviz_seed", "entity"),
+        ("chebi_hierarchy", "entity"),
+    }
+    variant = rows["CHEBI:90006"]
+    assert [(x["assignment_source"], x["match_kind"]) for x in variant[2]["removed"]] == [
+        ("metaproviz_seed", "structure_key")
+    ]
+    assert variant[2]["note"] == "not a water form"
+
+
+def test_a_veto_that_finds_nothing_is_reported_and_removes_nothing(hierarchy, tmp_path):
+    directory = override_directory(tmp_path, veto=entry("ions", "CHEBI:99999999"))
+    built(hierarchy, directory)
+    [(_, removed, detail)] = report(hierarchy, "veto_applied")
+    assert removed == 0
+    assert detail["resolved"] is False
+
+
+def test_a_build_from_an_uncommitted_override_file_says_so(hierarchy, tmp_path):
+    directory = override_directory(tmp_path, add=entry("ions", "CHEBI:90008"))
+    stats, cur = built(hierarchy, directory)
+    cur.execute("SELECT DISTINCT list_version FROM exclusion_metabolite")
+    [(list_version,)] = cur.fetchall()
+    assert list_version.startswith("uncommitted:")
+    assert stats["uncommitted_inputs"] is True
+    [(_, _, detail)] = report(hierarchy, "uncommitted_inputs")
+    assert detail["list_version"] == list_version
+    assert "overrides.yaml" in detail["files"]
+
+
+def test_a_committed_list_has_no_uncommitted_report_row(hierarchy, tmp_path):
+    directory = override_directory(tmp_path)
+    committed(directory)
+    stats, cur = built(hierarchy, directory)
+    cur.execute("SELECT DISTINCT list_version FROM exclusion_metabolite")
+    [(list_version,)] = cur.fetchall()
+    assert not list_version.startswith("uncommitted:")
+    assert report(hierarchy, "uncommitted_inputs") == []
+
+
+def test_the_member_view_lists_a_class_with_label_identifiers_source_and_origin(hierarchy):
+    built(hierarchy)
+    cur = cursor_of(hierarchy)
+    cur.execute(
+        "SELECT label, hmdb, pubchem, chebi, kegg, assignment_source, origin, match_kind "
+        "FROM exclusion_metabolite_members WHERE exclusion_class = 'ions' AND entity_id = %s "
+        "ORDER BY assignment_source",
+        [PROTON],
+    )
+    assert cur.fetchall() == [
+        ("hydron", None, None, "15378", None, "chebi_hierarchy", "derived", "entity"),
+        ("hydron", None, None, "15378", None, "metaproviz_seed", "curated", "entity"),
+    ]

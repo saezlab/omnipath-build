@@ -1,7 +1,7 @@
 # OmniPath subsets
 
-Build MetSigDB memberships, network presets and COSMOS reaction networks from
-one fixed PostgreSQL release loaded by omnipath-postgres. Products use published
+Build the exclusion metabolite list, MetSigDB memberships, network presets and
+COSMOS reaction networks from one fixed PostgreSQL release loaded by omnipath-postgres. Products use published
 identities and aliases; no resource builds or identifier resolution run.
 
 ## Build selected products
@@ -39,8 +39,9 @@ products committed by this call. A callback failure stops further builds while
 preserving that commit; `subset_build_metadata` is authoritative if observer
 persistence fails.
 
-The maintained scientific implementations live in `omnipath_subsets.metsigdb`,
-`omnipath_subsets.network_views` and `omnipath_subsets.cosmos`. The standalone
+The maintained scientific implementations live in `omnipath_subsets.exclusion_metabolites`,
+`omnipath_subsets.metsigdb`, `omnipath_subsets.network_views` and
+`omnipath_subsets.cosmos`. The standalone
 command and PostgreSQL importer share `omnipath_subsets.runner`; they publish
 `subset_build_metadata` and `parquet_phase` in the same product transaction.
 Explicit selection rebuilds each product. Use `omnipath-postgres --finish` to
@@ -48,6 +49,9 @@ skip products already committed for the loaded monthly release.
 
 ## Products
 
+- **Exclusion metabolites:** the chemical entities that mass spectrometry does not
+  measure (ions, atoms, small molecules, xenobiotics and cofactors), in classes.
+  MetSigDB and COSMOS read it. See [Exclusion metabolites](#exclusion-metabolites).
 - **MetSigDB:** metabolite memberships in Reactome, WikiPathways, KEGG, MACdb
   and ClassyFire sets, read from the normalized entity, evidence and ontology tables.
 - **Network views:** the MetaLinksDB, LIANA and Reactions preset definitions and
@@ -63,8 +67,84 @@ skip products already committed for the loaded monthly release.
   mappings only when exactly one UniProt target answers. Connectors use the
   same identifier and namespace as their reaction node.
 
-All three products use the current PostgreSQL schema. The earlier resource-record
+All four products use the current PostgreSQL schema. The earlier resource-record
 subset implementations and their verification command have been removed.
+
+## Exclusion metabolites
+
+The product publishes two tables in the release schema: `exclusion_metabolite`
+(one row for each entity, class and source of the assignment) and
+`exclusion_metabolite_report` (what the list covers and what it does not). It
+reads one loaded release, resolves no identifier and downloads nothing. It
+runs first, and it rebuilds alone:
+
+```sh
+make rebuild-subsets POSTGRES_SCHEMA=release_2026_09 SUBSET_PRODUCTS=exclusion_metabolites
+```
+
+### The classes
+
+| Class | How its members are found |
+|---|---|
+| `ions` | The MetaProViz seeds, and every ChEBI `subclass_of` descendant of `CHEBI:24867`. |
+| `atoms` | The MetaProViz seeds, and every ChEBI descendant of `CHEBI:33250`. |
+| `small_molecules` | The MetaProViz KEGG seeds. Nothing derives them. |
+| `cofactors` | Chemicals with the ChEBI cofactor role (`CHEBI:23357`), and the core list. |
+| `xenobiotics` | Valid and empty until a curator adds a member. |
+
+A variant of a listed member (a charge, tautomer or stereo form that shares its
+structure key) is listed in the member's classes as a row of its own. Its
+`match_kind` is `structure_key` and `via_entity_id` names the member. An entity
+that matched in its own right gets no such row.
+
+### The three files you edit
+
+They are in `omnipath_subsets/exclusion_metabolites/seed/`. Edit one, commit it
+and rebuild the product. No code changes.
+
+- `metaproviz_seed.yaml`: the MetaProViz lists, vendored with their commit and
+  licence. Change it only to take a newer MetaProViz version.
+- `project_cofactors.yaml`: the reviewed core of cofactors. One line for each
+  member: `{id: "CHEBI:16761", name: ADP}`. The name is for the reader and is not
+  matched. Add a line when the role misses a cofactor.
+- `overrides.yaml`: your changes, each with a reason.
+
+```yaml
+add:  [{class: ions, namespace: chebi, id: "CHEBI:29101", note: why it belongs}]
+veto: [{class: cofactors, namespace: chebi, id: "CHEBI:15422", note: why it does not}]
+```
+
+Classes are `ions`, `atoms`, `small_molecules`, `xenobiotics` and `cofactors`.
+Namespaces are `chebi`, `kegg`, `hmdb`, `pubchem`, `lipidmaps`, `swisslipids`,
+`chembl` and `drugbank`. A ChEBI id may be written with or without `CHEBI:`, and
+an HMDB id in either width. A malformed file stops the build and says why.
+
+**A veto wins.** It removes the entity from that class, whatever put it there:
+a seed, the ontology, an addition or a structure-key match. A vetoed member does
+not pull in its variants, and a vetoed variant stays out. Other classes are not
+affected. Each veto appears in the report with the rows it removed, and a veto
+that removed nothing appears too, because it may be stale.
+
+### Read the list
+
+```sql
+-- the members of a class, with where each came from
+SELECT label, chebi, kegg, hmdb, assignment_source, origin, match_kind
+FROM exclusion_metabolite_members WHERE exclusion_class = 'cofactors' ORDER BY label;
+
+-- what the build covered, and what it did not
+SELECT kind, exclusion_class, namespace, resolved, fallback_only, unresolved
+FROM exclusion_metabolite_report ORDER BY kind, exclusion_class;
+```
+
+`origin` is `curated` for the three seed files and `derived` for the ontology. An
+entity with both has two rows. In the report, `seed_coverage` counts the seeds that
+resolved and lists the ones that did not. `shared_key` lists the variants a key
+pulled in. `veto_applied` lists your vetoes.
+
+Every row carries `list_version`, the commit of the three files. A build from
+uncommitted edits is stamped `uncommitted:<sha256>` and the report says so, so
+commit before you build anything you intend to keep.
 
 ## Validation scope
 

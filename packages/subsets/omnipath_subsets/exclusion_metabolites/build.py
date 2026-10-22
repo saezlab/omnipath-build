@@ -13,7 +13,7 @@ import logging
 from pathlib import Path
 
 from psycopg2 import sql
-from psycopg2.extras import execute_values
+from psycopg2.extras import Json, execute_values
 
 from omnipath_subsets.exclusion_metabolites import resolve, seeds, version
 
@@ -180,15 +180,57 @@ def build_exclusion_metabolites(
             },
         )
         cur.execute("DROP TABLE IF EXISTS exclusion_subclass_edge")
+
+        vetoes = resolve.resolve_seeds(cur, seed_set.vetoes)
+        cur.execute(_sql_text("stage_vetoes.sql"))
+        execute_values(
+            cur,
+            "INSERT INTO exclusion_veto (exclusion_class, namespace, identifier, entity_id) "
+            "VALUES %s",
+            [
+                (v.seed.exclusion_class, v.seed.namespace, v.seed.identifier, entity_id)
+                for v in vetoes
+                for entity_id in v.entity_ids
+            ],
+        )
+        cur.execute(_sql_text("apply_vetoes.sql"))
         cur.execute(_sql_text("expand_structure_key.sql"))
+        cur.execute(_sql_text("apply_vetoes.sql"))
         cur.execute(
             _sql_text("report.sql"),
             {
                 "build_id": build_id,
                 "coverage": json.dumps(coverage),
                 "derived_classes": sorted({r[0] for r in roots}),
+                "vetoes": json.dumps(
+                    [
+                        {
+                            "exclusion_class": v.seed.exclusion_class,
+                            "namespace": v.seed.namespace,
+                            "identifier": v.seed.identifier,
+                            "note": v.seed.note,
+                            "resolved": v.resolved,
+                            "entities": list(v.entity_ids),
+                        }
+                        for v in vetoes
+                    ]
+                ),
             },
         )
+        if listed.uncommitted:
+            cur.execute(
+                "INSERT INTO exclusion_metabolite_report (kind, detail, build_id) "
+                "VALUES ('uncommitted_inputs', %s, %s)",
+                (
+                    Json(
+                        {
+                            "list_version": listed.value,
+                            "files": [path.name for path in seed_set.paths],
+                        }
+                    ),
+                    build_id,
+                ),
+            )
         # Reaction counts need the participant table, which a bare release may lack.
         cur.execute("SELECT to_regclass('interaction_party') IS NOT NULL")
         if cur.fetchone()[0]:
