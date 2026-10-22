@@ -92,10 +92,9 @@ class Cursor:
             product, seconds, outcome = parameters
             connection.pending["phases"][product] = (seconds, deepcopy(outcome.adapted))
         elif "UPDATE" in text and "parquet_release" in text:
-            product, seconds, products, _ = parameters
-            connection.pending["status"] = (
-                "complete" if set(products).issubset(connection.pending["phases"]) else product
-            )
+            product, seconds, products, expected, _ = parameters
+            published = len(set(products) & set(connection.pending["phases"]))
+            connection.pending["status"] = "complete" if published == expected else product
         else:
             self.rows = []
 
@@ -229,7 +228,12 @@ def test_selected_rebuild_updates_only_explicit_product_and_keeps_other_checkpoi
     environment, monkeypatch
 ):
     database, _ = environment
-    database.state["contents"] = {"metsigdb": 10, "network_views": 20, "cosmos": 30}
+    database.state["contents"] = {
+        "exclusion_metabolites": 5,
+        "metsigdb": 10,
+        "network_views": 20,
+        "cosmos": 30,
+    }
     database.state["phases"].update(
         {product: "old phase" for product in database.state["contents"]}
     )
@@ -239,10 +243,33 @@ def test_selected_rebuild_updates_only_explicit_product_and_keeps_other_checkpoi
         "unused", "target", products=("cosmos",), checkpoint_products=True
     )
     assert result.products == {"cosmos": {"rows": 31}}
-    assert database.state["contents"] == {"metsigdb": 10, "network_views": 20, "cosmos": 31}
+    assert database.state["contents"] == {
+        "exclusion_metabolites": 5,
+        "metsigdb": 10,
+        "network_views": 20,
+        "cosmos": 31,
+    }
     assert database.state["metadata"]["metsigdb"] == "old metadata"
     assert database.state["phases"]["network_views"] == "old phase"
     assert database.state["status"] == "complete"
+
+
+def test_release_is_complete_only_when_every_product_has_published(environment, monkeypatch):
+    database, _ = environment
+    monkeypatch.setattr(runner, "run_product", builder())
+    earlier = [product for product in runner.PRODUCTS if product != "exclusion_metabolites"]
+    runner.build_subsets("unused", "target", products=earlier, checkpoint_products=True)
+    assert len(earlier) == len(runner.PRODUCTS) - 1
+    assert database.state["status"] == earlier[-1]
+
+    runner.build_subsets(
+        "unused", "target", products=("exclusion_metabolites",), checkpoint_products=True
+    )
+    assert database.state["status"] == "complete"
+
+
+def test_exclusion_metabolites_run_before_the_products_that_may_read_them():
+    assert runner.PRODUCTS[0] == "exclusion_metabolites"
 
 
 def test_release_change_between_transactions_stops_before_next_product(environment, monkeypatch):

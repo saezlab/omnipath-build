@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from .scientific import run_product
 from .db import validate_schema
 
-PRODUCTS = ("metsigdb", "network_views", "cosmos")
+PRODUCTS = ("exclusion_metabolites", "metsigdb", "network_views", "cosmos")
 
 
 @dataclass(frozen=True)
@@ -84,11 +84,11 @@ def _publish(connection, schema, product, identity, outcome, seconds):
         cursor.execute(
             sql.SQL("""UPDATE {}.parquet_release SET
             phase_seconds=phase_seconds || jsonb_build_object(%s::text,%s::double precision),
-            status=CASE WHEN (SELECT count(*) FROM {}.parquet_phase WHERE phase=ANY(%s))=3
+            status=CASE WHEN (SELECT count(*) FROM {}.parquet_phase WHERE phase=ANY(%s))=%s
                         THEN 'complete' ELSE %s END WHERE singleton""").format(
                 sql.Identifier(schema), sql.Identifier(schema)
             ),
-            (product, seconds, list(PRODUCTS), product),
+            (product, seconds, list(PRODUCTS), len(PRODUCTS), product),
         )
     _identity(connection, schema, identity)
 

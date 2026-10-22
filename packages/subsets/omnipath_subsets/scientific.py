@@ -3,7 +3,7 @@
 from dataclasses import asdict, is_dataclass
 import time
 from psycopg2 import sql
-from . import cosmos, metsigdb, network_views
+from . import cosmos, exclusion_metabolites, metsigdb, network_views
 
 
 def _search_path(conn, schema):
@@ -37,7 +37,9 @@ def run_product(conn, product, *, schema="public", progress=False):
     conn = CommitDeferredConnection(conn)
     _search_path(conn, schema)
     started = time.monotonic()
-    if product == "network_views":
+    if product == "exclusion_metabolites":
+        stats = exclusion_metabolites.build_exclusion_metabolites(conn, schema=schema)
+    elif product == "network_views":
         stats = network_views.apply_all(
             conn,
             network_views.NETWORKS,

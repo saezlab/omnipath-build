@@ -1,0 +1,6 @@
+# Cofactors this project lists by hand. The ChEBI cofactor role adds more at
+# build time; this list is the reviewed core and the partners the role misses.
+# One line per member. The name is for the reviewer and is not matched.
+class: cofactors
+namespace: chebi
+members: []
