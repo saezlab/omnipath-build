@@ -10,20 +10,6 @@
 -- again, so a densely connected cycle costs entities times depth and not the
 -- number of paths through it. The shortest path to each entity wins.
 
-DROP TABLE IF EXISTS exclusion_subclass_edge;
-
--- Only ChEBI's own hierarchy: the roots are ChEBI terms, and a release holds
--- about six times as many subclass_of rows from other ontologies.
-CREATE TEMP TABLE exclusion_subclass_edge AS
-SELECT DISTINCT r.subject_entity_id AS child, r.object_entity_id AS parent
-FROM entity_ontology_relation r
-JOIN data_source s ON s.source_id = r.source_id AND s.name = 'chebi'
-JOIN vocab_relation_predicate p
-  ON p.relation_predicate_id = r.predicate_id AND p.name = 'subclass_of';
-
-CREATE INDEX ON exclusion_subclass_edge (parent);
-ANALYZE exclusion_subclass_edge;
-
 INSERT INTO exclusion_metabolite
   (entity_id, exclusion_class, assignment_source, origin, match_kind, seed_namespace,
    seed_identifier, evidence, via_entity_id, list_version, build_id)
@@ -60,5 +46,3 @@ FROM nearest n
 JOIN entity e ON e.entity_id = n.entity_id
 JOIN vocab_entity_type vt
   ON vt.entity_type_id = e.entity_type_id AND vt.name = ANY(%(entity_types)s::text[]);
-
-DROP TABLE IF EXISTS exclusion_subclass_edge;

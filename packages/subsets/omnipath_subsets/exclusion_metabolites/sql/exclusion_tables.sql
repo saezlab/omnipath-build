@@ -56,7 +56,8 @@ CREATE TABLE IF NOT EXISTS exclusion_metabolite_report (
   kind            text NOT NULL
     CONSTRAINT exclusion_metabolite_report_kind_check
     CHECK (kind IN ('seed_coverage', 'class_size', 'seed_not_derived', 'derived_not_seeded',
-                    'shared_key', 'no_key', 'veto_applied', 'uncommitted_inputs')),
+                    'shared_key', 'no_key', 'veto_applied', 'uncommitted_inputs',
+                    'cofactor_reactions', 'cofactor_cross_check')),
   exclusion_class text,
   namespace       text,
   resolved        integer,

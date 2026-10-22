@@ -362,6 +362,11 @@ def cursor_of(release):
     return cur
 
 
+def core_list_size():
+    """How many members the project's own cofactor list holds."""
+    return sum(1 for s in seeds.read_seeds().seeds if s.assignment_source == "project_seed")
+
+
 # ---------------------------------------------------------------------------
 # The tables
 
@@ -626,8 +631,11 @@ def test_the_report_counts_resolved_fallback_and_unresolved_seeds_per_class_and_
         "FROM exclusion_metabolite_report WHERE kind = 'seed_coverage' "
         "ORDER BY exclusion_class, namespace"
     )
+    # The core list of cofactors is authored in this project; the small release
+    # holds none of its ChEBI ids, so every one of them is unresolved.
     assert cur.fetchall() == [
         ("atoms", "chebi", 1, 0, 279),
+        ("cofactors", "chebi", 0, 0, core_list_size()),
         ("ions", "chebi", 2, 0, 185),
         ("ions", "kegg", 2, 0, 12),
         ("small_molecules", "kegg", 4, 1, 12),
@@ -679,7 +687,7 @@ def test_the_build_returns_counts_for_the_build_record(release):
     assert stats["classes"]["ions"] == 4
     assert stats["classes"]["atoms"] == 1
     assert stats["classes"]["xenobiotics"] == 0
-    assert stats["unresolved_seeds"] == 279 + 185 + 12 + 12
+    assert stats["unresolved_seeds"] == 279 + 185 + 12 + 12 + core_list_size()
 
 
 def test_the_runner_dispatches_the_product_and_reports_its_counts(release):
@@ -865,7 +873,7 @@ def test_a_cycle_in_the_hierarchy_stops_at_the_depth_guard(hierarchy):
 
 def test_an_unresolved_root_derives_nothing_and_says_so(release):
     stats, cur = built(release)
-    assert stats["unresolved_roots"] == ["atoms", "ions"]
+    assert stats["unresolved_roots"] == ["atoms", "cofactors", "ions"]
     cur.execute("SELECT count(*) FROM exclusion_metabolite WHERE origin = 'derived'")
     assert cur.fetchone()[0] == 0
 
@@ -992,3 +1000,152 @@ def test_every_resolvable_curated_seed_has_a_row_and_each_other_is_only_in_the_r
         "SELECT sum(unresolved) FROM exclusion_metabolite_report WHERE kind = 'seed_coverage'"
     )
     assert cur.fetchone()[0] == len(unresolved)
+
+
+# ---------------------------------------------------------------------------
+# Cofactors: the ChEBI role plus a reviewed core list
+
+COFACTOR_ROLE, COFACTOR_SUBROLE, OTHER_ROLE = (ident(i) for i in range(50, 53))
+NAMED = {
+    "NAD": (ident(60), "CHEBI:15846"),
+    "NADH": (ident(61), "CHEBI:16908"),
+    "NADP": (ident(62), "CHEBI:18009"),
+    "NADPH": (ident(63), "CHEBI:16474"),
+    "ATP": (ident(64), "CHEBI:15422"),
+    "ADP": (ident(65), "CHEBI:16761"),
+    "AMP": (ident(66), "CHEBI:16027"),
+    "CoA": (ident(67), "CHEBI:15346"),
+}
+INHIBITOR = ident(70)
+UNLISTED_BUSY = ident(71)
+CARRIES_ROLE = ("NAD", "NADP", "NADPH", "ATP", "AMP")  # as in the real release
+CARRIES_SUBROLE = ("NADH",)
+
+
+@pytest.fixture
+def cofactor_release(release):
+    """The small release plus a cofactor role, a sub-role and the named cofactors.
+
+    As in the real release, the role finds NAD(P)(H), ATP and AMP and misses ADP
+    and CoA, which only the reviewed core list supplies.
+    """
+    connection, _ = release
+    cur = cursor_of(release)
+    add_entity(cur, COFACTOR_ROLE, "cofactor", [(1, "CHEBI:23357")])
+    add_entity(cur, COFACTOR_SUBROLE, "a kind of cofactor", [(1, "CHEBI:90020")])
+    add_entity(cur, OTHER_ROLE, "inhibitor role", [(1, "CHEBI:90021")])
+    for name, (entity, curie) in NAMED.items():
+        add_entity(cur, entity, name, [(1, curie)])
+    add_entity(cur, INHIBITOR, "an inhibitor", [(1, "CHEBI:90022")])
+    add_entity(cur, UNLISTED_BUSY, "busy but not a cofactor", [(1, "CHEBI:90023")])
+    cur.execute("INSERT INTO data_source VALUES (1, 'chebi')")
+    cur.execute(
+        "INSERT INTO vocab_relation_predicate VALUES (1,'subclass_of'),(3,'has_chemical_role')"
+    )
+    edges = [(COFACTOR_SUBROLE, 1, COFACTOR_ROLE), (INHIBITOR, 3, OTHER_ROLE)]
+    edges += [(NAMED[n][0], 3, COFACTOR_ROLE) for n in CARRIES_ROLE]
+    edges += [(NAMED[n][0], 3, COFACTOR_SUBROLE) for n in CARRIES_SUBROLE]
+    cur.executemany("INSERT INTO entity_ontology_relation VALUES (1,%s,%s,%s,'chebi')", edges)
+    cur.execute(
+        "CREATE TABLE interaction_party(interaction_id uuid, entity_id uuid, role_id int, "
+        "compartment text)"
+    )
+    parties = [(ident(900 + i), NAMED["ATP"][0]) for i in range(3)]
+    parties += [(ident(900), NAMED["NAD"][0]), (ident(901), NAMED["NAD"][0])]
+    parties += [(ident(950 + i), UNLISTED_BUSY) for i in range(5)]
+    parties += [(ident(900), NAMED["ATP"][0])]  # the same reaction twice counts once
+    cur.executemany("INSERT INTO interaction_party VALUES (%s,%s,1,NULL)", parties)
+    connection.commit()
+    return release
+
+
+def cofactor_rows(release, where="true"):
+    return table_rows(release, f"exclusion_class = 'cofactors' AND {where}")
+
+
+def test_a_chemical_with_the_cofactor_role_or_a_sub_role_is_derived(cofactor_release):
+    built(cofactor_release)
+    derived = {r[1] for r in cofactor_rows(cofactor_release, "assignment_source = 'chebi_role'")}
+    assert derived == {NAMED[n][0] for n in CARRIES_ROLE + CARRIES_SUBROLE}
+
+
+def test_derived_cofactor_rows_say_where_they_came_from(cofactor_release):
+    built(cofactor_release)
+    cur = cursor_of(cofactor_release)
+    cur.execute(
+        "SELECT DISTINCT origin, match_kind, seed_namespace, evidence, via_entity_id::text "
+        "FROM exclusion_metabolite WHERE assignment_source = 'chebi_role' AND entity_id = %s",
+        [NAMED["NADH"][0]],
+    )
+    [(origin, kind, namespace, evidence, via)] = cur.fetchall()
+    assert (origin, kind, namespace) == ("derived", "entity", None)
+    assert "has_chemical_role" in evidence and "CHEBI:23357" in evidence
+    assert via is None
+
+
+def test_a_chemical_with_another_role_and_the_role_term_itself_are_not_cofactors(
+    cofactor_release,
+):
+    built(cofactor_release)
+    listed = {r[1] for r in cofactor_rows(cofactor_release)}
+    assert INHIBITOR not in listed
+    assert COFACTOR_ROLE not in listed and COFACTOR_SUBROLE not in listed
+
+
+def test_the_core_list_adds_what_the_role_misses(cofactor_release):
+    built(cofactor_release)
+    core = {r[1] for r in cofactor_rows(cofactor_release, "assignment_source = 'project_seed'")}
+    assert {NAMED["ADP"][0], NAMED["CoA"][0]} <= core
+    assert {
+        r[3] for r in cofactor_rows(cofactor_release, "assignment_source = 'project_seed'")
+    } == {"curated"}
+
+
+def test_the_eight_named_cofactors_are_in_the_class_and_each_row_says_why(cofactor_release):
+    built(cofactor_release)
+    listed = {r[1] for r in cofactor_rows(cofactor_release)}
+    for name, (entity, _) in NAMED.items():
+        assert entity in listed, name
+    cur = cursor_of(cofactor_release)
+    cur.execute("SELECT count(*) FROM exclusion_metabolite WHERE evidence IS NULL OR evidence = ''")
+    assert cur.fetchone()[0] == 0
+
+
+def test_an_entity_in_the_core_list_and_the_role_has_one_row_per_source(cofactor_release):
+    stats, cur = built(cofactor_release)
+    rows = cofactor_rows(cofactor_release, f"entity_id = '{NAMED['ATP'][0]}'")
+    assert [(r[2], r[3]) for r in rows] == [("chebi_role", "derived"), ("project_seed", "curated")]
+    cur.execute(
+        "SELECT count(*), count(DISTINCT entity_id) FROM exclusion_metabolite "
+        "WHERE exclusion_class = 'cofactors'"
+    )
+    rows_total, entities = cur.fetchone()
+    assert rows_total > entities
+    assert stats["classes"]["cofactors"] == entities
+
+
+def test_reaction_counts_are_reported_per_cofactor_as_a_review_aid(cofactor_release):
+    built(cofactor_release)
+    [(_, resolved, detail)] = report(cofactor_release, "cofactor_reactions")
+    counts = {entry["entity"]: entry["reactions"] for entry in detail["cofactors"]}
+    assert counts[NAMED["ATP"][0]] == 3  # three distinct reactions, one listed twice
+    assert counts[NAMED["NAD"][0]] == 2
+    assert resolved == len(counts)
+
+
+def test_a_count_alone_never_lists_an_entity(cofactor_release):
+    built(cofactor_release)
+    assert UNLISTED_BUSY not in {r[1] for r in table_rows(cofactor_release)}
+    [(_, _, detail)] = report(cofactor_release, "cofactor_reactions")
+    assert UNLISTED_BUSY not in {entry["entity"] for entry in detail["cofactors"]}
+
+
+def test_a_release_without_reaction_tables_still_builds(release):
+    stats, _ = built(release)
+    assert report(release, "cofactor_reactions") == []
+    assert stats["rows"] == 10
+
+
+def test_an_unresolved_cofactor_role_leaves_the_core_list_and_says_so(release):
+    stats, _ = built(release)
+    assert "cofactors" in stats["unresolved_roots"]

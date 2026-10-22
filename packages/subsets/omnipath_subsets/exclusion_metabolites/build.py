@@ -25,6 +25,9 @@ logger = logging.getLogger(__name__)
 # here, so the size of a derived class is bounded by a term a person can read.
 ROOTS = {"ions": "CHEBI:24867", "atoms": "CHEBI:33250"}
 
+# The ChEBI role whose carriers are the derived cofactors.
+ROLE_ROOTS = {"cofactors": "CHEBI:23357"}
+
 ORIGIN = {
     "metaproviz_seed": "curated",
     "project_seed": "curated",
@@ -83,11 +86,14 @@ def _coverage(resolutions: list[resolve.Resolution]) -> list[dict]:
     return rows
 
 
-def _resolve_roots(cur) -> list[tuple[str, str, str]]:
-    """The entity behind each ChEBI root, as (class, entity, term). A root the release lacks is left out."""
+def _resolve_roots(cur, terms: dict[str, str]) -> list[tuple[str, str, str]]:
+    """The entity behind each ChEBI term, as (class, entity, term).
+
+    A term the release lacks is left out.
+    """
     wanted = [
         seeds.Seed(name, "chebi", curie, "metaproviz_seed", "roots")
-        for name, curie in ROOTS.items()
+        for name, curie in terms.items()
     ]
     return [
         (r.seed.exclusion_class, entity_id, r.seed.identifier)
@@ -139,7 +145,8 @@ def build_exclusion_metabolites(
         rows = _curated_rows(resolutions, list_version=listed.value, build_id=build_id)
         coverage = _coverage(resolutions)
 
-        roots = _resolve_roots(cur)
+        roots = _resolve_roots(cur, ROOTS)
+        role_roots = _resolve_roots(cur, ROLE_ROOTS)
 
         cur.execute("TRUNCATE exclusion_metabolite, exclusion_metabolite_report")
         execute_values(
@@ -149,6 +156,7 @@ def build_exclusion_metabolites(
             "list_version, build_id) VALUES %s",
             rows,
         )
+        cur.execute(_sql_text("stage_edges.sql"))
         cur.execute(
             _sql_text("derive_closure.sql"),
             {
@@ -160,6 +168,18 @@ def build_exclusion_metabolites(
                 "build_id": build_id,
             },
         )
+        cur.execute(
+            _sql_text("derive_roles.sql"),
+            {
+                "role_classes": [r[0] for r in role_roots],
+                "role_entities": [r[1] for r in role_roots],
+                "role_curies": [r[2] for r in role_roots],
+                "entity_types": list(resolve.CHEMICAL_ENTITY_TYPES),
+                "list_version": listed.value,
+                "build_id": build_id,
+            },
+        )
+        cur.execute("DROP TABLE IF EXISTS exclusion_subclass_edge")
         cur.execute(_sql_text("expand_structure_key.sql"))
         cur.execute(
             _sql_text("report.sql"),
@@ -169,6 +189,10 @@ def build_exclusion_metabolites(
                 "derived_classes": sorted({r[0] for r in roots}),
             },
         )
+        # Reaction counts need the participant table, which a bare release may lack.
+        cur.execute("SELECT to_regclass('interaction_party') IS NOT NULL")
+        if cur.fetchone()[0]:
+            cur.execute(_sql_text("cofactor_reactions.sql"), {"build_id": build_id})
         cur.execute("ANALYZE exclusion_metabolite")
         cur.execute("ANALYZE exclusion_metabolite_report")
         cur.execute(
@@ -183,7 +207,9 @@ def build_exclusion_metabolites(
         "uncommitted_inputs": listed.uncommitted,
         "rows": sum(total for _, total in sizes.values()),
         "classes": {name: sizes.get(name, (0, 0))[0] for name in seeds.CLASSES},
-        "unresolved_roots": sorted(set(ROOTS) - {r[0] for r in roots}),
+        "unresolved_roots": sorted(
+            (set(ROOTS) | set(ROLE_ROOTS)) - {r[0] for r in roots} - {r[0] for r in role_roots}
+        ),
         "resolved_seeds": sum(c["resolved"] for c in coverage),
         "fallback_only_seeds": sum(c["fallback_only"] for c in coverage),
         "unresolved_seeds": sum(c["unresolved"] for c in coverage),
