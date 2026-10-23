@@ -25,8 +25,10 @@ logger = logging.getLogger(__name__)
 # here, so the size of a derived class is bounded by a term a person can read.
 ROOTS = {"ions": "CHEBI:24867", "atoms": "CHEBI:33250"}
 
-# The ChEBI role whose carriers are the derived cofactors.
-ROLE_ROOTS = {"cofactors": "CHEBI:23357"}
+# The ChEBI role whose carriers are the derived extended cofactors. The class
+# `cofactors` is the reviewed core and its variants; the role adds to it only in
+# `cofactors_extended`, so a consumer can leave the role-derived layer out.
+ROLE_ROOTS = {"cofactors_extended": "CHEBI:23357"}
 
 ORIGIN = {
     "metaproviz_seed": "curated",

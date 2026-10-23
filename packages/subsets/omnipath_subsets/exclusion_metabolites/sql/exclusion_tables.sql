@@ -14,7 +14,8 @@ CREATE TABLE IF NOT EXISTS exclusion_metabolite (
   entity_id         uuid NOT NULL,
   exclusion_class   text NOT NULL
     CONSTRAINT exclusion_metabolite_class_check
-    CHECK (exclusion_class IN ('ions', 'atoms', 'small_molecules', 'xenobiotics', 'cofactors')),
+    CHECK (exclusion_class IN ('ions', 'atoms', 'small_molecules', 'xenobiotics', 'cofactors',
+            'cofactors_extended')),
   assignment_source text NOT NULL
     CONSTRAINT exclusion_metabolite_source_check
     CHECK (assignment_source IN
@@ -47,6 +48,20 @@ CREATE TABLE IF NOT EXISTS exclusion_metabolite (
     CHECK ((origin = 'curated') =
            (assignment_source IN ('metaproviz_seed', 'project_seed', 'override_add')))
 );
+
+-- A table made before `cofactors_extended` existed carries the narrower check.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_constraint
+             WHERE conrelid = 'exclusion_metabolite'::regclass
+               AND conname = 'exclusion_metabolite_class_check'
+               AND pg_get_constraintdef(oid) NOT LIKE '%cofactors_extended%') THEN
+    ALTER TABLE exclusion_metabolite DROP CONSTRAINT exclusion_metabolite_class_check;
+    ALTER TABLE exclusion_metabolite ADD CONSTRAINT exclusion_metabolite_class_check
+      CHECK (exclusion_class IN ('ions', 'atoms', 'small_molecules', 'xenobiotics', 'cofactors',
+                                 'cofactors_extended'));
+  END IF;
+END $$;
 
 -- The access path of the route's anti-join: one class at a time, by entity.
 CREATE INDEX IF NOT EXISTS exclusion_metabolite_class_entity_idx

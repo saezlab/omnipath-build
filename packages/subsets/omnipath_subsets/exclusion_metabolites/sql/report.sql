@@ -37,7 +37,7 @@ SELECT 'class_size',
          ), '{}'::jsonb)
        ),
        %(build_id)s
-FROM unnest(ARRAY['ions', 'atoms', 'small_molecules', 'xenobiotics', 'cofactors']) AS c(cls)
+FROM unnest(ARRAY['ions', 'atoms', 'small_molecules', 'xenobiotics', 'cofactors', 'cofactors_extended']) AS c(cls)
 LEFT JOIN exclusion_metabolite x ON x.exclusion_class = c.cls
 GROUP BY c.cls;
 
@@ -159,7 +159,7 @@ SELECT 'no_key',
          'truncated', count(u.entity_id) > 1000
        ),
        %(build_id)s
-FROM unnest(ARRAY['ions', 'atoms', 'small_molecules', 'xenobiotics', 'cofactors']) AS c(cls)
+FROM unnest(ARRAY['ions', 'atoms', 'small_molecules', 'xenobiotics', 'cofactors', 'cofactors_extended']) AS c(cls)
 LEFT JOIN numbered u ON u.exclusion_class = c.cls
 GROUP BY c.cls;
 

@@ -23,7 +23,7 @@ METAPROVIZ_FILE = "metaproviz_seed.yaml"
 COFACTOR_FILE = "project_cofactors.yaml"
 OVERRIDE_FILE = "overrides.yaml"
 
-CLASSES = ("ions", "atoms", "small_molecules", "xenobiotics", "cofactors")
+CLASSES = ("ions", "atoms", "small_molecules", "xenobiotics", "cofactors", "cofactors_extended")
 
 # The chemical namespaces the release carries as identifier types.
 NAMESPACES = (

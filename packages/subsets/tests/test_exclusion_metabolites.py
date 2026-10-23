@@ -11,7 +11,7 @@ import pytest
 
 from omnipath_subsets.exclusion_metabolites import build, resolve, seeds, version
 
-CLASSES = ("ions", "atoms", "small_molecules", "xenobiotics", "cofactors")
+CLASSES = ("ions", "atoms", "small_molecules", "xenobiotics", "cofactors", "cofactors_extended")
 SOURCES = ("metaproviz_seed", "project_seed", "override_add", "chebi_hierarchy", "chebi_role")
 
 
@@ -873,7 +873,7 @@ def test_a_cycle_in_the_hierarchy_stops_at_the_depth_guard(hierarchy):
 
 def test_an_unresolved_root_derives_nothing_and_says_so(release):
     stats, cur = built(release)
-    assert stats["unresolved_roots"] == ["atoms", "cofactors", "ions"]
+    assert stats["unresolved_roots"] == ["atoms", "cofactors_extended", "ions"]
     cur.execute("SELECT count(*) FROM exclusion_metabolite WHERE origin = 'derived'")
     assert cur.fetchone()[0] == 0
 
@@ -1059,14 +1059,26 @@ def cofactor_release(release):
     return release
 
 
-def cofactor_rows(release, where="true"):
-    return table_rows(release, f"exclusion_class = 'cofactors' AND {where}")
+def cofactor_rows(release, where="true", klass="cofactors"):
+    return table_rows(release, f"exclusion_class = '{klass}' AND {where}")
 
 
 def test_a_chemical_with_the_cofactor_role_or_a_sub_role_is_derived(cofactor_release):
     built(cofactor_release)
-    derived = {r[1] for r in cofactor_rows(cofactor_release, "assignment_source = 'chebi_role'")}
+    derived = {
+        r[1]
+        for r in cofactor_rows(
+            cofactor_release, "assignment_source = 'chebi_role'", "cofactors_extended"
+        )
+    }
     assert derived == {NAMED[n][0] for n in CARRIES_ROLE + CARRIES_SUBROLE}
+
+
+def test_the_role_fills_only_the_extended_class(cofactor_release):
+    built(cofactor_release)
+    assert cofactor_rows(cofactor_release, "assignment_source = 'chebi_role'") == []
+    others = {r[2] for r in cofactor_rows(cofactor_release, klass="cofactors_extended")}
+    assert others == {"chebi_role"}
 
 
 def test_derived_cofactor_rows_say_where_they_came_from(cofactor_release):
@@ -1087,9 +1099,10 @@ def test_a_chemical_with_another_role_and_the_role_term_itself_are_not_cofactors
     cofactor_release,
 ):
     built(cofactor_release)
-    listed = {r[1] for r in cofactor_rows(cofactor_release)}
-    assert INHIBITOR not in listed
-    assert COFACTOR_ROLE not in listed and COFACTOR_SUBROLE not in listed
+    for klass in ("cofactors", "cofactors_extended"):
+        listed = {r[1] for r in cofactor_rows(cofactor_release, klass=klass)}
+        assert INHIBITOR not in listed
+        assert COFACTOR_ROLE not in listed and COFACTOR_SUBROLE not in listed
 
 
 def test_the_core_list_adds_what_the_role_misses(cofactor_release):
@@ -1111,17 +1124,19 @@ def test_the_eight_named_cofactors_are_in_the_class_and_each_row_says_why(cofact
     assert cur.fetchone()[0] == 0
 
 
-def test_an_entity_in_the_core_list_and_the_role_has_one_row_per_source(cofactor_release):
+def test_an_entity_in_the_core_list_and_the_role_is_in_both_classes(cofactor_release):
     stats, cur = built(cofactor_release)
-    rows = cofactor_rows(cofactor_release, f"entity_id = '{NAMED['ATP'][0]}'")
-    assert [(r[2], r[3]) for r in rows] == [("chebi_role", "derived"), ("project_seed", "curated")]
-    cur.execute(
-        "SELECT count(*), count(DISTINCT entity_id) FROM exclusion_metabolite "
-        "WHERE exclusion_class = 'cofactors'"
-    )
-    rows_total, entities = cur.fetchone()
-    assert rows_total > entities
-    assert stats["classes"]["cofactors"] == entities
+    atp = f"entity_id = '{NAMED['ATP'][0]}'"
+    core = cofactor_rows(cofactor_release, atp)
+    extended = cofactor_rows(cofactor_release, atp, "cofactors_extended")
+    assert [(r[2], r[3]) for r in core] == [("project_seed", "curated")]
+    assert [(r[2], r[3]) for r in extended] == [("chebi_role", "derived")]
+    for klass in ("cofactors", "cofactors_extended"):
+        cur.execute(
+            "SELECT count(DISTINCT entity_id) FROM exclusion_metabolite WHERE exclusion_class = %s",
+            [klass],
+        )
+        assert stats["classes"][klass] == cur.fetchone()[0]
 
 
 def test_reaction_counts_are_reported_per_cofactor_as_a_review_aid(cofactor_release):
@@ -1148,7 +1163,7 @@ def test_a_release_without_reaction_tables_still_builds(release):
 
 def test_an_unresolved_cofactor_role_leaves_the_core_list_and_says_so(release):
     stats, _ = built(release)
-    assert "cofactors" in stats["unresolved_roots"]
+    assert "cofactors_extended" in stats["unresolved_roots"]
 
 
 # ---------------------------------------------------------------------------

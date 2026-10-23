@@ -50,7 +50,7 @@ skip products already committed for the loaded monthly release.
 ## Products
 
 - **Exclusion metabolites:** the chemical entities that mass spectrometry does not
-  measure (ions, atoms, small molecules, xenobiotics and cofactors), in classes.
+  measure (ions, atoms, small molecules, xenobiotics, cofactors and extended cofactors), in classes.
   MetSigDB and COSMOS read it. See [Exclusion metabolites](#exclusion-metabolites).
 - **MetSigDB:** metabolite memberships in Reactome, WikiPathways, KEGG, MACdb
   and ClassyFire sets, read from the normalized entity, evidence and ontology tables.
@@ -89,7 +89,8 @@ make rebuild-subsets POSTGRES_SCHEMA=release_2026_09 SUBSET_PRODUCTS=exclusion_m
 | `ions` | The MetaProViz seeds, and every ChEBI `subclass_of` descendant of `CHEBI:24867`. |
 | `atoms` | The MetaProViz seeds, and every ChEBI descendant of `CHEBI:33250`. |
 | `small_molecules` | The MetaProViz KEGG seeds. Nothing derives them. |
-| `cofactors` | Chemicals with the ChEBI cofactor role (`CHEBI:23357`), and the core list. |
+| `cofactors` | The core list and its structure-key variants. Nothing derives them. |
+| `cofactors_extended` | Chemicals with the ChEBI cofactor role (`CHEBI:23357`) and their variants. It adds to `cofactors`, so leave out both for the whole set. |
 | `xenobiotics` | Valid and empty until a curator adds a member. |
 
 A variant of a listed member shares its structure key. It can be a charge,
@@ -113,8 +114,8 @@ add:  [{class: ions, namespace: chebi, id: "CHEBI:29101", note: why it belongs}]
 veto: [{class: cofactors, namespace: chebi, id: "CHEBI:15422", note: why it does not}]
 ```
 
-The classes are `ions`, `atoms`, `small_molecules`, `xenobiotics` and
-`cofactors`.
+The classes are `ions`, `atoms`, `small_molecules`, `xenobiotics`,
+`cofactors` and `cofactors_extended`.
 
 The namespaces are `chebi`, `kegg`, `hmdb`, `pubchem`, `lipidmaps`,
 `swisslipids`, `chembl` and `drugbank`.
