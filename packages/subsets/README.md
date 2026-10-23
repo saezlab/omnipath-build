@@ -72,11 +72,11 @@ subset implementations and their verification command have been removed.
 
 ## Exclusion metabolites
 
-The product publishes two tables in the release schema: `exclusion_metabolite`
-(one row for each entity, class and source of the assignment) and
-`exclusion_metabolite_report` (what the list covers and what it does not). It
-reads one loaded release, resolves no identifier and downloads nothing. It
-runs first, and it rebuilds alone:
+The product publishes two tables in the release schema. `exclusion_metabolite`
+holds one row for each entity, class and source of the assignment.
+`exclusion_metabolite_report` says what the list covers and what it does not. It
+reads one loaded release. It resolves no identifier and downloads nothing. It
+runs first, and you can rebuild it alone:
 
 ```sh
 make rebuild-subsets POSTGRES_SCHEMA=release_2026_09 SUBSET_PRODUCTS=exclusion_metabolites
@@ -84,7 +84,7 @@ make rebuild-subsets POSTGRES_SCHEMA=release_2026_09 SUBSET_PRODUCTS=exclusion_m
 
 ### The classes
 
-| Class | How its members are found |
+| Class | Where its members come from |
 |---|---|
 | `ions` | The MetaProViz seeds, and every ChEBI `subclass_of` descendant of `CHEBI:24867`. |
 | `atoms` | The MetaProViz seeds, and every ChEBI descendant of `CHEBI:33250`. |
@@ -92,38 +92,43 @@ make rebuild-subsets POSTGRES_SCHEMA=release_2026_09 SUBSET_PRODUCTS=exclusion_m
 | `cofactors` | Chemicals with the ChEBI cofactor role (`CHEBI:23357`), and the core list. |
 | `xenobiotics` | Valid and empty until a curator adds a member. |
 
-A variant of a listed member (a charge, tautomer or stereo form that shares its
-structure key) is listed in the member's classes as a row of its own. Its
-`match_kind` is `structure_key` and `via_entity_id` names the member. An entity
-that matched in its own right gets no such row.
+A variant of a listed member shares its structure key. It can be a charge,
+tautomer or stereo form. The build lists it in the member's classes as a row of
+its own. Its `match_kind` is `structure_key`, and `via_entity_id` names the
+member. An entity that matched in its own right gets no such row.
 
 ### The three files you edit
 
-They are in `omnipath_subsets/exclusion_metabolites/seed/`. Edit one, commit it
-and rebuild the product. No code changes.
+The files are in `omnipath_subsets/exclusion_metabolites/seed/`. Edit one,
+commit it and rebuild the product. No code changes.
 
-- `metaproviz_seed.yaml`: the MetaProViz lists, vendored with their commit and
-  licence. Change it only to take a newer MetaProViz version.
-- `project_cofactors.yaml`: the reviewed core of cofactors. One line for each
-  member: `{id: "CHEBI:16761", name: ADP}`. The name is for the reader and is not
-  matched. Add a line when the role misses a cofactor.
-- `overrides.yaml`: your changes, each with a reason.
+- `metaproviz_seed.yaml` holds the MetaProViz lists and their license. Change it
+  only for a newer MetaProViz version.
+- `project_cofactors.yaml` holds the reviewed core of cofactors. Add a line when
+  the role misses one: `{id: "CHEBI:16761", name: ADP}`. The name is for the reader.
+- `overrides.yaml` holds your changes. Give each one a reason.
 
 ```yaml
 add:  [{class: ions, namespace: chebi, id: "CHEBI:29101", note: why it belongs}]
 veto: [{class: cofactors, namespace: chebi, id: "CHEBI:15422", note: why it does not}]
 ```
 
-Classes are `ions`, `atoms`, `small_molecules`, `xenobiotics` and `cofactors`.
-Namespaces are `chebi`, `kegg`, `hmdb`, `pubchem`, `lipidmaps`, `swisslipids`,
-`chembl` and `drugbank`. A ChEBI id may be written with or without `CHEBI:`, and
-an HMDB id in either width. A malformed file stops the build and says why.
+The classes are `ions`, `atoms`, `small_molecules`, `xenobiotics` and
+`cofactors`.
 
-**A veto wins.** It removes the entity from that class, whatever put it there:
-a seed, the ontology, an addition or a structure-key match. A vetoed member does
-not pull in its variants, and a vetoed variant stays out. Other classes are not
-affected. Each veto appears in the report with the rows it removed, and a veto
-that removed nothing appears too, because it may be stale.
+The namespaces are `chebi`, `kegg`, `hmdb`, `pubchem`, `lipidmaps`,
+`swisslipids`, `chembl` and `drugbank`.
+
+Write a ChEBI id with or without `CHEBI:`. Write an HMDB id in either width. A malformed file stops the build and
+says why.
+
+**A veto wins.** It removes the entity from that class, whatever put it there.
+That can be a seed, the ontology, an addition or a structure-key match. A
+vetoed member does not pull in its variants, and a vetoed variant stays out.
+
+A veto leaves other classes alone. The report shows each veto with the rows it
+removed. It shows a veto that removed nothing too, because that veto may be
+stale.
 
 ### Read the list
 
@@ -137,14 +142,14 @@ SELECT kind, exclusion_class, namespace, resolved, fallback_only, unresolved
 FROM exclusion_metabolite_report ORDER BY kind, exclusion_class;
 ```
 
-`origin` is `curated` for the three seed files and `derived` for the ontology. An
-entity with both has two rows. In the report, `seed_coverage` counts the seeds that
-resolved and lists the ones that did not. `shared_key` lists the variants a key
-pulled in. `veto_applied` lists your vetoes.
+`origin` is `curated` for the three seed files and `derived` for the ontology.
+An entity with both has two rows. In the report, `seed_coverage` counts the seeds
+that resolved and names the ones that did not. `shared_key` names the variants a
+key pulled in. `veto_applied` names your vetoes.
 
 Every row carries `list_version`, the commit of the three files. A build from
-uncommitted edits is stamped `uncommitted:<sha256>` and the report says so, so
-commit before you build anything you intend to keep.
+uncommitted edits gets the stamp `uncommitted:<sha256>`, and the report says so.
+Commit before you build anything you intend to keep.
 
 ## Validation scope
 
