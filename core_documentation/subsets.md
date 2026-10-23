@@ -13,9 +13,16 @@ make rebuild-subsets POSTGRES_SCHEMA=release_2026_09 SUBSET_PRODUCTS=cosmos   # 
 
 | Product | What it is | Key rules |
 | --- | --- | --- |
+| **Exclusion metabolites** | Ions, atoms, small molecules, xenobiotics and cofactors that mass spectrometry does not measure | Curated seeds plus ChEBI derivation. Variants that share a structure key are listed as their own rows. A repository file adds or vetoes members. Runs first |
 | **MetSigDB** | Metabolite memberships in Reactome, WikiPathways, KEGG, MACdb and ClassyFire sets | Uses published chemical entities, including native fallbacks |
 | **Network views** | The MetaLinksDB, LIANA and Reactions preset definitions | Registers recipes, not materialized networks. Keeps qualified statement keys separate. LIANA roles need matching payload IDs; transport needs catalytic and compartment evidence |
 | **COSMOS** | Metabolite–enzyme edges from the shared reaction tables | GeneID catalysts stay GeneID. No protein is picked from a gene's UniProt aliases. Reversible reactions get both halves; unknown direction does not |
+
+> **Decision: exclusion is a read-time choice.** The exclusion table lists
+> entities; no membership row is removed. A reader leaves listed entities out
+> with an anti-join, and an unfiltered read is unchanged. COSMOS output does not
+> change either. *Why:* what counts as unmeasurable depends on the question, and
+> a removed row cannot be put back without a rebuild.
 
 > **Decision: MetSigDB uses published chemical entities.** It includes
 > native fallback identities. *Why:* the Parquets do not carry the legacy
@@ -45,6 +52,7 @@ All products share one runner (`omnipath_subsets.runner`), used by both
 
 | Product | Package |
 | --- | --- |
+| Exclusion metabolites | `packages/subsets/omnipath_subsets/exclusion_metabolites/` |
 | MetSigDB | `packages/subsets/omnipath_subsets/metsigdb/` |
 | Network views | `packages/subsets/omnipath_subsets/network_views/` |
 | COSMOS | `packages/subsets/omnipath_subsets/cosmos/` |
