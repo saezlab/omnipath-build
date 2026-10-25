@@ -63,6 +63,8 @@ def _modules():
 # The partner and predicate gates are this port's own: one chemical end let a
 # resource's annotation links of its chemicals into the dataset (2026-10-19).
 _PORT_ONLY_FILTERS = {"partner_types", "predicates"}
+# Resources this port adds to a preset; main has no module for them (2026-10-25).
+_PORT_ONLY_SOURCES = {"metachatdb"}
 
 
 def _normalize(value):
@@ -71,6 +73,9 @@ def _normalize(value):
         result = {}
         for key, item in value.items():
             if key in _PORT_ONLY_FILTERS:
+                continue
+            if key in ("included_sources", "resources") and isinstance(item, (tuple, list)):
+                result[key] = [s for s in item if s not in _PORT_ONLY_SOURCES]
                 continue
             if key == "entity_types" and item in (
                 ["Chemical:OM:0037"],

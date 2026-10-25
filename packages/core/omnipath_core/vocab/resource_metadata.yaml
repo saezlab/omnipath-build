@@ -1713,6 +1713,25 @@
     },
     "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/membranome.py"
   },
+  "metachatdb": {
+    "display_name": "MetaChatDB",
+    "description": "Literature-supported metabolite–sensor pairs: receptors, nuclear receptors and transporters.",
+    "tags": [
+      "cell_cell_communication",
+      "metabolism",
+      "compound_target_interactions",
+      "molecular_transport",
+      "literature_curated"
+    ],
+    "website": "https://github.com/SonghaoLuo/MetaChat",
+    "license": "MIT License - permissive free software license",
+    "license_url": "https://opensource.org/licenses/MIT",
+    "license_use": {
+      "academic": "unknown",
+      "commercial": "unknown"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/metachatdb.py"
+  },
   "metatlas": {
     "display_name": "Metabolic Atlas",
     "description": "Human-GEM chemicals and metabolic reactions with stoichiometry and gene associations.",
@@ -2331,6 +2350,24 @@
       "commercial": "not_allowed"
     },
     "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/phosphosite.py"
+  },
+  "pmidb": {
+    "display_name": "PMI-DB",
+    "description": "Protein–metabolite interactions measured by chemoproteomics in E. coli, yeast, human and mouse.",
+    "tags": [
+      "metabolism",
+      "physical_interactions",
+      "compound_target_interactions",
+      "experimental"
+    ],
+    "website": "http://easybioai.com/PMIDB/",
+    "license": "License not specified or unclear",
+    "license_url": null,
+    "license_use": {
+      "academic": "unknown",
+      "commercial": "unknown"
+    },
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/pmidb.py"
   },
   "progeny": {
     "display_name": "PROGENy",

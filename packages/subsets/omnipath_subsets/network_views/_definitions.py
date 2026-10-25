@@ -40,7 +40,7 @@ from omnipath_subsets.network_views._framework import NetworkDefinition
 # resolve it to nothing, and an empty contribution reads exactly like a
 # resource that failed to load. `labels` carries the published name for output.
 #
-# **One of the twelve contributes nothing, and it is worth stating so it does
+# **One of the thirteen contributes nothing, and it is worth stating so it does
 # not read as a defect.** BindingDB is excluded by the recipe: its assertions
 # stay in the record for any other query to find, and no row of this dataset
 # counts them. ChEMBL's mechanism-of-action pairs do contribute, and no
@@ -64,6 +64,9 @@ _CURATED_SOURCES = (
     "tcdb",
     "cellphonedb",
     "neuronchat",
+    # Not in the original MetalinksDB: requested 2026-10-25. Only the pairs
+    # MetaChatDB itself reports load, so it adds no copy of MRClinksDB's.
+    "metachatdb",
 )
 
 # The classes the transport component scopes to. Named rather than left open
