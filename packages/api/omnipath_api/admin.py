@@ -20,7 +20,7 @@ import pyarrow.parquet as pq
 from omnipath_api.jobs.build_ops import BuildOps, BuildUnavailable, _import_build
 from omnipath_api.jobs.store import JobStore
 from omnipath_api.jobs.logs import read_log_tail
-from omnipath_engine.store.inventory import ReleaseStore
+from omnipath_api.queries.store.inventory import ReleaseStore
 
 from omnipath_api.jobs.runner import (
     Job,

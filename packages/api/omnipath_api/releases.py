@@ -10,7 +10,7 @@ import argparse
 import json
 from pathlib import Path
 
-from omnipath_engine.store.inventory import (
+from omnipath_api.queries.store.inventory import (
     FILES,
     ReleaseStore,
     safe_name,

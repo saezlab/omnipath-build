@@ -13,8 +13,8 @@ from fastapi.responses import StreamingResponse
 from omnipath_api.admin import AdminService
 from omnipath_api.jobs.build_ops import BuildUnavailable
 from omnipath_api.models import AdminJobRequest, AdminJobResponse, AdminJobsResponse
-from omnipath_engine.store.inventory import ReleaseStore
-from omnipath_engine.store.query_pool import QueryCapacityError
+from omnipath_api.queries.store.inventory import ReleaseStore
+from omnipath_api.queries.store.query_pool import QueryCapacityError
 
 
 def require_admin(request: Request) -> None:
@@ -56,7 +56,7 @@ def register_admin_routes(app: Any) -> None:
     def publish_release(request: Request, payload: dict[str, Any]) -> dict[str, Any]:
         admin = _admin(request)
         try:
-            with request.app.state.engine_lock:
+            with request.app.state.queries_lock:
                 return ReleaseStore(admin.data_root).publish(payload)
         except FileExistsError as exc:
             raise HTTPException(status_code=409, detail="OmniPath release already exists") from exc
@@ -118,14 +118,14 @@ def register_admin_routes(app: Any) -> None:
     ) -> dict[str, Any]:
         try:
             admin = _admin(request)
-            engine = getattr(request.app.state, "engine", None)
-            scope = engine.query_scope() if hasattr(engine, "query_scope") else nullcontext()
-            with request.app.state.engine_lock, scope:
+            queries = getattr(request.app.state, "queries", None)
+            scope = queries.query_scope() if hasattr(queries, "query_scope") else nullcontext()
+            with request.app.state.queries_lock, scope:
                 res = admin.delete_resource_version(resource, version)
-                if engine is not None and hasattr(engine, "reload_resources"):
-                    engine.reload_resources()
-                elif engine is not None and hasattr(engine, "discover_resources"):
-                    engine.discover_resources()
+                if queries is not None and hasattr(queries, "reload_resources"):
+                    queries.reload_resources()
+                elif queries is not None and hasattr(queries, "discover_resources"):
+                    queries.discover_resources()
             return res
         except QueryCapacityError as exc:
             raise HTTPException(

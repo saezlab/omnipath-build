@@ -14,7 +14,6 @@ RUN uv export --frozen --package omnipath-api --extra build --no-dev --no-emit-w
     && uv build --package omnipath-core --wheel --build-constraints deploy/build-constraints.txt --out-dir /wheels \
     && uv build --package omnipath-resolver --wheel --build-constraints deploy/build-constraints.txt --out-dir /wheels \
     && uv build --package omnipath-build --wheel --build-constraints deploy/build-constraints.txt --out-dir /wheels \
-    && uv build --package omnipath-engine --wheel --build-constraints deploy/build-constraints.txt --out-dir /wheels \
     && uv build --package omnipath-api --wheel --build-constraints deploy/build-constraints.txt --out-dir /wheels \
     && uv build pypath --wheel --build-constraints deploy/build-constraints.txt --out-dir /wheels
 

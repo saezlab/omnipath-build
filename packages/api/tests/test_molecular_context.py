@@ -2,7 +2,7 @@ import json
 import io
 import pyarrow.parquet as pq
 import pytest
-from omnipath_engine.engine import ParquetServingEngine
+from omnipath_api.queries.parquet import ParquetQueries
 from omnipath_core.fixtures import nested_rows, rewrite_resource, write_resource
 
 
@@ -75,7 +75,7 @@ def molecular_engine(tmp_path):
             ],
         )
         write_resource(folder, entities, [relation])
-    return ParquetServingEngine(tmp_path)
+    return ParquetQueries(tmp_path)
 
 
 def test_typed_identity_and_gene_group(molecular_engine):
@@ -168,7 +168,7 @@ def test_http_molecular_contract(molecular_engine):
     from fastapi.testclient import TestClient
     from omnipath_api.server import create_app
 
-    client = TestClient(create_app(engine=molecular_engine))
+    client = TestClient(create_app(queries=molecular_engine))
     response = client.get("/relations/relation/evidence")
     assert response.status_code == 200
     assert len(response.json()["evidence"]) == 6
@@ -428,7 +428,7 @@ def test_non_product_source_types_keep_native_context(
         len(row["evidence"]) == 1 and row["evidence"][0]["subject_molecular_form"] is None
         for row in context["relations"]
     )
-    with TestClient(create_app(engine=engine)) as client:
+    with TestClient(create_app(queries=engine)) as client:
         response = client.get(f"/entities/{key}/molecular-context")
         assert response.status_code == 200
         assert response.json()["relationsTotal"] == 2
@@ -550,7 +550,7 @@ def test_shared_cursor_pages_both_streams_to_completion(molecular_engine, relati
     rewrite_resource(other_folder / "entity.parquet", entities=other_entities)
     rewrite_resource(other_folder / "relation.parquet", relations=[])
     engine.reload_resources()
-    with TestClient(create_app(engine=engine)) as client:
+    with TestClient(create_app(queries=engine)) as client:
         endpoint = "/entities/gene:entrez:1/molecular-context"
         first = client.get(endpoint).json()
         assert len(first["standaloneEvidence"]) == 20
@@ -688,7 +688,7 @@ def test_actual_writer_native_source_and_exact_product_views(
         assert entities[main_key]["identifier"] == identifier.split(".")[0]
     else:
         assert main_key == product_key
-    engine = ParquetServingEngine(tmp_path)
+    engine = ParquetQueries(tmp_path)
     source_context = engine.get_molecular_context(main_key)
     assert source_context["filters"] == {"entity_pks": [main_key]}
     assert source_context["relationsTotal"] == 1
@@ -700,7 +700,7 @@ def test_actual_writer_native_source_and_exact_product_views(
     assert product_context["relationsTotal"] == 1
     assert len(product_context["standaloneEvidence"]) == 1
     assert product_context["standaloneEvidence"][0]["entityPk"] == main_key
-    with TestClient(create_app(engine=engine)) as client:
+    with TestClient(create_app(queries=engine)) as client:
         assert client.get(f"/entities/{main_key}/molecular-context").json()["filters"] == {
             "entity_pks": [main_key]
         }
@@ -777,7 +777,7 @@ def test_isoform_selection_requires_explicit_product_view(molecular_engine):
     engine = molecular_engine
     with pytest.raises(ValueError, match="Isoform selection requires product view"):
         engine.get_molecular_context("gene:entrez:1", isoform_identifier="uniprot:P00001-2")
-    with TestClient(create_app(engine=engine)) as client:
+    with TestClient(create_app(queries=engine)) as client:
         endpoint = f"/entities/{'3' * 64}/molecular-context"
         assert (
             client.get(endpoint, params={"isoform_identifier": "uniprot:P00001-2"}).status_code
@@ -848,7 +848,7 @@ def test_actual_writer_native_product_with_gene_is_labeled_before_navigation(
         writer.close()
     finally:
         resolver.close()
-    engine = ParquetServingEngine(tmp_path)
+    engine = ParquetQueries(tmp_path)
     context = engine.get_molecular_context("gene:entrez:7157")
     assert context["relationsTotal"] == int(include_relation)
     assert context["catalogueProducts"] == []

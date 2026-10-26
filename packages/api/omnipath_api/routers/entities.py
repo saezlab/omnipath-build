@@ -249,7 +249,7 @@ def get_entity(
     )
     if not result:
         raise HTTPException(status_code=404, detail="Entity not found")
-    from omnipath_engine.entity_details import page_details
+    from omnipath_api.queries.entity_details import page_details
 
     result["entity"] = page_details(result["entity"], detail_limit, detail_offset, detail_field)
     return result

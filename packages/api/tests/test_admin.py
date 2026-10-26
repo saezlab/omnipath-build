@@ -15,7 +15,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from fastapi.testclient import TestClient
 
-from omnipath_engine.engine import ParquetServingEngine
+from omnipath_api.queries.parquet import ParquetQueries
 from omnipath_api.server import create_app
 from omnipath_api.jobs.worker import run_worker
 
@@ -165,8 +165,8 @@ class TestAdminAPI(unittest.TestCase):
         self.client = self._client(self.ops)
 
     def _client(self, ops, *, start_worker=True):
-        engine = ParquetServingEngine(data_root=self.data_root)
-        client = TestClient(create_app(engine=engine, admin_ops=ops))
+        engine = ParquetQueries(data_root=self.data_root)
+        client = TestClient(create_app(queries=engine, admin_ops=ops))
         client.headers["x-admin-secret"] = "test-secret"
         self.addCleanup(engine.close)
         if start_worker:
@@ -361,8 +361,8 @@ class TestAdminAPI(unittest.TestCase):
         os.environ.pop("OMNIPATH_ADMIN_PASSWORD", None)
         os.environ["OMNIPATH_ADMIN_SECRET"] = "s3cret"
         try:
-            engine = ParquetServingEngine(data_root=self.data_root)
-            client = TestClient(create_app(engine=engine, admin_ops=self.ops))
+            engine = ParquetQueries(data_root=self.data_root)
+            client = TestClient(create_app(queries=engine, admin_ops=self.ops))
             denied = client.get("/admin/status")
             self.assertEqual(denied.status_code, 401)
             allowed = client.get("/admin/status", headers={"x-admin-secret": "s3cret"})
@@ -383,8 +383,8 @@ class TestAdminAPI(unittest.TestCase):
         os.environ.pop("OMNIPATH_ADMIN_SECRET", None)
         os.environ["OMNIPATH_ADMIN_PASSWORD"] = "hunter2"
         try:
-            engine = ParquetServingEngine(data_root=self.data_root)
-            client = TestClient(create_app(engine=engine, admin_ops=self.ops))
+            engine = ParquetQueries(data_root=self.data_root)
+            client = TestClient(create_app(queries=engine, admin_ops=self.ops))
             self.assertEqual(client.get("/admin/status").status_code, 401)
             self.assertEqual(
                 client.get("/admin/status", headers={"x-admin-secret": "hunter2"}).status_code,

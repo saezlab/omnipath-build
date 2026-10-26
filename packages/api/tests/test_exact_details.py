@@ -1,5 +1,5 @@
 from fastapi.testclient import TestClient
-from omnipath_engine.engine import ParquetServingEngine
+from omnipath_api.queries.parquet import ParquetQueries
 from omnipath_api.server import create_app
 from omnipath_core.fixtures import rewrite_resource, write_resource
 
@@ -26,7 +26,7 @@ def test_details_never_resolve_accessions_aliases_or_text(tmp_path, monkeypatch)
         ]
     ]
     write_resource(folder, rows, [])
-    engine = ParquetServingEngine(data_root=tmp_path)
+    engine = ParquetQueries(data_root=tmp_path)
 
     def unexpected_search(*args, **kwargs):
         raise AssertionError("Details must never invoke identifier resolution or search")
@@ -34,7 +34,7 @@ def test_details_never_resolve_accessions_aliases_or_text(tmp_path, monkeypatch)
     monkeypatch.setattr(engine, "get_entities_by_pks", unexpected_search)
     monkeypatch.setattr(engine, "resolve_entity_keys", unexpected_search)
     monkeypatch.setattr(engine, "search_entities_api", unexpected_search)
-    client = TestClient(create_app(engine=engine))
+    client = TestClient(create_app(queries=engine))
     for key, label in [("complex-key", "BCL6-HDAC4"), ("trait-key", "Acinar carcinoma")]:
         response = client.get("/entities/" + key)
         assert response.status_code == 200
@@ -89,8 +89,8 @@ def test_detail_composition_uses_exact_endpoint_keys_and_keeps_quantities(tmp_pa
         ],
     )
     rewrite_resource(folder / "relation.parquet", relations=[relation])
-    engine = ParquetServingEngine(data_root=tmp_path)
-    detail = TestClient(create_app(engine=engine)).get("/entities/food-key").json()
+    engine = ParquetQueries(data_root=tmp_path)
+    detail = TestClient(create_app(queries=engine)).get("/entities/food-key").json()
     assert detail["relationshipsTotal"] == 1
     row = detail["relationships"][0]
     assert row["subjectEntity"]["entityPk"] == "food-key"
@@ -101,7 +101,7 @@ def test_detail_composition_uses_exact_endpoint_keys_and_keeps_quantities(tmp_pa
 
 
 def test_integrated_entities_retain_distinct_typed_quantities(tmp_path):
-    engine = ParquetServingEngine(data_root=tmp_path)
+    engine = ParquetQueries(data_root=tmp_path)
     annotations = [
         dict(
             term="has_quantitative_value",

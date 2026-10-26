@@ -24,7 +24,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from omnipath_api.admin import AdminService, register_admin_routes
 from omnipath_api.settings import Settings
-from omnipath_engine.engine import ParquetServingEngine
+from omnipath_api.queries.parquet import ParquetQueries
 from omnipath_api.routers.health import router as health_router
 from omnipath_api.routers.common import EngineJSONResponse
 from omnipath_api.models import (
@@ -74,23 +74,23 @@ class StripPublicPrefixMiddleware:
 
 
 def create_app(
-    engine: ParquetServingEngine | None = None,
+    queries: ParquetQueries | None = None,
     data_root: str | Path | None = None,
     admin_ops: Any | None = None,
     settings: Settings | None = None,
 ) -> FastAPI:
     settings = settings or Settings()
-    serving_engine = engine or ParquetServingEngine(data_root=data_root or settings.data_root)
+    serving_queries = queries or ParquetQueries(data_root=data_root or settings.data_root)
 
     @asynccontextmanager
     async def lifespan(_app):
         if settings.warm_cache:
             from omnipath_api.warm import start
 
-            start(serving_engine)
+            start(serving_queries)
         yield
-        if hasattr(serving_engine, "close"):
-            serving_engine.close()
+        if hasattr(serving_queries, "close"):
+            serving_queries.close()
 
     app = FastAPI(
         title="OmniPath Parquet API",
@@ -109,14 +109,14 @@ def create_app(
         openapi_tags=OPENAPI_TAGS,
         responses={500: {"model": ErrorResponse}},
     )
-    serving_engine.read_only = settings.read_only
+    serving_queries.read_only = settings.read_only
     app.state.settings = settings
-    app.state.engine = serving_engine
-    app.state.engine_lock = threading.Lock()
+    app.state.queries = serving_queries
+    app.state.queries_lock = threading.Lock()
     from omnipath_api.status import RequestTimes
 
     app.state.request_times = RequestTimes()
-    app.state.admin = AdminService(data_root=serving_engine.data_root, ops=admin_ops)
+    app.state.admin = AdminService(data_root=serving_queries.data_root, ops=admin_ops)
     register_admin_routes(app)
 
     app.add_middleware(

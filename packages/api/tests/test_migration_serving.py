@@ -11,7 +11,7 @@ import pyarrow.parquet as pq
 import pytest
 from omnipath_core import SERVING_SCHEMA_VERSION
 
-from omnipath_engine.engine import ParquetServingEngine
+from omnipath_api.queries.parquet import ParquetQueries
 from omnipath_api.releases import ReleaseStore
 from omnipath_api.server import create_app
 from omnipath_api.settings import Settings
@@ -124,8 +124,8 @@ def test_migrated_schema_search_details_evidence_filters_and_exports(tmp_path):
         assert pq.read_schema(path).equals(schema)
         before[filename] = hashlib.sha256(path.read_bytes()).hexdigest()
         assert before[filename] == manifest["files"][filename]["sha256"]
-    engine = ParquetServingEngine(tmp_path)
-    with TestClient(create_app(engine=engine, settings=Settings(read_only=True))) as client:
+    engine = ParquetQueries(tmp_path)
+    with TestClient(create_app(queries=engine, settings=Settings(read_only=True))) as client:
         found = client.get("/api/entities/search", params={"q": "Q15086"})
         assert found.status_code == 200, found.text
         assert [row["entityPk"] for row in found.json()["entities"]] == [
@@ -209,8 +209,8 @@ def test_independent_resource_updates_advance_default_latest_and_keep_named_snap
     resource_version(tmp_path, source="reactome", version="3.0.0", marker="other old")
     snapshot = publish_snapshot(tmp_path, {"signor": "1.9.0", "reactome": "3.0.0"})
     pinned_text = snapshot.read_bytes()
-    engine = ParquetServingEngine(tmp_path)
-    with TestClient(create_app(engine=engine, settings=Settings(read_only=True))) as client:
+    engine = ParquetQueries(tmp_path)
+    with TestClient(create_app(queries=engine, settings=Settings(read_only=True))) as client:
         assert catalog(client) == {"signor": "1.9.0", "reactome": "3.0.0"}
         relation_key = old["relations"][0]["relation_key"]
         # Populate current caches before publishing another immutable resource version.

@@ -5,13 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "omnipath-api"
 version = "0.1.0"
-description = "REST API over the OmniPath Parquet serving engine"
+description = "REST API over the OmniPath resource Parquet files"
 authors = [{ name = "OmniPath Team" }]
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "omnipath-core>=0.1.0,<0.2.0",
-    "omnipath-engine>=0.1.0,<0.2.0",
     "duckdb>=1.5,<2",
     "pyarrow>=14.0.0",
     "fastapi>=0.115.0",
@@ -39,5 +38,4 @@ include = ["omnipath_api*"]
 
 [tool.uv.sources]
 omnipath-core = { workspace = true }
-omnipath-engine = { workspace = true }
 omnipath-build = { workspace = true }

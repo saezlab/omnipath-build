@@ -5,7 +5,7 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from omnipath_engine.engine import ParquetServingEngine
+from omnipath_api.queries.parquet import ParquetQueries
 from omnipath_api.server import create_app
 from omnipath_core.keys import entity_key
 from omnipath_core.fixtures import write_resource
@@ -105,7 +105,7 @@ def mixed_engine(tmp_path):
             for name, subject, object_ in (relations if source == "a" else [])
         ]
         write_resource(tmp_path / "resources" / source / "1", entities, relation_rows)
-    engine = ParquetServingEngine(tmp_path)
+    engine = ParquetQueries(tmp_path)
     return engine, rows
 
 
@@ -233,7 +233,7 @@ def test_auto_scope_text_resources_and_filters(mixed_engine):
 
 def test_auto_api_hydration_concrete_strategies_and_relationships(mixed_engine):
     engine, records = mixed_engine
-    with TestClient(create_app(engine=engine)) as client:
+    with TestClient(create_app(queries=engine)) as client:
         response = client.post("/entities/groups", json={"strategy": "auto", "member_limit": 1})
         assert response.status_code == 200
         groups = response.json()["groups"]
@@ -310,7 +310,7 @@ def test_warming_fills_the_cache_the_explorer_reads(mixed_engine):
     from omnipath_api.warm import warm
 
     engine, _ = mixed_engine
-    client = TestClient(create_app(engine=engine))
+    client = TestClient(create_app(queries=engine))
     warm(engine)
     engine._fetch_dicts = lambda *a, **kw: (_ for _ in ()).throw(AssertionError("not warmed"))
     # The explorer's landing page reads the curated examples.

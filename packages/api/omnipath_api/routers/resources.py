@@ -18,7 +18,7 @@ router = APIRouter()
 
 @router.get("/releases", tags=["resources"])
 def list_releases(request: Request) -> dict[str, Any]:
-    store = request.app.state.engine.releases
+    store = request.app.state.queries.releases
     return {"default": store.default(), "releases": store.list()}
 
 

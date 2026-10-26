@@ -30,7 +30,7 @@ import duckdb
 from fastapi.testclient import TestClient
 import pyarrow.parquet as pq
 
-from omnipath_engine.engine import ParquetServingEngine
+from omnipath_api.queries.parquet import ParquetQueries
 from omnipath_api.server import create_app
 from omnipath_api.settings import Settings
 from omnipath_core.molecular_forms import normalize_molecular_form
@@ -671,9 +671,9 @@ class Validator:
             folder.mkdir(parents=True)
             for path in self.folder.glob("*.parquet"):
                 (folder / path.name).symlink_to(path)
-            engine = ParquetServingEngine(isolated_root)
+            engine = ParquetQueries(isolated_root)
             with TestClient(
-                create_app(engine=engine, settings=Settings(read_only=True)),
+                create_app(queries=engine, settings=Settings(read_only=True)),
                 headers={"x-omnipath-release": "latest"},
             ) as client:
                 products = self.sql(

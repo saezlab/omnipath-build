@@ -11,7 +11,7 @@ entity resolution, PostgreSQL, subsets, decisions and glossary. Then see the
 - [Native resolution](../packages/resolver/README.md)
 - [Identity layer spec](identity-layer-spec.md)
 - [API](../packages/api/README.md)
-- [Python client](../packages/client/README.md)
+- [Python client](../packages/query/python/README.md)
 - [Web explorer](../packages/web/README.md)
 - [PostgreSQL](../packages/postgres/README.md)
 - [Parquet-to-PostgreSQL column map](postgres-parquet-column-map.md)

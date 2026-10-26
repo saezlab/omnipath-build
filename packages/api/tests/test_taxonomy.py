@@ -7,9 +7,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from omnipath_core.taxonomy import taxon_names
-from omnipath_engine.engine import ParquetServingEngine
+from omnipath_api.queries.parquet import ParquetQueries
 from omnipath_api.server import create_app
-from omnipath_engine.store.inventory import ReleaseStore
+from omnipath_api.queries.store.inventory import ReleaseStore
 from omnipath_core.fixtures import rewrite_resource
 
 
@@ -90,7 +90,7 @@ def test_release_names_entities_facets_and_cached_relations(tmp_path):
         manifests[0]["references"]["taxonomy"]["version"]
         != manifests[1]["references"]["taxonomy"]["version"]
     )
-    engine = ParquetServingEngine(tmp_path)
+    engine = ParquetQueries(tmp_path)
     # Unfiltered relation facets share cached raw counts across these releases.
     for version, name in [
         ("1", "Arabidopsis thaliana"),
@@ -108,7 +108,7 @@ def test_release_names_entities_facets_and_cached_relations(tmp_path):
                 taxon = next(f for f in facets if f["facetName"] == "taxonomy_id")
                 assert taxon["facetValue"] == "3702"
                 assert taxon["facetLabel"] == name
-    with TestClient(create_app(engine=engine)) as client:
+    with TestClient(create_app(queries=engine)) as client:
         assert (
             client.get("/entities/entity?release=1").json()["entity"]["taxonomyName"]
             == "Arabidopsis thaliana"
@@ -132,7 +132,7 @@ def test_latest_lookup_covers_new_taxa_without_changing_pinned_names(tmp_path):
     assert names.get("999") == "Arabidopsis thaliana"
     assert names.get("123") is None
     assert prepare(tmp_path) == path
-    engine = ParquetServingEngine(tmp_path)
+    engine = ParquetQueries(tmp_path)
     with engine.release_scope("latest"):
         assert engine._taxonomy_names().get("3702") == "Arabidopsis thaliana"
         first_version = engine._taxonomy_cache_version()

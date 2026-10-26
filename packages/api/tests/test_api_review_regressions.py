@@ -13,7 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from omnipath_api.admin import AdminService
-from omnipath_engine.engine import ParquetServingEngine
+from omnipath_api.queries.parquet import ParquetQueries
 from omnipath_api.jobs.runner import Job
 from omnipath_api.jobs.store import JobStore
 from omnipath_api.jobs.worker import run_worker, worker_lock
@@ -25,7 +25,7 @@ from omnipath_core.fixtures import write_resource
 
 @pytest.fixture
 def engine(tmp_path):
-    result = ParquetServingEngine(write_dataset(tmp_path))
+    result = ParquetQueries(write_dataset(tmp_path))
     yield result
     result.close()
 
@@ -81,7 +81,7 @@ def test_entity_cursor_traverses_complete_sort_order(tmp_path, query, phase):
         )
     ]
     write_resource(directory, rows, [])
-    engine = ParquetServingEngine(tmp_path)
+    engine = ParquetQueries(tmp_path)
     try:
         expected = engine.search_entities_api(query, limit=100)["entities"]
         cursor = None
@@ -103,7 +103,7 @@ def test_entity_cursor_traverses_complete_sort_order(tmp_path, query, phase):
 
 
 def test_api_rejects_malformed_filters_and_unicode_alias_paths(engine):
-    with TestClient(create_app(engine=engine)) as client:
+    with TestClient(create_app(queries=engine)) as client:
         for raw in ["{", "[]", "42", "null", '{"entity_ids":"P04637"}', '{"gene_mode":"invalid"}']:
             assert client.get("/api/entities/search", params={"filters": raw}).status_code == 422
         assert (
@@ -125,12 +125,12 @@ def test_api_rejects_malformed_filters_and_unicode_alias_paths(engine):
 
 def test_admin_is_disabled_without_secret_and_readonly_blocks_every_mutation(engine):
     client = TestClient(
-        create_app(engine=engine, settings=Settings(admin_secret="", read_only=False))
+        create_app(queries=engine, settings=Settings(admin_secret="", read_only=False))
     )
     assert client.get("/admin/status").status_code == 503
     assert client.post("/admin/jobs", json={"action": "export_hubs"}).status_code == 503
     client = TestClient(
-        create_app(engine=engine, settings=Settings(admin_secret="secret", read_only=True))
+        create_app(queries=engine, settings=Settings(admin_secret="secret", read_only=True))
     )
     assert client.get("/admin/status").status_code == 401
     client.headers["x-admin-secret"] = "secret"
@@ -167,7 +167,7 @@ def test_request_reuses_snapshot_for_multiple_engine_calls(engine, tmp_path):
     from fastapi import Request
     from omnipath_api.routers.common import _call
 
-    app = create_app(engine=engine)
+    app = create_app(queries=engine)
     request = Request(
         {
             "type": "http",
@@ -224,7 +224,7 @@ def test_ontology_scope_ambiguity_and_all_child_pages(tmp_path):
         )
     )
     write_resource(target, rows, relations)
-    engine = ParquetServingEngine(tmp_path)
+    engine = ParquetQueries(tmp_path)
     try:
         with pytest.raises(ValueError, match="Ambiguous"):
             engine.get_ontology_children("T0")

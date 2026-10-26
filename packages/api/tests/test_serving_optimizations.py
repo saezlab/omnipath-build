@@ -5,8 +5,8 @@ from threading import Event
 import pytest
 from fastapi.testclient import TestClient
 
-from omnipath_engine.engine import ParquetServingEngine
-from omnipath_engine.store.query_cache import QueryCache
+from omnipath_api.queries.parquet import ParquetQueries
+from omnipath_api.queries.store.query_cache import QueryCache
 from omnipath_api.server import create_app
 from omnipath_core.fixtures import write_resource
 
@@ -61,7 +61,7 @@ def engine(tmp_path):
             for i in range(30)
         ]
         write_resource(tmp_path / "resources" / source / "1", entities, rows)
-    return ParquetServingEngine(tmp_path)
+    return ParquetQueries(tmp_path)
 
 
 def test_live_query_policy_preserves_catalog_and_invalidates_cached_queries(engine):
@@ -80,7 +80,7 @@ def test_live_query_policy_preserves_catalog_and_invalidates_cached_queries(engi
     catalog = {item["resource_id"]: item for item in engine.list_resource_catalog()}
     assert catalog["b"]["queryable"] is False
     assert engine.get_resource_file_path("b", "entity.parquet").is_file()
-    client = TestClient(create_app(engine=engine))
+    client = TestClient(create_app(queries=engine))
     assert client.post("/entities/search", json={"resources": ["b"]}).status_code == 400
     assert any(
         item["resource_id"] == "b" and not item["queryable"]
@@ -104,7 +104,7 @@ def test_paging_search_selected_taxonomy_and_http_gzip(engine):
     assert any(r["facetValue"] == "29" for r in selected)
     absent = engine.get_scoped_relation_facets({"taxonomyLimit": 1, "taxonomyIds": ["unknown"]})
     assert any(r["facetValue"] == "unknown" for r in absent)
-    client = TestClient(create_app(engine=engine))
+    client = TestClient(create_app(queries=engine))
     response = client.post(
         "/relations/scoped-facets", json={"taxonomyLimit": 10}, headers={"Accept-Encoding": "gzip"}
     )

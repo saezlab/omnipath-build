@@ -1,7 +1,7 @@
 from fastapi.testclient import TestClient
-from omnipath_engine.engine import ParquetServingEngine
+from omnipath_api.queries.parquet import ParquetQueries
 from omnipath_api.server import create_app
-from omnipath_engine.store.inventory import ReleaseStore
+from omnipath_api.queries.store.inventory import ReleaseStore
 from omnipath_core.fixtures import nested_rows, rewrite_resource, write_resource
 
 
@@ -34,8 +34,8 @@ def resource(root, version, label):
 
 def test_lazy_core_does_not_query_relations_and_reuses_cache(tmp_path, monkeypatch):
     resource(tmp_path, "1", "First")
-    engine = ParquetServingEngine(tmp_path)
-    client = TestClient(create_app(engine=engine))
+    engine = ParquetQueries(tmp_path)
+    client = TestClient(create_app(queries=engine))
     table = engine._table
 
     def entity_tables_only(name, *args):
@@ -56,8 +56,8 @@ def test_lazy_core_does_not_query_relations_and_reuses_cache(tmp_path, monkeypat
 def test_relationship_pagination_cache_and_release_isolation(tmp_path, monkeypatch):
     resource(tmp_path, "1", "First")
     ReleaseStore(tmp_path).publish(dict(schema_version=1, version="1", resources={"test": "1"}))
-    engine = ParquetServingEngine(tmp_path)
-    client = TestClient(create_app(engine=engine))
+    engine = ParquetQueries(tmp_path)
+    client = TestClient(create_app(queries=engine))
     first = client.get("/entities/a/relationships?limit=2").json()
     assert first["relationshipsTotal"] == 3 and first["nextCursor"] == "2"
     second = client.get("/entities/a/relationships?limit=2&offset=2").json()
@@ -88,7 +88,7 @@ def test_relationship_pagination_cache_and_release_isolation(tmp_path, monkeypat
 
 def test_group_relationships_include_both_endpoints_once_and_paginate(tmp_path):
     resource(tmp_path, "1", "First")
-    client = TestClient(create_app(engine=ParquetServingEngine(tmp_path)))
+    client = TestClient(create_app(queries=ParquetQueries(tmp_path)))
     body = {"member_keys": ["a", "b", "a"], "limit": 2}
     response = client.post("/entities/group-relationships", json=body)
     assert response.status_code == 200
@@ -113,7 +113,7 @@ def test_normal_entity_details_default_to_bounded_pages(tmp_path):
         dict(term="description", value=f"Note {i}", source="test") for i in range(45)
     ]
     rewrite_resource(path, entities=rows)
-    client = TestClient(create_app(engine=ParquetServingEngine(tmp_path)))
+    client = TestClient(create_app(queries=ParquetQueries(tmp_path)))
     first = client.get("/entities/a?includeRelationships=false").json()["entity"]
     assert len(first["entityAttributes"]) == 20
     assert first["entityAttributesTotal"] == 45
@@ -138,7 +138,7 @@ def test_relationships_and_counts_span_resources(tmp_path):
             for i in range(2)
         ],
     )  # fmt: skip
-    engine = ParquetServingEngine(tmp_path)
+    engine = ParquetQueries(tmp_path)
 
     def read():
         engine._detail_cache.clear()
@@ -157,7 +157,7 @@ def test_relationships_and_counts_span_resources(tmp_path):
 
 
 def test_descriptions_lead_the_first_attribute_page():
-    from omnipath_engine.entity_details import page_details
+    from omnipath_api.queries.entity_details import page_details
 
     entity = dict(
         entityAttributes=[dict(term="in_taxon", value=str(i)) for i in range(30)]
@@ -169,7 +169,7 @@ def test_descriptions_lead_the_first_attribute_page():
 
 
 def test_one_collection_pages_on_its_own():
-    from omnipath_engine.entity_details import page_details
+    from omnipath_api.queries.entity_details import page_details
 
     entity = dict(
         entityPk="a",
@@ -185,7 +185,7 @@ def test_one_collection_pages_on_its_own():
 
 
 def test_attributes_beyond_descriptions_are_grouped_by_term():
-    from omnipath_engine.entity_details import page_details
+    from omnipath_api.queries.entity_details import page_details
 
     terms = ["in_taxon", "has_role", "in_taxon", "description", "has_role"]
     entity = dict(entityAttributes=[dict(term=t, value=str(i)) for i, t in enumerate(terms)])

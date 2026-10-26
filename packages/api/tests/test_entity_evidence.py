@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from omnipath_engine.engine import ParquetServingEngine
+from omnipath_api.queries.parquet import ParquetQueries
 from omnipath_api.server import create_app
 from omnipath_core.fixtures import write_resource
 
@@ -25,8 +25,8 @@ def resource(root, name, counts):
 def test_evidence_is_counted_in_details_and_paged_from_its_endpoint(tmp_path):
     resource(tmp_path, "one", {KEY: 3, "c" * 64: 0})
     resource(tmp_path, "two", {KEY: 2})
-    engine = ParquetServingEngine(tmp_path)
-    client = TestClient(create_app(engine=engine))
+    engine = ParquetQueries(tmp_path)
+    client = TestClient(create_app(queries=engine))
     details = client.get(f"/entities/{KEY}").json()["entity"]
     pages = [client.get(f"/entities/{KEY}/evidence?limit=2&offset={o}").json() for o in (0, 2, 4)]
     assert details["molecularEvidence"] == [] and details["molecularEvidenceTotal"] == 5

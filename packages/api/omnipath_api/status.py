@@ -71,7 +71,7 @@ def cpu_load() -> float | None:
 
 
 def status(pool, times: RequestTimes) -> dict:
-    """``pool`` is the engine's query pool (None for engines without one)."""
+    """``pool`` is the query pool of the API's queries (None without one)."""
     requests, median_ms = times.summary()
     running, waiting, slots = (pool.running, pool.waiting, pool.size) if pool else (0, 0, 0)
     load, memory = cpu_load(), memory_fraction()

@@ -3,7 +3,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from omnipath_engine.engine import ParquetServingEngine
+from omnipath_api.queries.parquet import ParquetQueries
 from omnipath_api.server import create_app
 from omnipath_core.keys import entity_key
 from omnipath_core.fixtures import write_resource
@@ -49,7 +49,7 @@ def reference_facets_engine(tmp_path):
             for kind, ns, identifier, taxon, ref in records
         ]
         write_resource(tmp_path / "resources" / source / "1", entities)
-    return ParquetServingEngine(tmp_path)
+    return ParquetQueries(tmp_path)
 
 
 def counts(rows):
@@ -71,7 +71,7 @@ def test_gene_reference_facets_include_all_matching_source_types(reference_facet
         ("source", "a"): 3,
         ("source", "b"): 2,
     }
-    with TestClient(create_app(engine=engine)) as client:
+    with TestClient(create_app(queries=engine)) as client:
         response = client.post("/entities/scoped-facets", json={"query": "entrez:11052"})
         assert response.status_code == 200
         assert counts(response.json()) == facets

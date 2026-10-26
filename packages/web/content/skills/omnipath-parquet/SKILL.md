@@ -25,15 +25,17 @@ Use the HTTP API directly (last section) only when Python is not available.
 
 ## Install
 
-Python 3.11 or newer. Install the three packages from GitHub, in one command:
+Python 3.11 or newer. Install the client from GitHub; it needs only DuckDB, httpx and
+platformdirs:
 
 ```bash
 R=git+https://github.com/saezlab/omnipath-build@parquet-migration
-pip install "omnipath-core @ $R#subdirectory=packages/core" \
-            "omnipath-engine @ $R#subdirectory=packages/engine" \
-            "omnipath-client @ $R#subdirectory=packages/client"
+pip install "omnipath-client @ $R#subdirectory=packages/query/python"
 # add pandas for .df()
 ```
+
+The R package `omnipath.client` (`packages/query/r`) reads and writes the same data
+directory with the same queries.
 
 With uv, use `uv pip install` with the same arguments. Do **not** run a bare
 `pip install omnipath-client`: that name on PyPI is a different package

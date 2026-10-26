@@ -4,7 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
-from omnipath_engine.store.inventory import ReleaseStore
+from omnipath_api.queries.store.inventory import ReleaseStore
 
 
 def main(argv=None):

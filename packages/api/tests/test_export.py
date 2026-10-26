@@ -5,7 +5,7 @@ import io
 import pyarrow.parquet as pq
 from fastapi.testclient import TestClient
 
-from omnipath_engine.engine import ParquetServingEngine
+from omnipath_api.queries.parquet import ParquetQueries
 from omnipath_api.server import create_app
 from omnipath_core.fixtures import write_resource
 
@@ -36,7 +36,7 @@ def client(tmp_path):
         relations,
     )
     write_resource(tmp_path / "resources/b/1", [entity("p1", "TP53")])
-    return TestClient(create_app(engine=ParquetServingEngine(tmp_path)))
+    return TestClient(create_app(queries=ParquetQueries(tmp_path)))
 
 
 def rows(response):
@@ -54,7 +54,7 @@ def test_exports_are_parquet_and_relation_exports_are_bounded(tmp_path):
 
 def test_group_keys_select_their_members(tmp_path):
     api = client(tmp_path)
-    engine = api.app.state.engine
+    engine = api.app.state.queries
     assert engine.resolve_entity_keys(["entity:p2"]) == ["p2"]
     assert engine.resolve_entity_keys(["gene:entrez:7157"]) == ["p1"]
     # a group key exports the relations of the group's members, like its entity keys

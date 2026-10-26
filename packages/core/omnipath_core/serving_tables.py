@@ -19,17 +19,13 @@ def _sql_path(path) -> str:
     return str(path).replace("'", "''")
 
 
-def write_serving_tables(db, directory, work, tables=tuple(SERVING_TABLES)) -> None:
-    """Write the serving ``tables`` (by default all of ``SERVING_TABLES``) into
-    ``directory`` from its ``relation``, ``entity`` and ``entity_identifier`` tables.
+def serving_queries(relations: str, entities: str, identifiers: str) -> dict[str, tuple[str, str]]:
+    """{serving table: (SELECT, sort order)} over the given SQL sources of a resource
+    version's ``relation``, ``entity`` and ``entity_identifier`` tables.
 
-    ``db`` is a DuckDB connection; ``work`` an existing directory for temporary files.
+    The clients ship these queries (``omnipath_client/sql/contract.json``) and run them
+    themselves; ``write_serving_tables`` runs them for the build.
     """
-    directory, work = Path(directory), Path(work)
-    relations, entities, identifiers = (
-        f"read_parquet('{_sql_path(directory / name)}.parquet')"
-        for name in ("relation", "entity", "entity_identifier")
-    )
     endpoints = " UNION ALL ".join(
         f"SELECT {key} AS key, '{kind}' AS key_kind, '{side}' AS side, relation_id, predicate, category FROM {relations}"
         for side in ("subject", "object")
@@ -39,7 +35,7 @@ def write_serving_tables(db, directory, work, tables=tuple(SERVING_TABLES)) -> N
         )
     )
     facet_columns = ", ".join(RELATION_FACET_COLUMNS)
-    queries = {
+    return {
         "relation_endpoint": (
             f"SELECT * FROM ({endpoints}) WHERE key IS NOT NULL",
             "key, relation_id",
@@ -66,6 +62,21 @@ def write_serving_tables(db, directory, work, tables=tuple(SERVING_TABLES)) -> N
             "category, predicate",
         ),
     }
+
+
+def write_serving_tables(db, directory, work, tables=tuple(SERVING_TABLES)) -> None:
+    """Write the serving ``tables`` (by default all of ``SERVING_TABLES``) into
+    ``directory`` from its ``relation``, ``entity`` and ``entity_identifier`` tables.
+
+    ``db`` is a DuckDB connection; ``work`` an existing directory for temporary files.
+    """
+    directory, work = Path(directory), Path(work)
+    queries = serving_queries(
+        *(
+            f"read_parquet('{_sql_path(directory / name)}.parquet')"
+            for name in ("relation", "entity", "entity_identifier")
+        )
+    )
     for name in tables:
         query, order = queries[name]
         _sorted_copy(db, query, order, directory / f"{name}.parquet", work)

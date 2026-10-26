@@ -12,7 +12,7 @@ from __future__ import annotations
 import argparse
 import time
 
-from omnipath_engine.engine import ParquetServingEngine
+from omnipath_api.queries.parquet import ParquetQueries
 
 
 def main() -> None:
@@ -20,7 +20,7 @@ def main() -> None:
     parser.add_argument("data_root")
     parser.add_argument("--only", default="", help="time only requests whose name contains this")
     args = parser.parse_args()
-    engine = ParquetServingEngine(args.data_root)
+    engine = ParquetQueries(args.data_root)
 
     def timed(name, call):
         if args.only not in name:

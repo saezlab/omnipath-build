@@ -5,8 +5,8 @@ from threading import Event
 
 import pytest
 
-from omnipath_engine.engine import ParquetServingEngine
-from omnipath_engine.store.query_pool import QueryCapacityError, QueryPool
+from omnipath_api.queries.parquet import ParquetQueries
+from omnipath_api.queries.store.query_pool import QueryCapacityError, QueryPool
 
 
 class Connection:
@@ -52,7 +52,7 @@ def test_pool_bounds_real_connections_and_preserves_results(tmp_path, monkeypatc
     monkeypatch.setenv("OMNIPATH_QUERY_CONCURRENCY", "2")
     monkeypatch.setenv("OMNIPATH_QUERY_WAIT_SECONDS", "0")
     monkeypatch.setenv("OMNIPATH_DUCKDB_THREADS", "1")
-    engine = ParquetServingEngine(tmp_path)
+    engine = ParquetQueries(tmp_path)
     started = [Event(), Event()]
     finish = Event()
 
@@ -90,7 +90,7 @@ def test_pool_bounds_real_connections_and_preserves_results(tmp_path, monkeypatc
 def test_invalid_resource_settings_fail_early(tmp_path, monkeypatch):
     monkeypatch.setenv("OMNIPATH_QUERY_CONCURRENCY", "0")
     with pytest.raises(ValueError, match="concurrency"):
-        ParquetServingEngine(tmp_path)
+        ParquetQueries(tmp_path)
 
 
 def test_http_capacity_returns_retryable_status(tmp_path, monkeypatch):
@@ -99,8 +99,8 @@ def test_http_capacity_returns_retryable_status(tmp_path, monkeypatch):
 
     monkeypatch.setenv("OMNIPATH_QUERY_CONCURRENCY", "1")
     monkeypatch.setenv("OMNIPATH_QUERY_WAIT_SECONDS", "0")
-    engine = ParquetServingEngine(tmp_path)
-    with TestClient(create_app(engine=engine)) as client:
+    engine = ParquetQueries(tmp_path)
+    with TestClient(create_app(queries=engine)) as client:
         with engine.query_scope():
             response = client.get("/api/resources")
         assert response.status_code == 503
@@ -111,7 +111,7 @@ def test_http_capacity_returns_retryable_status(tmp_path, monkeypatch):
 def test_concurrent_search_facets_and_export_match_sequential(tmp_path):
     from omnipath_core.fixtures import write_dataset
 
-    engine = ParquetServingEngine(write_dataset(tmp_path))
+    engine = ParquetQueries(write_dataset(tmp_path))
     calls = (
         lambda: engine.search_entities_api(query="TP53", limit=10)["entities"],
         lambda: {k: v for k, v in engine.get_facets(filters={}).items() if k != "elapsed_ms"},
@@ -137,7 +137,7 @@ def test_reload_uses_same_pool_and_never_allocates_direct_connections(tmp_path, 
 
     monkeypatch.setenv("OMNIPATH_QUERY_CONCURRENCY", "1")
     monkeypatch.setenv("OMNIPATH_QUERY_WAIT_SECONDS", "0")
-    engine = ParquetServingEngine(write_dataset(tmp_path))
+    engine = ParquetQueries(write_dataset(tmp_path))
     try:
         with engine.query_scope():
             with ThreadPoolExecutor(1) as executor:
@@ -160,10 +160,10 @@ def test_busy_admin_delete_does_not_mutate_then_fail_refresh(tmp_path, monkeypat
 
     monkeypatch.setenv("OMNIPATH_QUERY_CONCURRENCY", "1")
     monkeypatch.setenv("OMNIPATH_QUERY_WAIT_SECONDS", "0")
-    engine = ParquetServingEngine(write_dataset(tmp_path))
+    engine = ParquetQueries(write_dataset(tmp_path))
     settings = Settings(read_only=False, admin_secret="fixture-secret")
     version = tmp_path / "resources/signor/1"
-    with TestClient(create_app(engine=engine, settings=settings)) as client:
+    with TestClient(create_app(queries=engine, settings=settings)) as client:
         with engine.query_scope():
             response = client.delete(
                 "/api/admin/resources/signor/1", headers={"x-admin-secret": "fixture-secret"}

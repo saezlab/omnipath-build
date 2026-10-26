@@ -16,7 +16,7 @@ def generate() -> str:
         try:
             return json.dumps(app.openapi(), indent=2, sort_keys=True) + "\n"
         finally:
-            app.state.engine.close()
+            app.state.queries.close()
 
 
 def main() -> None:

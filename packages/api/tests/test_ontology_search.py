@@ -1,7 +1,7 @@
 import tempfile
 from pathlib import Path
 
-from omnipath_engine.engine import ParquetServingEngine
+from omnipath_api.queries.parquet import ParquetQueries
 from omnipath_api.server import create_app
 from fastapi.testclient import TestClient
 from omnipath_core.fixtures import write_resource
@@ -38,7 +38,7 @@ def test_scoped_ontology_search_deduplicates_and_never_leaks_global_terms():
                 ],
                 [dict(relation_key="r", subject_entity_key="p", object_entity_key="t")],
             )
-        engine = ParquetServingEngine(root)
+        engine = ParquetQueries(root)
         payload = dict(entityPks=["p"], scoped=True)
         items = engine.search_ontology(payload)
         assert [i["termId"] for i in items] == ["GO:1"]
@@ -56,7 +56,7 @@ def test_scoped_ontology_search_deduplicates_and_never_leaks_global_terms():
         ] == ["GO:2"]
         assert len(engine.search_ontology()) == 2
 
-        client = TestClient(create_app(engine=engine))
+        client = TestClient(create_app(queries=engine))
         response = client.post("/ontology/scoped-search", json={"entityPks": ["p"]})
         assert response.status_code == 200
         assert response.json()[0]["termId"] == "GO:1"

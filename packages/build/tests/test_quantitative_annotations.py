@@ -104,9 +104,9 @@ def test_api_retains_typed_quantities():
     import pytest
 
     pytest.importorskip(
-        "omnipath_engine", reason="Engine package is not part of this workspace yet"
+        "omnipath_api.queries", reason="Engine package is not part of this workspace yet"
     )
-    from omnipath_engine.annotations import split_compiled_annotations
+    from omnipath_api.queries.annotations import split_compiled_annotations
     from omnipath_core.measurements import quantity_dict
 
     q = quantity_dict(measured(10).value)
@@ -114,8 +114,8 @@ def test_api_retains_typed_quantities():
         [{"term": "BAO:0000190", "value": "10", "quantity": q, "scope": "relation"}]
     )
     assert result["relation"][0]["quantity"] == q
-    from omnipath_engine.shape.evidence import shape_evidence_item
-    from omnipath_engine.shape.entity import shape_entity_summary
+    from omnipath_api.queries.shape.evidence import shape_evidence_item
+    from omnipath_api.queries.shape.entity import shape_entity_summary
 
     source = {"annotations": [{"term": "BAO:0000190", "value": "10", "quantity": q}]}
     assert shape_evidence_item(source)["annotations"][0]["quantity"] == q

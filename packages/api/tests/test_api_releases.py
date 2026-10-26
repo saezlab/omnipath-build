@@ -11,7 +11,7 @@ import pyarrow.parquet as pq
 import pytest
 from fastapi.testclient import TestClient
 
-from omnipath_engine.engine import ParquetServingEngine
+from omnipath_api.queries.parquet import ParquetQueries
 from omnipath_api.releases import ReleaseStore
 from omnipath_api.server import create_app
 from omnipath_core.versioning import RESOURCE_FILES
@@ -62,8 +62,8 @@ def setup(tmp_path, monkeypatch):
             {"schema_version": 1, "version": version, "resources": {"signor": resource_version}}
         )
     assert (tmp_path / "releases/2026.09.json").stat().st_mode & 0o777 == 0o644
-    engine = ParquetServingEngine(tmp_path)
-    with TestClient(create_app(engine=engine)) as client:
+    engine = ParquetQueries(tmp_path)
+    with TestClient(create_app(queries=engine)) as client:
         client.headers["x-admin-secret"] = "test-release-password"
         yield store, engine, client, old, new
 
@@ -128,10 +128,10 @@ def test_static_urls_pin_selected_resource_version(setup, monkeypatch):
 def test_static_hosting_optional_and_configurable(tmp_path, monkeypatch):
     write_resource(tmp_path, "signor", "1", "test")
     monkeypatch.delenv("OMNIPATH_PUBLIC_DATA_URL", raising=False)
-    engine = ParquetServingEngine(tmp_path)
+    engine = ParquetQueries(tmp_path)
     assert "url" not in engine.list_resource_files("signor")["files"][0]
     monkeypatch.setenv("OMNIPATH_PUBLIC_DATA_URL", "https://data.example.org/artifacts/")
-    engine = ParquetServingEngine(tmp_path)
+    engine = ParquetQueries(tmp_path)
     assert (
         engine.list_resource_files("signor")["files"][0]["url"]
         == "https://data.example.org/artifacts/resources/signor/1/entity.parquet"
@@ -143,7 +143,7 @@ def test_static_hosting_optional_and_configurable(tmp_path, monkeypatch):
         "https://host/#fragment",
     ]:
         with pytest.raises(ValueError, match="OMNIPATH_PUBLIC_DATA_URL"):
-            ParquetServingEngine(tmp_path, public_data_url=invalid)
+            ParquetQueries(tmp_path, public_data_url=invalid)
 
 
 def test_latest_numeric_order_and_new_resources(setup):

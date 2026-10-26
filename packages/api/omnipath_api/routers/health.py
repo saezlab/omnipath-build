@@ -27,5 +27,5 @@ def serving_status(request: Request) -> dict[str, Any]:
     of the last minute, and the container's CPU load and memory use (fractions)."""
     from omnipath_api.status import status
 
-    pool = getattr(request.app.state.engine, "_query_pool", None)
+    pool = getattr(request.app.state.queries, "_query_pool", None)
     return status(pool, request.app.state.request_times)

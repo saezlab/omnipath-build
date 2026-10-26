@@ -12,17 +12,19 @@ import tempfile
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
-PACKAGES = ("core", "resolver", "build", "subsets", "postgres", "engine", "api", "client")
+PACKAGES = ("core", "resolver", "build", "subsets", "postgres", "api", "client")
 DEPENDENCIES = {
     "core": (),
     "resolver": ("core",),
     "build": ("core", "resolver"),
     "subsets": ("core",),
     "postgres": ("core", "subsets"),
-    "engine": ("core",),
-    "api": ("core", "engine"),
-    "client": ("core", "engine"),
+    "api": ("core",),
+    # The client reads its SQL and contract from its own package; nothing of the workspace.
+    "client": (),
 }
+# Package directories under packages/, where not the package's name.
+DIRECTORIES = {"client": "query/python"}
 
 
 def run(*command, cwd=ROOT):
@@ -76,17 +78,21 @@ def check(directory, packages, *, offline=False):
             assert not any(
                 name.startswith(("tests/", "scripts/", "src/", "rust/")) for name in names
             )
-            source = ROOT / "packages" / package / f"omnipath_{package}"
+            source = ROOT / "packages" / DIRECTORIES.get(package, package) / f"omnipath_{package}"
             expected = {
                 f"omnipath_{package}/{path.relative_to(source).as_posix()}": path
                 for path in source.rglob("*")
                 if path.is_file() and path.suffix in {".py", ".sql", ".yaml", ".zstd"}
+                or (package == "client" and path.suffix == ".json")
             }
             actual = {
                 name
                 for name in names
                 if name.startswith(f"omnipath_{package}/")
-                and Path(name).suffix in {".py", ".sql", ".yaml", ".zstd"}
+                and (
+                    Path(name).suffix in {".py", ".sql", ".yaml", ".zstd"}
+                    or (package == "client" and Path(name).suffix == ".json")
+                )
             }
             assert actual == set(expected), {
                 "extra": actual - set(expected),
@@ -146,9 +152,17 @@ def check(directory, packages, *, offline=False):
                 "omnipath_subsets.compatibility",
             ),
             "postgres": ("omnipath_build", "omnipath_resolver", "psycopg"),
-            "engine": ("omnipath_build", "omnipath_resolver", "pypath", "omnipath_api", "fastapi"),
             "api": ("omnipath_build", "omnipath_resolver", "pypath"),
-            "client": ("omnipath_build", "omnipath_resolver", "pypath", "omnipath_api", "fastapi"),
+            "client": (
+                "omnipath_core",
+                "omnipath_build",
+                "omnipath_resolver",
+                "pypath",
+                "omnipath_api",
+                "fastapi",
+                "pyarrow",
+                "biolink_model",
+            ),
         }.get(package, ())
         for name in forbidden:
             code += f"assert importlib.util.find_spec({name!r}) is None, {name!r}\n"

@@ -9,7 +9,7 @@ from omnipath_api.settings import Settings
 
 from fastapi.testclient import TestClient
 
-from omnipath_engine.engine import ParquetServingEngine
+from omnipath_api.queries.parquet import ParquetQueries
 from omnipath_api.server import create_app
 
 
@@ -20,9 +20,9 @@ class TestServerAPI(unittest.TestCase):
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
         cls.addClassCleanup(cls.tmp.cleanup)
-        engine = ParquetServingEngine(data_root=write_dataset(cls.tmp.name))
+        engine = ParquetQueries(data_root=write_dataset(cls.tmp.name))
         cls.addClassCleanup(engine.close)
-        cls.client = TestClient(create_app(engine=engine, settings=Settings(admin_secret="test")))
+        cls.client = TestClient(create_app(queries=engine, settings=Settings(admin_secret="test")))
         cls.client.headers["x-admin-secret"] = "test"
 
     def test_admin_status(self):

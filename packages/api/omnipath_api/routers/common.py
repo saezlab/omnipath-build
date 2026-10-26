@@ -9,7 +9,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from starlette.background import BackgroundTask
 from pydantic import ValidationError
-from omnipath_engine.store.query_pool import QueryCapacityError
+from omnipath_api.queries.store.query_pool import QueryCapacityError
 
 
 class EngineJSONResponse(JSONResponse):
@@ -48,29 +48,29 @@ def _dump(model: Any) -> dict[str, Any]:
 
 
 def _call(request: Request, method: str, *args: Any, **kwargs: Any) -> Any:
-    engine = request.app.state.engine
+    queries = request.app.state.queries
     try:
-        with engine.query_scope() if hasattr(engine, "query_scope") else nullcontext():
+        with queries.query_scope() if hasattr(queries, "query_scope") else nullcontext():
             release = getattr(request.state, "omnipath_release", None)
             if release is None:
                 release = (
                     request.query_params.get("release")
                     or request.headers.get("x-omnipath-release")
                     or request.cookies.get("omnipath_release")
-                    or engine.releases.default()
+                    or queries.releases.default()
                 )
                 request.state.omnipath_release = release
             snapshot = getattr(request.state, "inventory_snapshot", None)
-            if snapshot is None and hasattr(engine, "inventory_snapshot"):
-                snapshot = engine.inventory_snapshot()
+            if snapshot is None and hasattr(queries, "inventory_snapshot"):
+                snapshot = queries.inventory_snapshot()
                 request.state.inventory_snapshot = snapshot
             scope = (
-                engine.release_scope(release, snapshot=snapshot)
+                queries.release_scope(release, snapshot=snapshot)
                 if snapshot is not None
-                else engine.release_scope(release)
+                else queries.release_scope(release)
             )
             with scope:
-                return getattr(engine, method)(*args, **kwargs)
+                return getattr(queries, method)(*args, **kwargs)
     except QueryCapacityError as exc:
         raise HTTPException(status_code=503, detail=str(exc), headers={"Retry-After": "1"}) from exc
     except ValidationError as exc:

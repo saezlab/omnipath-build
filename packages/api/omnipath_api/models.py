@@ -10,11 +10,11 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from omnipath_engine.filters import EntitySearchCursor, SearchFilters
+from omnipath_api.queries.filters import EntitySearchCursor, SearchFilters
 
 
 class APIModel(BaseModel):
-    """Base model: keep unknown engine fields in responses and requests."""
+    """Base model: keep unknown queries fields in responses and requests."""
 
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 

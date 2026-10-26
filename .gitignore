@@ -31,6 +31,8 @@ download_manager_log/
 cache_manager_log/
 node_modules/
 *.parquet
+# The R client's test fixtures: small resources written by its tests/make_fixtures.py.
+!packages/query/r/tests/testthat/fixtures/server/**/*.parquet
 pypath-data/
 .env
 .env.staging

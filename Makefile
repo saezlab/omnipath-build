@@ -70,7 +70,7 @@ test-postgres:
 test-subsets:
 	OMNIPATH_TEST_POSTGRES=1 uv run --frozen pytest packages/postgres/tests packages/subsets/tests -q -n $(PYTEST_PG_WORKERS) $(PYTEST_ARGS)
 test-api:
-	uv run --frozen pytest packages/engine/tests packages/api/tests -q -n $(PYTEST_WORKERS) $(PYTEST_ARGS)
+	uv run --frozen pytest packages/api/tests -q -n $(PYTEST_WORKERS) $(PYTEST_ARGS)
 check:
 	uv run --frozen ruff check packages scripts conftest.py
 	uv run --frozen ruff format --check packages scripts conftest.py
@@ -146,10 +146,12 @@ check-generated:
 	uv run --frozen python scripts/generate_openapi.py --check
 	uv run --frozen python scripts/sync_biolink.py --check
 	uv run --frozen python scripts/generate_resource_metadata.py --check
+	uv run --frozen python packages/query/scripts/generate_contract.py --check
 generate:
 	uv run --frozen python scripts/generate_openapi.py
 	uv run --frozen python scripts/sync_biolink.py
 	uv run --frozen python scripts/generate_resource_metadata.py
+	uv run --frozen python packages/query/scripts/generate_contract.py
 	pnpm --dir packages/web generate:types
 test-wheels:
 	uv run --frozen python scripts/check_wheels.py

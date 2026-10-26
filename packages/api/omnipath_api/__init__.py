@@ -1,7 +1,7 @@
-"""OmniPath REST API over the Parquet serving engine.
+"""OmniPath REST API over the resource Parquet files of a serving root.
 
-Serves the engine's analytical queries, autocomplete, faceted filtering and binary
-exports over HTTP; the engine itself lives in ``omnipath_engine``.
+Serves analytical queries, autocomplete, faceted filtering and binary exports over
+HTTP; the queries are ``omnipath_api.queries``.
 """
 
 from .server import create_app, run_server, serve
