@@ -156,12 +156,21 @@ METALINKSDB = NetworkDefinition(
         "metatlas",
     ),
     interaction_class_scope=(),
-    default_attributes=("endpoints", "label", "references", "evidence"),
+    default_attributes=("endpoints", "label", "evidence"),
     # The node classification the delivered contract carries inline. Mandatory
     # rather than default: a consumer of this dataset reads the compound and
     # protein annotations, and a request naming another attribute must not
     # take them away.
-    mandatory_attributes=("intercell",),
+    #
+    # **The name is `annotation`, not `intercell`.** The layer serves GO
+    # cellular components, UniProt cellular-component keywords, UBERON tissues
+    # and five chemical class vocabularies; `intercell` names a role
+    # classification none of them states, and FR-046 forbids a changed meaning
+    # behind an unchanged name. A build whose registry still says `intercell`
+    # is still served — the API accepts the old spelling as a deprecated alias
+    # and logs it — but it emits only the new column names, so re-registering
+    # this product is what makes the registry agree with the response.
+    mandatory_attributes=("annotation",),
     labels={
         "preset": "MetaLinksDB",
         "resources": {"metatlas": "humangem"},
@@ -175,14 +184,41 @@ METALINKSDB = NetworkDefinition(
     attribute_sources={
         # Provenance for the node classification, and it says which stage
         # answered. The interim stage is the annotation content the resources
-        # already publish; the rebuild replaces the vocabulary behind the same
-        # output names, and this field is how a caller tells them apart.
-        "intercell": {
+        # already publish; the Intercell rebuild replaces the vocabulary behind
+        # the same output names, and `stage` is how a caller tells them apart.
+        # It stays `interim` so the Phase 9 swap is a change to this one field.
+        #
+        # The source is named per layer rather than once for the lot. The old
+        # value, "loaded resource annotations", described the
+        # `entity_annotation_relation` store the API no longer reads and whose
+        # five terms returned no rows at all — so it named the wrong store as
+        # well as being too coarse to act on.
+        "annotation": {
             "stage": "interim",
-            "source": "loaded resource annotations",
+            "source": "omnipath.relation, per layer",
+            "layers": {
+                "location": (
+                    "located_in facts over GO cellular components from LOCATE, "
+                    "HMDB and iMM1415, over UBERON tissues and CL cell types, "
+                    "beside the 71 UniProt cellular-component and topology "
+                    "keywords as associated_with facts"
+                ),
+                "chemical_class": (
+                    "associated_with facts over LIPID MAPS, the three RefMet "
+                    "levels and ChemOnt, ranked in that order and rolled up "
+                    "through the subclass_of tree in entity_ontology_relation"
+                ),
+                "metabolic_domain": (
+                    "entity.metabolic_domain_id, a derived column of the build "
+                    "rather than an asserted fact, so no resource is named"
+                ),
+            },
             "note": (
-                "role and location terms as the contributing resources publish "
-                "them, not a cross-resource consensus"
+                "location and class terms as the contributing resources "
+                "publish them, not a cross-resource consensus; the role "
+                "classification the Intercell rebuild owns is not here, "
+                "because the model states a role per assertion and an "
+                "entity-level flag needs a consensus this stage has none of"
             ),
         },
     },
@@ -227,7 +263,7 @@ METALINKSDB = NetworkDefinition(
             # source_count, the references and the sign flags.
             {"operation": "exclude", "resources": ["bindingdb"]},
             {"operation": "collapse"},
-            {"operation": "annotate", "layer": "intercell"},
+            {"operation": "annotate", "layer": "annotation"},
         ],
     },
 )
@@ -253,21 +289,29 @@ METALINKSDB = NetworkDefinition(
 # consumer expecting the legacy human-only LIANA meets a result roughly twelve
 # times larger, and should pass an organism filter to get the old shape.
 #
-# `references` stays among the default attributes even though it returns empty
-# today. ConnectomeDB2025 does publish PubMed ids, but the loader that produced
-# this build (`pypath/inputs_v2/connectomedb.py`) never reads the `AI summary`
-# column they sit in, so there is no reference annotation for the projection to
-# collect and nothing to serve. That is an ingest gap, tracked as a follow-up in
-# this cycle's task list, not a property of the dataset. Keeping the attribute in
-# the defaults keeps the response shape stable — the field is present and empty —
-# and it fills in once the loader is fixed and the resource re-ingested. Nothing
-# here claims otherwise: `attribute_sources` names no source for references.
+# **`references` has left the default attributes, and so has it in the two
+# definitions above.** FR-055 moves the four rebuildable columns off the
+# default row and keeps them selectable by name, and a default attribute is
+# exactly what would put `references` back on it: the API echoes a preset's
+# declared attributes into the row, so declaring the column is the same thing
+# as serving it unasked. A caller who wants it writes `attributes=references`
+# and gets it, on this preset as on any other.
+#
+# For this preset it returns empty either way, and that is worth keeping on the
+# record rather than in the defaults. ConnectomeDB2025 does publish PubMed ids,
+# but the loader that produced this build
+# (`pypath/inputs_v2/connectomedb.py`) never reads the `AI summary` column they
+# sit in, so there is no reference annotation for the projection to collect and
+# nothing to serve. That is an ingest gap, tracked as a follow-up in this
+# cycle's task list, not a property of the dataset, and it fills in once the
+# loader is fixed and the resource re-ingested. Nothing here claims otherwise:
+# `attribute_sources` names no source for references.
 LIANA = NetworkDefinition(
     name="liana",
     kind="ligand_receptor",
     included_sources=("connectomedb2025",),
     interaction_class_scope=("ligand_receptor",),
-    default_attributes=("endpoints", "label", "references", "evidence"),
+    default_attributes=("endpoints", "label", "evidence"),
 )
 
 # Reactions: metabolic reactions as native hyperedges, a preset over the same
@@ -334,7 +378,7 @@ REACTIONS = NetworkDefinition(
     kind="reaction",
     included_sources=("kegg", "rhea", "metatlas", "recon3d"),
     interaction_class_scope=(),
-    default_attributes=("endpoints", "label", "references", "evidence"),
+    default_attributes=("endpoints", "label", "evidence"),
     mandatory_attributes=("role", "side", "stoichiometry", "compartment"),
     grain="participant",
     collapse_mode="none",
@@ -351,7 +395,7 @@ REACTIONS = NetworkDefinition(
     },
     # Every entry is a resource publishing the field itself, so no stage is
     # named: there is no interim vocabulary standing in for a later rebuild the
-    # way the intercell layer has one.
+    # way the node annotation layer has one.
     attribute_sources={
         "role": {
             "sources": ["kegg", "rhea", "metatlas", "recon3d"],
