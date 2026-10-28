@@ -77,7 +77,11 @@ re-indexed only when its export changes
 - **Lipid names.** The chemical hubs (SwissLipids, LIPID MAPS, HMDB, ChEBI,
   RefMet) also get `goslin` rows: each record's names are parsed with Goslin,
   and the most specific parse at species level or finer is kept, through a
-  persistent parse cache.
+  persistent parse cache. In ChEBI, HMDB and RefMet, a parse of a name not
+  written in lipid notation (no chain such as `16:0`) must have the composition
+  of the record's formula or InChI, hydrogen aside: ChEBI's synonym "HOH" for
+  water parses as `FA 18:5;OH`. A wax ester without its alcohol (`WE …/0:0`,
+  Goslin's reading of an "-oate" name) is dropped in every hub.
 
 ```bash
 omnipath-build build-hub-index --hub chebi --hubs-dir data/reference/hubs --output-root data/reference/hub-index
@@ -127,7 +131,10 @@ Each record gets one decision:
 - **Gene–product links.** UniProt ↔ NCBI Gene cross-references are not
   identity edges. A protein is linked to a gene when either hub states the link,
   the protein has a single anchor and the taxa agree. Genes never join proteins
-  to each other.
+  to each other. A protein linked to several genes keeps only the gene whose
+  NCBI symbol is one of its UniProt gene names, when exactly one is: P0C0L4
+  (gene name C4A) is not also a product of C4B. Otherwise it keeps all of them,
+  as P0DN86 (CGB3, CGB5, CGB8) does.
 - **Lipid structures.** A full-structure Goslin name leads to an InChIKey only
   when every record carrying that name and an InChIKey agrees on exactly one.
 
@@ -293,8 +300,16 @@ directional Rhea ID resolves to its master; the reported direction stays on the
 occurrence. Rhea's own cross-references win over MetaNetX's for the same ID.
 Model-reaction IDs (BiGG, VMH, SEED, SABIO-RK) resolve through a MetaNetX
 reaction, which attaches to a Rhea master under the rules of step 3 or stays
-its own entity. Compartment and transport stay on the occurrence; EC numbers
-are not used for identity.
+its own entity.
+
+A reaction's compartments are part of its identity. Rhea and MetaNetX reactions
+name no compartment, so the writer adds to the entity key the set of GO
+compartments the reaction states (Biolink `anatomical_context_qualifier`). The
+same chemistry in the cytosol and in mitochondria, or the same cargo across two
+membranes, are different entities; uptake and efflux across one membrane are
+one. The reference key stays the resolved reaction, so the variants still
+group. Rhea's in/out sides are relative and stay out of the key. The SBO
+reaction type, EC numbers and reaction InChIs are not used for identity.
 
 ## 7. Fallbacks and entity records
 
@@ -304,6 +319,12 @@ fingerprint, so a cached record equals a freshly built one. During resource
 builds this is deferred to the finalizer, which attaches identifiers once per
 entity instead of once per observation. Isoform, transcript and sequence
 identifiers stay on the occurrence's molecular form.
+
+A lipid's label is its Goslin shorthand at the most specific known level
+(`PC 16:0/18:1`), also when the full structure is known. A fatty-acyl (`FA`)
+shorthand counts only from a SwissLipids or LIPID MAPS record, since Goslin
+reads any systematically named acid as one (glutamine:
+`FA 5:0;2NH2,5NH2;5oxo`); a `WE …/0:0` shorthand never counts.
 
 | Situation | Result |
 | --- | --- |
